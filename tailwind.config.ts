@@ -5,6 +5,11 @@ export default {
   content: ['./src/**/*.{html,js,svelte,ts}'],
 
   theme: {
+    fontFamily: {
+      primary: ['Figtree'],
+      secondary: ['Playfair\\ Display'],
+      tertiary: ['Lora'],
+    },
     extend: {},
   },
 
