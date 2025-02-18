@@ -1,7 +1,7 @@
 <div class="mx-auto flex h-screen items-center justify-center bg-[#FFFAF6]">
   <div class="w-[48rem]">
-    <h1 class="mb-1 font-primary text-6xl font-bold uppercase">This is a heading</h1>
-    <h2 class="mb-3 font-secondary text-3xl font-light">What am I supposed to say here?</h2>
+    <h1 class="mb-1 text-6xl font-bold uppercase">This is a heading</h1>
+    <h2 class="mb-3 text-3xl font-light">What am I supposed to say here?</h2>
     <p>
       Lorem ipsum, dolor sit amet consectetur adipisicing elit. Exercitationem impedit, possimus
       velit maiores perferendis blanditiis incidunt nihil culpa eum voluptatem esse minima explicabo
