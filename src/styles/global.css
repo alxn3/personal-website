@@ -1,1 +1,70 @@
 @import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-heading: "Bitter", Georgia, serif;
+  --font-body: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono:
+    "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
+  --font-sans: var(--font-body);
+  --font-serif: var(--font-heading);
+  --container-layout: 74rem;
+  --container-prose: 52rem;
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-text: var(--text);
+  --color-text-muted: var(--text-muted);
+  --color-border: var(--border);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+}
+
+@layer base {
+  [x-cloak] {
+    display: none !important;
+  }
+
+  html {
+    --bg: oklch(0.98 0.005 240);
+    --surface: oklch(0.995 0.003 240);
+    --text: oklch(0.22 0.01 240);
+    --text-muted: oklch(0.45 0.01 240);
+    --border: oklch(0.88 0.01 240);
+    --accent: oklch(0.55 0.09 175);
+    --accent-soft: oklch(0.93 0.03 175);
+    font-family: var(--font-body);
+  }
+
+  html.dark {
+    --bg: oklch(0.19 0.01 240);
+    --surface: oklch(0.24 0.012 240);
+    --text: oklch(0.95 0.005 240);
+    --text-muted: oklch(0.68 0.01 240);
+    --border: oklch(0.34 0.015 240);
+    --accent: oklch(0.72 0.11 175);
+    --accent-soft: oklch(0.3 0.05 175);
+    color-scheme: dark;
+  }
+
+  body {
+    @apply bg-bg text-text antialiased;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    font-family: var(--font-heading);
+  }
+
+  code,
+  kbd,
+  samp,
+  pre {
+    font-family: var(--font-mono);
+  }
+}
