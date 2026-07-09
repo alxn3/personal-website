@@ -1,0 +1,80 @@
+---
+import { Icon } from "astro-icon/components";
+import { getCollection } from "astro:content";
+import ProjectCard from "../../components/ProjectCard.astro";
+import BaseLayout from "../../layouts/BaseLayout.astro";
+
+const projects = (await getCollection("projects")).sort(
+  (a, b) => b.data.date.valueOf() - a.data.date.valueOf(),
+);
+---
+
+<BaseLayout
+  title="Projects | Personal Website"
+  description="Selected projects and experiments."
+>
+  <section
+    class="py-14 sm:py-20"
+    x-data="{
+      q: '',
+      matches(search) {
+        const term = this.q.trim().toLowerCase();
+        return term === '' || search.includes(term);
+      },
+      get visible() {
+        return [...this.$el.querySelectorAll('[data-search]')].filter((el) =>
+          this.matches(el.dataset.search),
+        ).length;
+      },
+    }"
+  >
+    <div class="max-w-prose">
+      <p class="text-accent text-sm font-semibold tracking-wide uppercase">
+        Projects
+      </p>
+      <h1 class="text-text mt-4 text-4xl leading-tight font-black sm:text-5xl">
+        Selected work, experiments, and small systems.
+      </h1>
+      <p class="text-text-muted mt-5 text-lg leading-8">
+        A growing collection of projects. Search by name, tag, or description.
+      </p>
+    </div>
+
+    <div class="relative mt-10 max-w-md">
+      <label class="sr-only" for="project-search">Search projects</label>
+      <Icon
+        name="lucide:search"
+        class="text-text-muted pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2"
+      />
+      <input
+        id="project-search"
+        type="search"
+        x-model="q"
+        placeholder="Search projects"
+        class="border-border bg-bg text-text placeholder:text-text-muted focus:border-accent focus:ring-accent h-10 w-full rounded-md border pr-3 pl-9 text-sm outline-none focus:ring-2"
+      />
+    </div>
+
+    <div class="mt-8 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+      {
+        projects.map((project) => (
+          <ProjectCard
+            href={`/projects/${project.id}`}
+            title={project.data.title}
+            summary={project.data.summary}
+            tags={project.data.tags}
+            icon={project.data.icon}
+          />
+        ))
+      }
+    </div>
+
+    <p
+      x-show="visible === 0"
+      x-cloak
+      class="text-text-muted mt-10 text-center"
+    >
+      No projects match "<span class="font-medium" x-text="q" />".
+    </p>
+  </section>
+</BaseLayout>

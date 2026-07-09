@@ -1,0 +1,55 @@
+---
+import { Icon } from "astro-icon/components";
+
+interface Props {
+  href: string;
+  title: string;
+  summary: string;
+  tags: string[];
+  icon: string;
+}
+
+const { href, title, summary, tags, icon } = Astro.props;
+const search = `${title} ${tags.join(" ")} ${summary}`.toLowerCase();
+---
+
+<a
+  href={href}
+  data-search={search}
+  x-show="$root.matches($el.dataset.search)"
+  class="border-border bg-surface hover:border-accent group block rounded-md border p-5 transition-colors"
+>
+  <div
+    class="bg-accent-soft text-accent flex aspect-video items-center justify-center rounded-md"
+  >
+    <Icon name={icon} class="size-10" />
+  </div>
+  <div class="mt-5">
+    <p class="text-accent text-xs font-semibold tracking-wide uppercase">
+      {tags[0] ?? "Project"}
+    </p>
+    <h2 class="text-text mt-2 text-xl font-bold">
+      {title}
+    </h2>
+    <p class="text-text-muted mt-3 text-sm leading-6">
+      {summary}
+    </p>
+    {
+      tags.length > 0 && (
+        <div class="mt-4 flex flex-wrap gap-2">
+          {tags.map((tag) => (
+            <span class="bg-accent-soft text-accent rounded px-2 py-1 text-xs font-medium">
+              {tag}
+            </span>
+          ))}
+        </div>
+      )
+    }
+  </div>
+  <div
+    class="text-text-muted group-hover:text-accent mt-5 inline-flex items-center gap-2 text-sm font-medium"
+  >
+    Open project
+    <Icon name="lucide:arrow-right" class="size-4" />
+  </div>
+</a>

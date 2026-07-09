@@ -1,60 +1,50 @@
 ---
-import { Icon } from "astro-icon/components";
+import Navbar from "../components/Navbar.astro";
 import "../styles/global.css";
 
 interface Props {
   title?: string;
   description?: string;
   lang?: string;
+  fullWidth?: boolean;
+  hideChrome?: boolean;
 }
 
 const {
   title = "Personal Website",
   description = "Personal website",
   lang = "en",
+  fullWidth = false,
+  hideChrome = false,
 } = Astro.props;
-
-const navItems = [
-  { href: "/", label: "Home" },
-  { href: "/projects", label: "Projects" },
-  { href: "/blog", label: "Blog" },
-  { href: "/about", label: "About" },
-];
-
-const currentPath = Astro.url.pathname.replace(/\/$/, "") || "/";
-const isCurrentPath = (href: string) => {
-  if (href === "/") {
-    return currentPath === "/";
-  }
-
-  return currentPath === href || currentPath.startsWith(`${href}/`);
-};
 ---
 
 <!doctype html>
 <html lang={lang}>
   <head>
     <meta charset="UTF-8" />
-    <script is:inline>
-      (() => {
-        const storageKey = "theme";
-        const mediaQuery = "(prefers-color-scheme: dark)";
 
-        try {
-          const savedTheme = localStorage.getItem(storageKey);
-          const prefersDark = window.matchMedia(mediaQuery).matches;
-          document.documentElement.classList.toggle(
-            "dark",
-            savedTheme ? savedTheme === "dark" : prefersDark,
-          );
-        } catch {
-          document.documentElement.classList.toggle(
-            "dark",
-            window.matchMedia(mediaQuery).matches,
-          );
-        }
-      })();
+    <!-- Blocking, un-bundled script: set the theme class before first paint to
+         avoid a flash of the wrong theme (FOUC). The .dark class also drives
+         which toggle icon is visible via CSS, so the right icon paints
+         immediately — no dependency on Alpine booting. -->
+    <script is:inline>
+      const media = window.matchMedia("(prefers-color-scheme: dark)");
+      const apply = (dark) =>
+        document.documentElement.classList.toggle("dark", dark);
+
+      // Initial theme: an explicit user choice wins, else follow the OS.
+      const stored = localStorage.getItem("theme");
+      apply(stored ? stored === "dark" : media.matches);
+
+      // An OS theme change always wins: apply it and drop any manual override
+      // so a reload stays consistent with what's shown.
+      media.addEventListener("change", (e) => {
+        localStorage.removeItem("theme");
+        apply(e.matches);
+      });
     </script>
+
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content={description} />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -63,107 +53,30 @@ const isCurrentPath = (href: string) => {
       href="https://fonts.googleapis.com/css2?family=Bitter:wght@400;500;600;700;800;900&family=Inter:opsz,wght@14..32,400..900&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <script is:inline>
-      document.addEventListener("alpine:init", () => {
-        Alpine.data("themeToggle", () => ({
-          storageKey: "theme",
-          mediaQuery: window.matchMedia("(prefers-color-scheme: dark)"),
-          theme: null,
-          isDark: false,
-
-          init() {
-            this.theme = localStorage.getItem(this.storageKey);
-            this.syncTheme();
-
-            this.mediaQuery.addEventListener("change", () => {
-              if (!this.theme) {
-                this.syncTheme();
-              }
-            });
-          },
-
-          syncTheme() {
-            this.isDark = this.theme
-              ? this.theme === "dark"
-              : this.mediaQuery.matches;
-            document.documentElement.classList.toggle("dark", this.isDark);
-          },
-
-          toggleTheme() {
-            this.theme = this.isDark ? "light" : "dark";
-            localStorage.setItem(this.storageKey, this.theme);
-            this.syncTheme();
-          },
-        }));
-      });
-    </script>
     <title>{title}</title>
   </head>
   <body class="flex min-h-dvh flex-col">
-    <header class="border-border bg-bg border-b">
-      <nav
-        class="max-w-layout mx-auto flex h-16 items-center justify-between px-4 sm:px-6 lg:px-8"
-        aria-label="Primary navigation"
-      >
-        <a href="/" class="text-text font-serif text-xl font-bold">
-          Personal Website
-        </a>
+    {!hideChrome && <Navbar />}
 
-        <div class="flex items-center gap-5">
-          <div class="flex items-center gap-1.5" aria-label="Main pages">
-            {
-              navItems.map((item) => {
-                const isCurrent = isCurrentPath(item.href);
-
-                return (
-                  <a
-                    href={item.href}
-                    aria-current={isCurrent ? "page" : undefined}
-                    class:list={[
-                      "rounded-md px-2.5 py-1.5 text-sm font-medium transition-colors",
-                      isCurrent
-                        ? "bg-accent-soft text-accent"
-                        : "text-text-muted hover:bg-accent-soft hover:text-text",
-                    ]}
-                  >
-                    {item.label}
-                  </a>
-                );
-              })
-            }
-          </div>
-
-          <div x-data="themeToggle" x-cloak>
-            <button
-              type="button"
-              class="border-border bg-surface text-text hover:bg-accent-soft focus-visible:ring-accent focus-visible:ring-offset-surface inline-flex h-9 w-9 items-center justify-center rounded-md border transition-colors focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
-              x-on:click="toggleTheme"
-              x-bind:aria-pressed="isDark.toString()"
-              x-bind:aria-label="isDark ? 'Switch to light theme' : 'Switch to dark theme'"
-              x-bind:title="isDark ? 'Switch to light theme' : 'Switch to dark theme'"
-            >
-              <span aria-hidden="true" x-show="!isDark">
-                <Icon name="lucide:sun" class="size-4" />
-              </span>
-              <span aria-hidden="true" x-show="isDark">
-                <Icon name="lucide:moon" class="size-4" />
-              </span>
-            </button>
-          </div>
-        </div>
-      </nav>
-    </header>
-
-    <main class="max-w-layout mx-auto w-full flex-1 px-4 sm:px-6 lg:px-8">
+    <main
+      class:list={[
+        "w-full flex-1",
+        fullWidth || hideChrome
+          ? ""
+          : "max-w-layout mx-auto px-4 sm:px-6 lg:px-8",
+      ]}
+    >
       <slot />
     </main>
 
-    <footer class="border-border border-t">
-      <div
-        class="max-w-layout text-text-muted mx-auto flex h-16 items-center px-4 text-sm sm:px-6 lg:px-8"
-      >
-        <p>&copy; {new Date().getFullYear()} Personal Website</p>
-      </div>
-    </footer>
+    {
+      !hideChrome && (
+        <footer class="border-border border-t">
+          <div class="max-w-layout text-text-muted mx-auto flex h-16 items-center px-4 text-sm sm:px-6 lg:px-8">
+            <p>&copy; {new Date().getFullYear()} Personal Website</p>
+          </div>
+        </footer>
+      )
+    }
   </body>
 </html>

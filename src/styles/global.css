@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@plugin "@tailwindcss/typography";
 
 @custom-variant dark (&:where(.dark, .dark *));
 
@@ -10,8 +11,7 @@
     "Liberation Mono", "Courier New", monospace;
   --font-sans: var(--font-body);
   --font-serif: var(--font-heading);
-  --container-layout: 74rem;
-  --container-prose: 52rem;
+  --container-layout: 112rem;
   --color-bg: var(--bg);
   --color-surface: var(--surface);
   --color-text: var(--text);
@@ -66,5 +66,31 @@
   samp,
   pre {
     font-family: var(--font-mono);
+  }
+}
+
+@layer utilities {
+  .prose {
+    --tw-prose-body: var(--text);
+    --tw-prose-headings: var(--text);
+    --tw-prose-lead: var(--text-muted);
+    --tw-prose-links: var(--accent);
+    --tw-prose-bold: var(--text);
+    --tw-prose-counters: var(--text-muted);
+    --tw-prose-bullets: var(--text-muted);
+    --tw-prose-hr: var(--border);
+    --tw-prose-quotes: var(--text);
+    --tw-prose-quote-borders: var(--border);
+    --tw-prose-captions: var(--text-muted);
+    --tw-prose-kbd: var(--text);
+    --tw-prose-code: var(--text);
+    --tw-prose-pre-code: var(--text);
+    --tw-prose-pre-bg: var(--surface);
+    --tw-prose-th-borders: var(--border);
+    --tw-prose-td-borders: var(--border);
+  }
+
+  .prose a {
+    @apply font-medium no-underline underline-offset-4 hover:underline;
   }
 }

@@ -1,0 +1,206 @@
+---
+import { Icon } from "astro-icon/components";
+import { getCollection, render } from "astro:content";
+import Prose from "../../components/Prose.astro";
+import ThemeToggle from "../../components/ThemeToggle.astro";
+import BaseLayout from "../../layouts/BaseLayout.astro";
+
+export async function getStaticPaths() {
+  const projects = await getCollection("projects", ({ data }) =>
+    Boolean(data.url),
+  );
+
+  return projects.map((project) => ({
+    params: { slug: project.id },
+    props: { project, projects },
+  }));
+}
+
+const { project, projects } = Astro.props;
+const { Content } = await render(project);
+---
+
+<BaseLayout
+  title={`${project.data.title} | Project`}
+  description={project.data.summary}
+  hideChrome
+>
+  <section
+    x-data="{ panelView: 'writeup', writeupOpen: true }"
+    class="bg-bg text-text flex min-h-dvh flex-col"
+  >
+    <header
+      class="border-border bg-bg flex h-14 items-center gap-3 border-b px-3"
+    >
+      <a href="/" class="font-serif text-lg font-bold">Personal Website</a>
+      <div class="text-text-muted ml-auto hidden text-sm sm:block">
+        {project.data.title}
+      </div>
+      <ThemeToggle />
+    </header>
+
+    <div class="relative flex min-h-0 flex-1">
+      <div class="relative flex min-w-0 flex-1">
+        <button
+          type="button"
+          class="border-border bg-surface text-text hover:bg-accent-soft focus-visible:ring-accent absolute top-4 left-4 z-20 inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-medium shadow-sm focus-visible:ring-2 focus-visible:outline-none"
+          x-show="!writeupOpen"
+          x-on:click="writeupOpen = true"
+        >
+          <Icon name="lucide:panel-left-open" class="size-4" />
+          Writeup
+        </button>
+
+        <aside
+          class="border-border bg-surface absolute inset-x-0 bottom-0 z-10 max-h-[70dvh] overflow-y-auto border-t lg:static lg:max-h-none lg:w-[28rem] lg:border-t-0 lg:border-r"
+          x-show="writeupOpen"
+        >
+          <div
+            class="border-border flex h-14 items-center justify-between border-b px-4"
+          >
+            <div x-show="panelView === 'writeup'">
+              <button
+                type="button"
+                class="text-text-muted hover:text-text inline-flex items-center gap-2 text-sm font-medium"
+                x-on:click="panelView = 'projects'"
+              >
+                <Icon name="lucide:arrow-left" class="size-4" />
+                Projects
+              </button>
+            </div>
+            <div x-show="panelView === 'projects'" style="display: none">
+              <button
+                type="button"
+                class="text-text-muted hover:text-text inline-flex items-center gap-2 text-sm font-medium"
+                x-on:click="panelView = 'writeup'"
+              >
+                <Icon name="lucide:arrow-left" class="size-4" />
+                Writeup
+              </button>
+            </div>
+            <button
+              type="button"
+              class="text-text-muted hover:text-text inline-flex size-8 items-center justify-center rounded-md"
+              x-on:click="writeupOpen = false"
+              aria-label="Collapse writeup"
+            >
+              <Icon name="lucide:panel-left-close" class="size-4" />
+            </button>
+          </div>
+          <div class="px-4 py-6" x-show="panelView === 'writeup'">
+            <div class="flex items-center justify-between gap-3">
+              <p
+                class="text-accent text-sm font-semibold tracking-wide uppercase"
+              >
+                Project
+              </p>
+              <a
+                href={`/blog/${project.id}`}
+                class="text-text-muted hover:text-accent focus-visible:ring-accent inline-flex items-center gap-1.5 rounded-md text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:outline-none"
+              >
+                <Icon name="lucide:file-text" class="size-4" />
+                Full writeup
+              </a>
+            </div>
+            <h1 class="text-text mt-3 text-3xl leading-tight font-black">
+              {project.data.title}
+            </h1>
+            <p class="text-text-muted mt-4 leading-7">
+              {project.data.summary}
+            </p>
+            <div class="border-border mt-6 grid gap-3 border-y py-5 text-sm">
+              <div>
+                <span class="text-text-muted">Site</span>
+                <a href={project.data.url} class="text-accent ml-2 font-medium">
+                  {new URL(project.data.url).host}
+                </a>
+              </div>
+              {
+                project.data.repo && (
+                  <div>
+                    <span class="text-text-muted">Repo</span>
+                    <a
+                      href={project.data.repo}
+                      class="text-accent ml-2 font-medium"
+                    >
+                      GitHub
+                    </a>
+                  </div>
+                )
+              }
+              {
+                project.data.tags.length > 0 && (
+                  <div class="flex flex-wrap gap-2">
+                    <span class="text-text-muted mr-1">Tags</span>
+                    {project.data.tags.map((tag) => (
+                      <span class="bg-accent-soft text-accent rounded px-2 py-0.5 text-xs font-medium">
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
+                )
+              }
+            </div>
+            <Prose class="mt-6">
+              <Content />
+            </Prose>
+          </div>
+          <nav
+            class="p-2"
+            aria-label="Projects"
+            x-show="panelView === 'projects'"
+            style="display: none"
+          >
+            {
+              projects.map((item) => {
+                const isCurrent = item.id === project.id;
+                const classList = [
+                  "flex w-full items-start gap-3 rounded-md px-3 py-2 text-left text-sm transition-colors",
+                  isCurrent
+                    ? "bg-accent-soft text-accent"
+                    : "text-text-muted hover:bg-accent-soft hover:text-text",
+                ];
+                const content = (
+                  <>
+                    <Icon
+                      name={item.data.icon}
+                      class="mt-0.5 size-4 shrink-0"
+                    />
+                    <span>
+                      <span class="block font-medium">{item.data.title}</span>
+                      <span class="mt-0.5 block text-xs">
+                        {item.data.tags[0] ?? "Project"}
+                      </span>
+                    </span>
+                  </>
+                );
+
+                return isCurrent ? (
+                  <button
+                    type="button"
+                    aria-current="page"
+                    class:list={classList}
+                    x-on:click="panelView = 'writeup'"
+                  >
+                    {content}
+                  </button>
+                ) : (
+                  <a href={`/projects/${item.id}`} class:list={classList}>
+                    {content}
+                  </a>
+                );
+              })
+            }
+          </nav>
+        </aside>
+
+        <main class="min-w-0 flex-1">
+          <iframe
+            src={project.data.url}
+            title={`${project.data.title} live project`}
+            class="h-full min-h-[calc(100dvh-3.5rem)] w-full"></iframe>
+        </main>
+      </div>
+    </div>
+  </section>
+</BaseLayout>

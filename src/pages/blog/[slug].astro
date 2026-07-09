@@ -1,0 +1,82 @@
+---
+import { Icon } from "astro-icon/components";
+import { getCollection, render } from "astro:content";
+import Prose from "../../components/Prose.astro";
+import ProseLayout from "../../layouts/ProseLayout.astro";
+
+export async function getStaticPaths() {
+  const projects = await getCollection("projects");
+
+  return projects.map((project) => ({
+    params: { slug: project.id },
+    props: { project },
+  }));
+}
+
+const { project } = Astro.props;
+const { Content } = await render(project);
+---
+
+<ProseLayout
+  title={`${project.data.title} | Blog`}
+  description={project.data.description}
+>
+  <a
+    href="/projects"
+    class="text-text-muted hover:text-text inline-flex items-center gap-2 text-sm font-medium"
+  >
+    <Icon name="lucide:arrow-left" class="size-4" />
+    Projects
+  </a>
+  <p class="text-accent mt-10 text-sm font-semibold tracking-wide uppercase">
+    Project Writeup
+  </p>
+  <h1 class="text-text mt-3 text-4xl leading-tight font-black">
+    {project.data.title}
+  </h1>
+  <p class="text-text-muted mt-5 text-lg leading-8">
+    {project.data.description}
+  </p>
+
+  <div class="border-border mt-6 grid gap-3 border-y py-5 text-sm">
+    {
+      project.data.url && (
+        <div>
+          <span class="text-text-muted">Live project</span>
+          <a
+            href={`/projects/${project.id}`}
+            class="text-accent ml-2 font-medium"
+          >
+            Open demo
+          </a>
+        </div>
+      )
+    }
+    {
+      project.data.repo && (
+        <div>
+          <span class="text-text-muted">Repo</span>
+          <a href={project.data.repo} class="text-accent ml-2 font-medium">
+            GitHub
+          </a>
+        </div>
+      )
+    }
+    {
+      project.data.tags.length > 0 && (
+        <div class="flex flex-wrap gap-2">
+          <span class="text-text-muted mr-1">Tags</span>
+          {project.data.tags.map((tag) => (
+            <span class="bg-accent-soft text-accent rounded px-2 py-0.5 text-xs font-medium">
+              {tag}
+            </span>
+          ))}
+        </div>
+      )
+    }
+  </div>
+
+  <Prose class="mt-8">
+    <Content />
+  </Prose>
+</ProseLayout>
