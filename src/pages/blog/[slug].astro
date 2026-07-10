@@ -21,13 +21,26 @@ const { Content } = await render(project);
   title={`${project.data.title} | Blog`}
   description={project.data.description}
 >
-  <a
-    href="/projects"
-    class="text-text-muted hover:text-text inline-flex items-center gap-2 text-sm font-medium"
-  >
-    <Icon name="lucide:arrow-left" class="size-4" />
-    Projects
-  </a>
+  <div class="flex items-center justify-between gap-3">
+    <a
+      href="/blog"
+      class="text-text-muted hover:text-text inline-flex items-center gap-2 text-sm font-medium"
+    >
+      <Icon name="lucide:arrow-left" class="size-4" />
+      Blog
+    </a>
+    {
+      project.data.url && (
+        <a
+          href={`/projects/${project.id}`}
+          class="text-accent inline-flex items-center gap-1.5 text-sm font-medium"
+        >
+          View demo
+          <Icon name="lucide:arrow-right" class="size-4" />
+        </a>
+      )
+    }
+  </div>
   <p class="text-accent mt-10 text-sm font-semibold tracking-wide uppercase">
     Project Writeup
   </p>
@@ -47,7 +60,7 @@ const { Content } = await render(project);
             href={`/projects/${project.id}`}
             class="text-accent ml-2 font-medium"
           >
-            Open demo
+            {new URL(project.data.url).host}
           </a>
         </div>
       )
@@ -57,7 +70,7 @@ const { Content } = await render(project);
         <div>
           <span class="text-text-muted">Repo</span>
           <a href={project.data.repo} class="text-accent ml-2 font-medium">
-            GitHub
+            {new URL(project.data.repo).pathname.slice(1)}
           </a>
         </div>
       )

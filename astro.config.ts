@@ -6,6 +6,9 @@ import icon from "astro-icon";
 export default defineConfig({
   vite: {
     plugins: [tailwindcss()],
+    server: {
+      allowedHosts: [".trycloudflare.com"],
+    },
   },
   integrations: [alphinejs(), icon()],
 });

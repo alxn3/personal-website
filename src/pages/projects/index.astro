@@ -17,18 +17,22 @@ const projects = (await getCollection("projects")).sort(
     class="py-14 sm:py-20"
     x-data="{
       q: '',
+      root: null,
+      init() {
+        this.root = this.$el;
+      },
       matches(search) {
         const term = this.q.trim().toLowerCase();
         return term === '' || search.includes(term);
       },
       get visible() {
-        return [...this.$el.querySelectorAll('[data-search]')].filter((el) =>
+        return [...this.root.querySelectorAll('[data-search]')].filter((el) =>
           this.matches(el.dataset.search),
         ).length;
       },
     }"
   >
-    <div class="max-w-prose">
+    <div class="max-w-hero">
       <p class="text-accent text-sm font-semibold tracking-wide uppercase">
         Projects
       </p>

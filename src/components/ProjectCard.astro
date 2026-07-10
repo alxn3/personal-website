@@ -16,7 +16,7 @@ const search = `${title} ${tags.join(" ")} ${summary}`.toLowerCase();
 <a
   href={href}
   data-search={search}
-  x-show="$root.matches($el.dataset.search)"
+  x-show="$data.matches($el.dataset.search)"
   class="border-border bg-surface hover:border-accent group block rounded-md border p-5 transition-colors"
 >
   <div

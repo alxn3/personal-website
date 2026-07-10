@@ -1,0 +1,72 @@
+---
+import { Icon } from "astro-icon/components";
+import { getCollection } from "astro:content";
+import BaseLayout from "../../layouts/BaseLayout.astro";
+
+const posts = (await getCollection("projects")).sort(
+  (a, b) => b.data.date.valueOf() - a.data.date.valueOf(),
+);
+
+const dateFormatter = new Intl.DateTimeFormat(undefined, {
+  year: "numeric",
+  month: "long",
+  day: "numeric",
+});
+---
+
+<BaseLayout
+  title="Blog | Personal Website"
+  description="Writeups, notes, and long-form thoughts."
+>
+  <section class="py-14 sm:py-20">
+    <div class="max-w-hero">
+      <p class="text-accent text-sm font-semibold tracking-wide uppercase">
+        Blog
+      </p>
+      <h1 class="text-text mt-4 text-4xl leading-tight font-black sm:text-5xl">
+        Writeups, notes, and long-form thoughts.
+      </h1>
+    </div>
+
+    <ul class="divide-border mt-10 divide-y border-t border-border">
+      {
+        posts.map((post) => (
+          <li>
+            <a
+              href={`/blog/${post.id}`}
+              class="group flex flex-col gap-2 py-6 sm:flex-row sm:items-baseline sm:gap-6"
+            >
+              <time
+                datetime={post.data.date.toISOString()}
+                class="text-text-muted shrink-0 text-sm sm:w-36"
+              >
+                {dateFormatter.format(post.data.date)}
+              </time>
+              <div class="min-w-0 flex-1">
+                <h2 class="text-text group-hover:text-accent text-xl font-bold transition-colors">
+                  {post.data.title}
+                </h2>
+                <p class="text-text-muted mt-2 text-sm leading-6">
+                  {post.data.summary}
+                </p>
+                {post.data.tags.length > 0 && (
+                  <div class="mt-3 flex flex-wrap gap-2">
+                    {post.data.tags.map((tag) => (
+                      <span class="bg-accent-soft text-accent rounded px-2 py-0.5 text-xs font-medium">
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <Icon
+                name="lucide:arrow-right"
+                class="text-text-muted group-hover:text-accent hidden size-5 shrink-0 self-center transition-colors sm:block"
+              />
+            </a>
+          </li>
+        ))
+      }
+    </ul>
+  </section>
+</BaseLayout>

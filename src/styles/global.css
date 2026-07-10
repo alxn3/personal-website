@@ -12,6 +12,8 @@
   --font-sans: var(--font-body);
   --font-serif: var(--font-heading);
   --container-layout: 112rem;
+  --container-hero: 65ch;
+  --max-width-prose: 91ch;
   --color-bg: var(--bg);
   --color-surface: var(--surface);
   --color-text: var(--text);

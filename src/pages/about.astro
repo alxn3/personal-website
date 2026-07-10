@@ -1,0 +1,40 @@
+---
+import Prose from "../components/Prose.astro";
+import BaseLayout from "../layouts/BaseLayout.astro";
+---
+
+<BaseLayout
+  title="About | Personal Website"
+  description="A bit about who's behind this site."
+>
+  <section class="py-14 sm:py-20">
+    <div class="max-w-hero">
+      <p class="text-accent text-sm font-semibold tracking-wide uppercase">
+        About
+      </p>
+      <h1 class="text-text mt-4 text-4xl leading-tight font-black sm:text-5xl">
+        Hi, I'm building this site one project at a time.
+      </h1>
+    </div>
+
+    <Prose class="mt-8 max-w-prose">
+      <p>
+        This is placeholder bio copy — swap it out for the real thing
+        whenever you're ready. A good starting point: who you are, what kind
+        of work you do, and what you're currently focused on.
+      </p>
+      <p>
+        This site itself is one of the projects: an Astro and Tailwind CSS
+        build with Alpine.js for the interactive bits, content collections
+        for project writeups, and a theme system that respects your OS
+        preference. You can read more about how it's put together on the
+        <a href="/blog/personal-website">blog</a>.
+      </p>
+      <p>
+        Feel free to look around the <a href="/projects">projects</a> page for
+        a closer look at what's been built, or get in touch — add your
+        contact details and links here.
+      </p>
+    </Prose>
+  </section>
+</BaseLayout>
