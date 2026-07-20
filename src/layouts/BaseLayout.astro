@@ -41,8 +41,21 @@ const {
       // so a reload stays consistent with what's shown.
       media.addEventListener("change", (e) => {
         localStorage.removeItem("theme");
+        // colour crossfade for the flip (same mechanism as ThemeToggle)
+        document.documentElement.classList.add("theme-anim");
         apply(e.matches);
+        clearTimeout(window.__themeAnim);
+        window.__themeAnim = setTimeout(
+          () => document.documentElement.classList.remove("theme-anim"),
+          400,
+        );
       });
+
+      // When a page is embedded in an iframe (e.g. an internal demo shown on a
+      // project page), hide its own nav/footer so there's no double chrome.
+      if (window.self !== window.top) {
+        document.documentElement.dataset.embedded = "true";
+      }
     </script>
 
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -50,7 +63,7 @@ const {
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Bitter:wght@400;500;600;700;800;900&family=Inter:opsz,wght@14..32,400..900&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Bitter:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,300;1,400;1,500&family=Inter:opsz,wght@14..32,400..900&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
     <title>{title}</title>
@@ -61,9 +74,11 @@ const {
     <main
       class:list={[
         "w-full flex-1",
+        // nav is fixed; non-fullwidth pages pad down to clear it. Full-bleed
+        // pages (hero, /lens) sit under the floating nav on purpose.
         fullWidth || hideChrome
           ? ""
-          : "max-w-layout mx-auto px-4 sm:px-6 lg:px-8",
+          : "max-w-layout mx-auto px-4 pt-16 sm:px-6 lg:px-8",
       ]}
     >
       <slot />
@@ -73,7 +88,7 @@ const {
       !hideChrome && (
         <footer class="border-border border-t">
           <div class="max-w-layout text-text-muted mx-auto flex h-16 items-center px-4 text-sm sm:px-6 lg:px-8">
-            <p>&copy; {new Date().getFullYear()} Personal Website</p>
+            <p>&copy; {new Date().getFullYear()} Alex Lin</p>
           </div>
         </footer>
       )

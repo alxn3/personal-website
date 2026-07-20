@@ -21,6 +21,7 @@
   --color-border: var(--border);
   --color-accent: var(--accent);
   --color-accent-soft: var(--accent-soft);
+  --color-highlight: var(--highlight);
 }
 
 @layer base {
@@ -28,25 +29,53 @@
     display: none !important;
   }
 
+  /* Embedded in an iframe (see BaseLayout): drop the page's own chrome so a
+     demo shown on a project page doesn't render a second nav/footer. */
+  [data-embedded] :is(header, footer) {
+    display: none;
+  }
+
+  /* Theme-switch crossfade: `.theme-anim` is added to <html> for the ~400ms
+     around a theme flip (ThemeToggle click / OS change) and then removed, so
+     colours fade between modes without permanently slowing every hover or the
+     scroll-driven stage tint. transition-property is EXPLICIT — animating
+     `all` (or opacity/transform) would fight the lens hero's caption fades. */
+  html.theme-anim,
+  html.theme-anim *,
+  html.theme-anim *::before,
+  html.theme-anim *::after {
+    transition:
+      background-color 0.35s ease,
+      color 0.35s ease,
+      border-color 0.35s ease,
+      fill 0.35s ease,
+      stroke 0.35s ease !important;
+  }
+
+  /* Warm "lens/blueprint" palette (from ./example): cream + brown ink, olive-sage
+     primary accent, terracotta secondary. Fonts (Bitter serif + JetBrains Mono)
+     already matched; only the hues changed. */
   html {
-    --bg: oklch(0.98 0.005 240);
-    --surface: oklch(0.995 0.003 240);
-    --text: oklch(0.22 0.01 240);
-    --text-muted: oklch(0.45 0.01 240);
-    --border: oklch(0.88 0.01 240);
-    --accent: oklch(0.55 0.09 175);
-    --accent-soft: oklch(0.93 0.03 175);
+    --bg: #f6f2e9; /* warm cream */
+    --surface: #fdfbf4; /* near-white warm (cards) */
+    --text: #2c2a24; /* dark brown ink */
+    --text-muted: #6f685a; /* muted brown */
+    --border: #e3dccb; /* soft warm border */
+    --accent: #5f6f52; /* olive-sage */
+    --accent-soft: #e8e7d4; /* light olive tint */
+    --highlight: #d18a5d; /* warm orange (from ./example) — active / emphasis */
     font-family: var(--font-body);
   }
 
   html.dark {
-    --bg: oklch(0.19 0.01 240);
-    --surface: oklch(0.24 0.012 240);
-    --text: oklch(0.95 0.005 240);
-    --text-muted: oklch(0.68 0.01 240);
-    --border: oklch(0.34 0.015 240);
-    --accent: oklch(0.72 0.11 175);
-    --accent-soft: oklch(0.3 0.05 175);
+    --bg: #201c15; /* dark warm brown */
+    --surface: #2c2a24; /* raised brown */
+    --text: #f1ecde; /* warm cream text */
+    --text-muted: #a79f8b; /* warm gray */
+    --border: #3b3529; /* dim warm border */
+    --accent: #a3a677; /* lighter olive for contrast on dark */
+    --accent-soft: #33342440; /* translucent olive */
+    --highlight: #d99a63; /* warm orange, brighter for dark */
     color-scheme: dark;
   }
 
