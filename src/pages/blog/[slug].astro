@@ -1,85 +1,61 @@
 ---
 import { Icon } from "astro-icon/components";
-import { getCollection, render } from "astro:content";
+import { getCollection, getEntry, render } from "astro:content";
 import Prose from "../../components/Prose.astro";
 import ProseLayout from "../../layouts/ProseLayout.astro";
 
 export async function getStaticPaths() {
-  const projects = await getCollection("projects");
+  const posts = await getCollection("blog");
 
-  return projects.map((project) => ({
-    params: { slug: project.id },
-    props: { project },
+  return posts.map((post) => ({
+    params: { slug: post.id },
+    props: { post },
   }));
 }
 
-const { project } = Astro.props;
-const { Content } = await render(project);
+const { post } = Astro.props;
+const { Content } = await render(post);
+
+// Resolve the post's referenced project/demo entries (reference() validates
+// they exist at build, but getEntry is typed as possibly undefined).
+const linkedProjects = (
+  await Promise.all(post.data.projects.map((ref) => getEntry(ref)))
+).filter((entry): entry is NonNullable<typeof entry> => entry != null);
+
+const dateFormatter = new Intl.DateTimeFormat(undefined, {
+  year: "numeric",
+  month: "long",
+  day: "numeric",
+});
 ---
 
 <ProseLayout
-  title={`${project.data.title} | Blog`}
-  description={project.data.description}
+  title={`${post.data.title} | Blog`}
+  description={post.data.description}
 >
-  <div class="flex items-center justify-between gap-3">
-    <a
-      href="/blog"
-      class="text-text-muted hover:text-text inline-flex items-center gap-2 text-sm font-medium"
-    >
-      <Icon name="lucide:arrow-left" class="size-4" />
-      Blog
-    </a>
-    {
-      project.data.url && (
-        <a
-          href={`/projects/${project.id}`}
-          class="text-accent inline-flex items-center gap-1.5 text-sm font-medium"
-        >
-          View demo
-          <Icon name="lucide:arrow-right" class="size-4" />
-        </a>
-      )
-    }
-  </div>
+  <a
+    href="/blog"
+    class="text-text-muted hover:text-text inline-flex items-center gap-2 text-sm font-medium"
+  >
+    <Icon name="lucide:arrow-left" class="size-4" />
+    Blog
+  </a>
   <p class="text-accent mt-10 text-sm font-semibold tracking-wide uppercase">
-    Project Writeup
+    Blog
   </p>
   <h1 class="text-text mt-3 text-4xl leading-tight font-black">
-    {project.data.title}
+    {post.data.title}
   </h1>
-  <p class="text-text-muted mt-5 text-lg leading-8">
-    {project.data.description}
-  </p>
-
-  <div class="border-border mt-6 grid gap-3 border-y py-5 text-sm">
+  <div
+    class="text-text-muted mt-5 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm"
+  >
+    <time datetime={post.data.date.toISOString()}
+      >{dateFormatter.format(post.data.date)}</time
+    >
     {
-      project.data.url && (
-        <div>
-          <span class="text-text-muted">Live project</span>
-          <a
-            href={`/projects/${project.id}`}
-            class="text-accent ml-2 font-medium"
-          >
-            {new URL(project.data.url).host}
-          </a>
-        </div>
-      )
-    }
-    {
-      project.data.repo && (
-        <div>
-          <span class="text-text-muted">Repo</span>
-          <a href={project.data.repo} class="text-accent ml-2 font-medium">
-            {new URL(project.data.repo).pathname.slice(1)}
-          </a>
-        </div>
-      )
-    }
-    {
-      project.data.tags.length > 0 && (
+      post.data.tags.length > 0 && (
         <div class="flex flex-wrap gap-2">
-          <span class="text-text-muted mr-1">Tags</span>
-          {project.data.tags.map((tag) => (
+          {post.data.tags.map((tag) => (
             <span class="bg-accent-soft text-accent rounded px-2 py-0.5 text-xs font-medium">
               {tag}
             </span>
@@ -92,4 +68,34 @@ const { Content } = await render(project);
   <Prose class="mt-8">
     <Content />
   </Prose>
+
+  {
+    linkedProjects.length > 0 && (
+      <div class="border-border mt-12 border-t pt-8">
+        <h2 class="text-text text-sm font-semibold tracking-wide uppercase">
+          Interactive demos
+        </h2>
+        <div class="mt-4 grid gap-4 sm:grid-cols-2">
+          {linkedProjects.map((project) => (
+            <a
+              href={`/projects/${project.id}`}
+              class="border-border bg-surface hover:border-accent group flex items-start gap-4 rounded-md border p-4 transition-colors"
+            >
+              <span class="bg-accent-soft text-accent flex size-10 shrink-0 items-center justify-center rounded-md">
+                <Icon name={project.data.icon} class="size-5" />
+              </span>
+              <span class="min-w-0">
+                <span class="text-text group-hover:text-accent block font-semibold transition-colors">
+                  {project.data.title}
+                </span>
+                <span class="text-text-muted mt-1 block text-sm leading-6">
+                  {project.data.summary}
+                </span>
+              </span>
+            </a>
+          ))}
+        </div>
+      </div>
+    )
+  }
 </ProseLayout>

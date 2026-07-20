@@ -3,7 +3,7 @@ import { Icon } from "astro-icon/components";
 import { getCollection } from "astro:content";
 import BaseLayout from "../../layouts/BaseLayout.astro";
 
-const posts = (await getCollection("projects")).sort(
+const posts = (await getCollection("blog")).sort(
   (a, b) => b.data.date.valueOf() - a.data.date.valueOf(),
 );
 
@@ -28,7 +28,7 @@ const dateFormatter = new Intl.DateTimeFormat(undefined, {
       </h1>
     </div>
 
-    <ul class="divide-border mt-10 divide-y border-t border-border">
+    <ul class="divide-border border-border mt-10 divide-y border-t">
       {
         posts.map((post) => (
           <li>
@@ -47,7 +47,7 @@ const dateFormatter = new Intl.DateTimeFormat(undefined, {
                   {post.data.title}
                 </h2>
                 <p class="text-text-muted mt-2 text-sm leading-6">
-                  {post.data.summary}
+                  {post.data.description}
                 </p>
                 {post.data.tags.length > 0 && (
                   <div class="mt-3 flex flex-wrap gap-2">
