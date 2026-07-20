@@ -1,0 +1,6 @@
+dist
+.astro
+package-lock.json
+public/models
+.claude
+.mcp.json
