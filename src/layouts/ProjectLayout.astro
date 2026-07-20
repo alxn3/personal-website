@@ -1,0 +1,60 @@
+---
+/**
+ * Project demo pages: no site chrome — a slim app bar (brand, project title,
+ * mobile panel toggles, theme toggle) over a full-viewport working area. The
+ * `projectPanels` Alpine scope (src/lib/alpine.ts) lives on the section so the
+ * bar's toggles and the slotted sidebars share it.
+ */
+import { Icon } from "astro-icon/components";
+import ThemeToggle from "../components/ThemeToggle.astro";
+import HtmlShell from "./HtmlShell.astro";
+
+interface Props {
+  title: string;
+  description?: string;
+}
+
+const { title, description } = Astro.props;
+---
+
+<HtmlShell title={`${title} | Project`} description={description}>
+  <section
+    x-data="projectPanels"
+    x-on:keydown.escape.window="if (!$isDesktop()) { projects = false; description = false }"
+    class="bg-bg text-text flex min-h-dvh flex-col"
+  >
+    <header
+      class="border-border bg-surface flex h-14 items-center gap-3 border-b px-3"
+    >
+      <a href="/" class="font-serif text-lg font-bold">Alex Lin</a>
+      <div class="text-text-muted ml-auto hidden text-sm sm:block">
+        {title}
+      </div>
+      <div class="ml-auto flex items-center gap-1 sm:ml-0">
+        <button
+          type="button"
+          class="text-text-muted hover:text-accent inline-flex size-9 items-center justify-center rounded-md transition-colors lg:hidden"
+          x-on:click="projects = !projects; if (projects) description = false"
+          x-bind:aria-expanded="projects"
+          aria-label="Toggle project list"
+        >
+          <Icon name="lucide:list" class="size-5" aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          class="text-text-muted hover:text-accent inline-flex size-9 items-center justify-center rounded-md transition-colors lg:hidden"
+          x-on:click="description = !description; if (description) projects = false"
+          x-bind:aria-expanded="description"
+          aria-label="Toggle description"
+        >
+          <Icon name="lucide:file-text" class="size-5" aria-hidden="true" />
+        </button>
+        <ThemeToggle />
+      </div>
+    </header>
+
+    <div class="relative flex min-h-0 flex-1">
+      <slot />
+    </div>
+  </section>
+</HtmlShell>

@@ -1,97 +1,25 @@
 ---
+/**
+ * The standard page: navbar, a max-width container padded clear of the fixed
+ * nav, footer.
+ */
+import Footer from "../components/Footer.astro";
 import Navbar from "../components/Navbar.astro";
-import "../styles/global.css";
+import HtmlShell from "./HtmlShell.astro";
 
 interface Props {
   title?: string;
   description?: string;
   lang?: string;
-  fullWidth?: boolean;
-  hideChrome?: boolean;
 }
 
-const {
-  title = "Personal Website",
-  description = "Personal website",
-  lang = "en",
-  fullWidth = false,
-  hideChrome = false,
-} = Astro.props;
+const { title, description, lang } = Astro.props;
 ---
 
-<!doctype html>
-<html lang={lang}>
-  <head>
-    <meta charset="UTF-8" />
-
-    <!-- Blocking, un-bundled script: set the theme class before first paint to
-         avoid a flash of the wrong theme (FOUC). The .dark class also drives
-         which toggle icon is visible via CSS, so the right icon paints
-         immediately — no dependency on Alpine booting. -->
-    <script is:inline>
-      const media = window.matchMedia("(prefers-color-scheme: dark)");
-      const apply = (dark) =>
-        document.documentElement.classList.toggle("dark", dark);
-
-      // Initial theme: an explicit user choice wins, else follow the OS.
-      const stored = localStorage.getItem("theme");
-      apply(stored ? stored === "dark" : media.matches);
-
-      // An OS theme change always wins: apply it and drop any manual override
-      // so a reload stays consistent with what's shown.
-      media.addEventListener("change", (e) => {
-        localStorage.removeItem("theme");
-        // colour crossfade for the flip (same mechanism as ThemeToggle)
-        document.documentElement.classList.add("theme-anim");
-        apply(e.matches);
-        clearTimeout(window.__themeAnim);
-        window.__themeAnim = setTimeout(
-          () => document.documentElement.classList.remove("theme-anim"),
-          400,
-        );
-      });
-
-      // When a page is embedded in an iframe (e.g. an internal demo shown on a
-      // project page), hide its own nav/footer so there's no double chrome.
-      if (window.self !== window.top) {
-        document.documentElement.dataset.embedded = "true";
-      }
-    </script>
-
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content={description} />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Bitter:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,300;1,400;1,500&family=Inter:opsz,wght@14..32,400..900&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
-      rel="stylesheet"
-    />
-    <title>{title}</title>
-  </head>
-  <body class="flex min-h-dvh flex-col">
-    {!hideChrome && <Navbar />}
-
-    <main
-      class:list={[
-        "w-full flex-1",
-        // nav is fixed; non-fullwidth pages pad down to clear it. Full-bleed
-        // pages (hero, /lens) sit under the floating nav on purpose.
-        fullWidth || hideChrome
-          ? ""
-          : "max-w-layout mx-auto px-4 pt-16 sm:px-6 lg:px-8",
-      ]}
-    >
-      <slot />
-    </main>
-
-    {
-      !hideChrome && (
-        <footer class="border-border border-t">
-          <div class="max-w-layout text-text-muted mx-auto flex h-16 items-center px-4 text-sm sm:px-6 lg:px-8">
-            <p>&copy; {new Date().getFullYear()} Alex Lin</p>
-          </div>
-        </footer>
-      )
-    }
-  </body>
-</html>
+<HtmlShell title={title} description={description} lang={lang}>
+  <Navbar />
+  <main class="max-w-layout mx-auto w-full flex-1 px-4 pt-16 sm:px-6 lg:px-8">
+    <slot />
+  </main>
+  <Footer />
+</HtmlShell>

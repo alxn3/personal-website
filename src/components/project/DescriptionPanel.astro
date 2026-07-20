@@ -1,0 +1,140 @@
+---
+/**
+ * Description panel (inner sidebar of the project page). Mobile: a fixed
+ * drawer like the rail. Desktop: width switches 26rem ↔ a 2rem gutter strip
+ * that IS the reopen button and takes real layout space (the demo iframe lays
+ * out beside it). The inner column is FIXED at 26rem so the content clips
+ * instead of rewrapping.
+ *
+ * The rendered markdown body is passed via the default slot; expects the
+ * page's `projectPanels` Alpine scope (`description` open state).
+ */
+import { Icon } from "astro-icon/components";
+import type { CollectionEntry } from "astro:content";
+
+interface Props {
+  project: CollectionEntry<"projects">;
+  posts: CollectionEntry<"blog">[];
+}
+const { project, posts } = Astro.props;
+
+// `url` is guaranteed by the page's getStaticPaths filter. It may be an
+// internal path (e.g. "/lens") or an external URL — only external URLs have
+// a host.
+const url = project.data.url!;
+const isInternalDemo = url.startsWith("/");
+const siteLabel = isInternalDemo ? url : new URL(url).host;
+---
+
+<aside
+  data-panel="description"
+  class="border-border bg-surface flex flex-col overflow-hidden border-r max-lg:fixed max-lg:top-14 max-lg:bottom-0 max-lg:left-0 max-lg:z-40 max-lg:w-104 max-lg:max-w-[85vw] max-lg:-translate-x-full max-lg:shadow-lg data-[open=true]:max-lg:translate-x-0 lg:w-104 lg:data-[open=false]:w-8"
+  x-bind:data-open="description ? 'true' : 'false'"
+  x-bind:inert="!description && !$isDesktop()"
+  aria-label="Description"
+>
+  <!-- collapsed-state gutter: the whole strip reopens the panel -->
+  <button
+    type="button"
+    class="text-text-muted hover:text-text hidden w-8 flex-1 flex-col items-center lg:in-data-[open=false]:flex"
+    x-on:click="description = true"
+    aria-label="Open description"
+  >
+    <!-- h-10 top row mirrors the panel headers, so this chevron sits at
+         the same height as the rail's and the expanded panel's -->
+    <span class="flex h-10 w-full shrink-0 items-center justify-center">
+      <Icon name="lucide:chevron-right" class="size-4" aria-hidden="true" />
+    </span>
+    <span
+      class="mt-1 text-[10px] font-semibold tracking-widest uppercase [writing-mode:vertical-rl]"
+    >
+      Description
+    </span>
+  </button>
+  <div
+    class="flex h-full w-full flex-col lg:w-104 lg:in-data-[open=false]:hidden"
+  >
+    <!-- the whole header row collapses the panel (label included). The
+         chevron sits at the LEFT edge — the same spot the gutter's open
+         chevron occupies when collapsed, beside the rail's chevron, so
+         the controls line up -->
+    <button
+      type="button"
+      class="border-border text-text-muted hover:text-text flex h-10 w-full shrink-0 items-center gap-2 border-b pr-4 text-left"
+      x-on:click="description = false"
+      aria-label="Collapse description"
+    >
+      <span class="inline-flex size-8 shrink-0 items-center justify-center">
+        <Icon name="lucide:chevron-left" class="size-4" aria-hidden="true" />
+      </span>
+      <span class="text-xs font-semibold tracking-widest uppercase">
+        Description
+      </span>
+    </button>
+    <div class="min-h-0 flex-1 overflow-y-auto px-4 py-6">
+      <p class="text-accent text-sm font-semibold tracking-wide uppercase">
+        Project
+      </p>
+      <h1 class="text-text mt-3 text-3xl leading-tight font-black">
+        {project.data.title}
+      </h1>
+      <p class="text-text-muted mt-4 leading-7">
+        {project.data.summary}
+      </p>
+      <div class="border-border mt-6 grid gap-3 border-y py-5 text-sm">
+        <div>
+          <span class="text-text-muted">{isInternalDemo ? "Demo" : "Site"}</span
+          >
+          <a href={url} class="text-accent ml-2 font-medium">
+            {siteLabel}
+          </a>
+        </div>
+        {
+          project.data.repo && (
+            <div>
+              <span class="text-text-muted">Repo</span>
+              <a href={project.data.repo} class="text-accent ml-2 font-medium">
+                {new URL(project.data.repo).pathname.slice(1)}
+              </a>
+            </div>
+          )
+        }
+        {
+          project.data.tags.length > 0 && (
+            <div class="flex flex-wrap gap-2">
+              <span class="text-text-muted mr-1">Tags</span>
+              {project.data.tags.map((tag) => (
+                <span class="bg-accent-soft text-accent rounded px-2 py-0.5 text-xs font-medium">
+                  {tag}
+                </span>
+              ))}
+            </div>
+          )
+        }
+      </div>
+      <slot />
+      {
+        posts.length > 0 && (
+          <div class="border-border mt-6 border-t pt-5">
+            <p class="text-text-muted text-xs font-semibold tracking-wide uppercase">
+              Featured in
+            </p>
+            <ul class="mt-3 space-y-2">
+              {posts.map((post) => (
+                <li>
+                  <a
+                    href={`/blog/${post.id}`}
+                    class="text-accent hover:text-text inline-flex items-center gap-1.5 text-sm font-medium"
+                  >
+                    <Icon name="lucide:file-text" class="size-4" />
+                    {post.data.title}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )
+      }
+    </div>
+  </div>
+</aside>

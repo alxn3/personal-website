@@ -29,17 +29,15 @@
     display: none !important;
   }
 
-  /* Embedded in an iframe (see BaseLayout): drop the page's own chrome so a
-     demo shown on a project page doesn't render a second nav/footer. */
+  /* data-embedded is set by HtmlShell's pre-paint script inside iframes */
   [data-embedded] :is(header, footer) {
     display: none;
   }
 
-  /* Theme-switch crossfade: `.theme-anim` is added to <html> for the ~400ms
-     around a theme flip (ThemeToggle click / OS change) and then removed, so
-     colours fade between modes without permanently slowing every hover or the
-     scroll-driven stage tint. transition-property is EXPLICIT — animating
-     `all` (or opacity/transform) would fight the lens hero's caption fades. */
+  /* `.theme-anim` is on <html> only for the ~400ms around a theme flip —
+     permanent transitions would slow every hover and the scroll-driven stage
+     tint. transition-property is EXPLICIT — animating `all` (or
+     opacity/transform) would fight the lens hero's caption fades. */
   html.theme-anim,
   html.theme-anim *,
   html.theme-anim *::before,
@@ -52,9 +50,6 @@
       stroke 0.35s ease !important;
   }
 
-  /* Warm "lens/blueprint" palette (from ./example): cream + brown ink, olive-sage
-     primary accent, terracotta secondary. Fonts (Bitter serif + JetBrains Mono)
-     already matched; only the hues changed. */
   html {
     --bg: #f6f2e9; /* warm cream */
     --surface: #fdfbf4; /* near-white warm (cards) */
@@ -63,7 +58,7 @@
     --border: #e3dccb; /* soft warm border */
     --accent: #5f6f52; /* olive-sage */
     --accent-soft: #e8e7d4; /* light olive tint */
-    --highlight: #d18a5d; /* warm orange (from ./example) — active / emphasis */
+    --highlight: #d18a5d; /* warm orange — active / emphasis */
     font-family: var(--font-body);
   }
 

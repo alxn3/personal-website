@@ -2,7 +2,7 @@
 title: Personal Website
 description: A deeper look at building this content-driven Astro site for projects, writing, and experiments.
 summary: A live demo of this Astro and Tailwind site, including its project shell, Markdown writeups, and theme system.
-url: https://alxn.dev
+url: /
 repo: https://github.com/alxn3/personal-website
 tags:
   - Astro

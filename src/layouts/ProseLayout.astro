@@ -1,5 +1,7 @@
 ---
-import BaseLayout from "./BaseLayout.astro";
+import Footer from "../components/Footer.astro";
+import Navbar from "../components/Navbar.astro";
+import HtmlShell from "./HtmlShell.astro";
 
 interface Props {
   title?: string;
@@ -9,8 +11,12 @@ interface Props {
 const { title, description } = Astro.props;
 ---
 
-<BaseLayout title={title} description={description} fullWidth>
-  <div class="mx-auto max-w-prose px-4 py-14 sm:px-6 sm:py-20 lg:px-8">
-    <slot />
-  </div>
-</BaseLayout>
+<HtmlShell title={title} description={description}>
+  <Navbar />
+  <main class="w-full flex-1">
+    <div class="mx-auto max-w-prose px-4 py-14 sm:px-6 sm:py-20 lg:px-8">
+      <slot />
+    </div>
+  </main>
+  <Footer />
+</HtmlShell>

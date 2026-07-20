@@ -1,0 +1,79 @@
+---
+import { getCollection, render } from "astro:content";
+import DescriptionPanel from "../../components/project/DescriptionPanel.astro";
+import ProjectRail from "../../components/project/ProjectRail.astro";
+import Prose from "../../components/Prose.astro";
+import ProjectLayout from "../../layouts/ProjectLayout.astro";
+import { DESKTOP_MEDIA } from "../../lib/constants";
+import { buildRailGroups } from "../../lib/project-groups";
+
+export async function getStaticPaths() {
+  const projects = await getCollection("projects", ({ data }) =>
+    Boolean(data.url),
+  );
+  const posts = await getCollection("blog");
+
+  return projects.map((project) => ({
+    params: { slug: project.id },
+    props: {
+      project,
+      projects,
+      posts: posts.filter((post) =>
+        post.data.projects.some((ref) => ref.id === project.id),
+      ),
+    },
+  }));
+}
+
+const { project, projects, posts } = Astro.props;
+const { Content } = await render(project);
+const railGroups = buildRailGroups(projects);
+
+// internal demos get ?embed so their page hides its own chrome (HtmlShell)
+const url = project.data.url!;
+const demoSrc = url.startsWith("/") ? `${url}?embed` : url;
+---
+
+<ProjectLayout title={project.data.title} description={project.data.summary}>
+  <!-- Mobile scrim: sits under the drawers, above the demo. It starts at
+       the header's bottom edge so the top-bar toggles stay clickable. -->
+  <div
+    class="fixed inset-x-0 top-14 bottom-0 z-30 bg-black/50 lg:hidden"
+    x-show="projects || description"
+    x-cloak
+    x-on:click="projects = false; description = false"
+    aria-hidden="true"
+  >
+  </div>
+
+  <ProjectRail groups={railGroups} currentId={project.id} />
+
+  <DescriptionPanel project={project} posts={posts}>
+    <Prose class="mt-6">
+      <Content />
+    </Prose>
+  </DescriptionPanel>
+
+  <main class="min-w-0 flex-1">
+    <iframe
+      src={demoSrc}
+      title={`${project.data.title} live project`}
+      class="h-full min-h-[calc(100dvh-3.5rem)] w-full"></iframe>
+  </main>
+</ProjectLayout>
+
+<!-- pre-paint panel-state applier — MUST stay inline (parse-time) and in sync
+     with `projectPanels` in src/lib/alpine.ts -->
+<script is:inline define:vars={{ DESKTOP_MEDIA }}>
+  (() => {
+    let s = null;
+    try {
+      s = JSON.parse(localStorage.getItem("project-panels"));
+    } catch {}
+    const d = matchMedia(DESKTOP_MEDIA).matches;
+    document.querySelectorAll("[data-panel]").forEach((el) => {
+      const k = el.getAttribute("data-panel");
+      el.setAttribute("data-open", String(d ? (s?.[k] ?? true) : false));
+    });
+  })();
+</script>

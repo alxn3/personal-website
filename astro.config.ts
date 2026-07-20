@@ -10,5 +10,5 @@ export default defineConfig({
       allowedHosts: [".trycloudflare.com"],
     },
   },
-  integrations: [alphinejs(), icon()],
+  integrations: [alphinejs({ entrypoint: "/src/lib/alpine" }), icon()],
 });

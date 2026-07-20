@@ -4,14 +4,14 @@ import { Icon } from "astro-icon/components";
 
 <button
   type="button"
-  onclick="toggleTheme()"
   aria-label="Toggle color theme"
   title="Toggle color theme"
-  class="text-text-muted hover:text-highlight focus-visible:ring-accent inline-flex h-9 w-9 items-center justify-center rounded-md transition-colors focus-visible:ring-2 focus-visible:outline-none"
+  class="text-text-muted hover:text-accent focus-visible:ring-accent inline-flex h-9 w-9 items-center justify-center rounded-md transition-colors focus-visible:ring-2 focus-visible:outline-none"
+  x-data
+  x-on:click="$store.theme.toggle()"
 >
-  <!-- Sun: shown in light mode. Moon: shown in dark mode.
-       Visibility is driven by the .dark class via CSS, so the
-       right icon paints immediately with no flash. -->
+  <!-- icon visibility is driven by the .dark class via CSS, so the
+       right icon paints immediately with no flash -->
   <Icon name="lucide:sun" class="size-4 dark:hidden" aria-hidden="true" />
   <Icon
     name="lucide:moon"
@@ -19,20 +19,3 @@ import { Icon } from "astro-icon/components";
     aria-hidden="true"
   />
 </button>
-
-<script is:inline>
-  // The `theme-anim` class enables a ~350ms colour crossfade (global.css); the
-  // timer handle lives on window because BaseLayout's OS-theme listener shares
-  // the same debounce.
-  function toggleTheme() {
-    const root = document.documentElement;
-    root.classList.add("theme-anim");
-    const dark = root.classList.toggle("dark");
-    localStorage.setItem("theme", dark ? "dark" : "light");
-    clearTimeout(window.__themeAnim);
-    window.__themeAnim = setTimeout(
-      () => root.classList.remove("theme-anim"),
-      400,
-    );
-  }
-</script>

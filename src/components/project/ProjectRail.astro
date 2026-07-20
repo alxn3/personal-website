@@ -1,0 +1,117 @@
+---
+/**
+ * Project rail (outer sidebar of the project page). Mobile: a fixed drawer
+ * from the left. Desktop: a flex child switching width between 15rem (list)
+ * and 3.25rem (icon strip); the inner <nav> keeps a FIXED 15rem width so the
+ * strip is a clean clip of the list (overflow-hidden), not a reflow.
+ *
+ * Expects the page's `projectPanels` Alpine scope (`projects` open state).
+ */
+import { Icon } from "astro-icon/components";
+import type { RailGroup } from "../../lib/project-groups";
+
+interface Props {
+  groups: RailGroup[];
+  currentId: string;
+}
+const { groups, currentId } = Astro.props;
+---
+
+<aside
+  data-panel="projects"
+  class="border-border bg-surface flex flex-col overflow-hidden border-r max-lg:fixed max-lg:top-14 max-lg:bottom-0 max-lg:left-0 max-lg:z-40 max-lg:w-60 max-lg:max-w-[85vw] max-lg:-translate-x-full max-lg:shadow-lg data-[open=true]:max-lg:translate-x-0 lg:w-60 lg:data-[open=false]:w-13"
+  x-bind:data-open="projects ? 'true' : 'false'"
+  x-bind:inert="!projects && !$isDesktop()"
+  aria-label="Projects"
+>
+  <!-- the whole header row is the collapse control (label included),
+       not just the chevron; on mobile tapping it closes the drawer -->
+  <button
+    type="button"
+    class="border-border text-text-muted hover:text-text flex h-10 w-full shrink-0 items-center justify-between border-b px-2.5 lg:in-data-[open=false]:justify-center"
+    x-on:click="projects = !projects"
+    x-bind:aria-expanded="projects"
+    aria-label="Toggle project list"
+  >
+    <span
+      class="px-1 text-xs font-semibold tracking-widest whitespace-nowrap uppercase lg:in-data-[open=false]:hidden"
+    >
+      Projects
+    </span>
+    <span
+      class="inline-flex size-8 shrink-0 items-center justify-center max-lg:hidden"
+    >
+      <Icon
+        name="lucide:chevrons-left"
+        class="size-4"
+        x-show="projects"
+        aria-hidden="true"
+      />
+      <Icon
+        name="lucide:chevrons-right"
+        class="size-4"
+        x-show="!projects"
+        x-cloak
+        aria-hidden="true"
+      />
+    </span>
+  </button>
+  <nav
+    class="min-h-0 w-full flex-1 overflow-x-hidden overflow-y-auto p-2 lg:w-60"
+    aria-label="Projects"
+  >
+    {
+      groups.map((group) => (
+        <div>
+          {group.label && (
+            <>
+              <p class="text-text-muted px-2.5 pt-3 pb-0.5 text-[10px] font-semibold tracking-widest whitespace-nowrap uppercase lg:in-data-[open=false]:hidden">
+                {group.label}
+              </p>
+              {/* collapsed strip: a short divider stands in for the heading
+                  (centred in the visible 3.25rem band — the inner nav is a
+                  fixed 15rem, so no mx-auto) */}
+              <div
+                class="bg-border my-2 ml-2 hidden h-px w-5 lg:in-data-[open=false]:block"
+                aria-hidden="true"
+              />
+            </>
+          )}
+          <div class="space-y-0.5">
+            {group.items.map((item) => {
+              const isCurrent = item.id === currentId;
+
+              return (
+                <a
+                  href={`/projects/${item.id}`}
+                  title={item.data.title}
+                  aria-current={isCurrent ? "page" : undefined}
+                  class:list={[
+                    "flex w-full items-center gap-2.5 overflow-hidden rounded-md px-2.5 py-1.5 text-sm transition-colors lg:in-data-[open=false]:w-9",
+                    isCurrent
+                      ? "bg-accent-soft text-accent"
+                      : "text-text-muted hover:bg-accent-soft hover:text-text",
+                  ]}
+                >
+                  <Icon
+                    name={item.data.icon}
+                    class="size-4 shrink-0"
+                    aria-hidden="true"
+                  />
+                  <span class="min-w-0 lg:in-data-[open=false]:opacity-0">
+                    <span class="block truncate font-medium">
+                      {item.data.title}
+                    </span>
+                    <span class="mt-0.5 block truncate text-xs">
+                      {item.data.tags[0] ?? "Project"}
+                    </span>
+                  </span>
+                </a>
+              );
+            })}
+          </div>
+        </div>
+      ))
+    }
+  </nav>
+</aside>
