@@ -11,6 +11,8 @@
     "preview": "astro preview",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
     "astro": "astro"
   },
   "dependencies": {
@@ -24,6 +26,10 @@
     "@astrojs/check": "^0.9.9",
     "@iconify-json/lucide": "^1.2.116",
     "@tailwindcss/typography": "^0.5.20",
+    "@typescript-eslint/parser": "^8.65.0",
+    "eslint": "^10.7.0",
+    "eslint-plugin-astro": "^3.0.1",
+    "eslint-plugin-tailwindcss": "^4.2.0",
     "prettier": "3.9.4",
     "prettier-plugin-astro": "0.14.1",
     "prettier-plugin-tailwindcss": "^0.8.0",

@@ -5,8 +5,12 @@ Astro 7 personal site: Tailwind v4, Alpine.js, three.js (WebGPU/TSL) lens viewer
 ## Commands
 
 - Dev server: `npx astro dev --port 4321` (daemonized; stop with `astro dev stop`). Not `npm run dev`.
-- Before committing: `npm run format`; `npm run format:check` and `npx astro check --minimumSeverity hint` must both pass clean (0 errors / 0 warnings / 0 hints).
+- Before committing: `npm run format`; then `npm run format:check`, `npm run lint`, and `npx astro check --minimumSeverity hint` must all pass clean.
 - Build: `npm run build`.
+
+## Linting
+
+- `eslint.config.mjs`: eslint-plugin-astro recommended, plus exactly one Tailwind rule registered directly — `tailwindcss/no-unnecessary-arbitrary-value` as error, the repo-side mirror of the editor's canonical-classes lint (`w-[26rem]` → `w-104`). `npm run lint:fix` auto-fixes. The tailwind plugin's recommended config is deliberately not used (it drags in ordering/naming rules that prettier and the site's own classes conflict with).
 
 ## Client-side JS conventions
 
