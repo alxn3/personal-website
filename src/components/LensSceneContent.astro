@@ -1,0 +1,177 @@
+---
+/**
+ * Arbitrary stage content for one scroll-story scene (the lens hero).
+ *
+ * Drop ANY markup/components inside — the scroll driver (story/hero-driver.ts) finds
+ * every `[data-scene-content]` element, derives its fade band from the scene's
+ * range in the STORY table (story/story.ts), and drives its opacity as the user
+ * scrolls. Multiple blocks may target the same scene.
+ *
+ *   <LensSceneContent scene="zoom" pos="left">
+ *     ...anything — headings, charts, images, custom components...
+ *   </LensSceneContent>
+ *
+ * `pos` places the block where the parked lens isn't. On phones every block
+ * collapses to a scrimmed BOTTOM band (`pos="top"` keeps a top band) so content
+ * never floats mid-screen over the wireframe. Placement/responsive CSS lives
+ * HERE (scoped to the wrapper); typography of the slotted content is the
+ * caller's business.
+ *
+ * The driver also writes progress custom properties onto the wrapper each
+ * frame, for content-specific CSS effects: `--beat-local` (raw scene-local
+ * progress 0..1), `--beat-visibility` (the fade-band value driving the
+ * wrapper's opacity), and `--beat-progress` — a smoothstepped 0→1 sweep over
+ * the `progressFrom`/`progressTo` window (in scene-local 0..1; defaults 0
+ * and 1, i.e. the whole scene).
+ */
+interface Props {
+  /** StoryScene id from story/story.ts (e.g. "zoom", "explode") — the fade band. */
+  scene: string;
+  /** Which stage edge to occupy on desktop. Default "left". */
+  pos?: "left" | "right" | "top" | "bottom";
+  /** Scene-local window (0..1) over which `--beat-progress` sweeps 0→1. */
+  progressFrom?: number;
+  progressTo?: number;
+  class?: string;
+}
+const {
+  scene,
+  pos = "left",
+  progressFrom = 0,
+  progressTo = 1,
+  class: className,
+} = Astro.props;
+---
+
+<div
+  class:list={["lens-cap", className]}
+  data-scene-content={scene}
+  data-pos={pos}
+  data-progress-from={progressFrom}
+  data-progress-to={progressTo}
+>
+  <slot />
+</div>
+
+<style>
+  .lens-cap {
+    position: absolute;
+    opacity: 0;
+    display: flex;
+    flex-direction: column;
+    max-width: 400px;
+    will-change: opacity, transform;
+  }
+
+  /* placements — where the parked lens isn't */
+  .lens-cap[data-pos="left"] {
+    left: 1.5rem;
+    top: 50%;
+    transform: translateY(-50%);
+    text-align: left;
+    align-items: flex-start;
+  }
+  .lens-cap[data-pos="right"] {
+    right: 1.5rem;
+    top: 50%;
+    transform: translateY(-50%);
+    text-align: right;
+    align-items: flex-end;
+  }
+  @media (min-width: 1024px) {
+    .lens-cap[data-pos="left"] {
+      left: 2rem;
+    }
+    .lens-cap[data-pos="right"] {
+      right: 2rem;
+    }
+  }
+  .lens-cap[data-pos="top"] {
+    top: 11vh;
+    left: 50%;
+    transform: translateX(-50%);
+    text-align: center;
+    align-items: center;
+    max-width: 620px;
+  }
+  .lens-cap[data-pos="bottom"] {
+    bottom: 12vh;
+    left: 50%;
+    transform: translateX(-50%);
+    text-align: center;
+    align-items: center;
+    max-width: 560px;
+  }
+  /* the big ghost numerals only work at the stage edges */
+  .lens-cap[data-pos="top"] :global(.cap-ghost),
+  .lens-cap[data-pos="bottom"] :global(.cap-ghost) {
+    display: none;
+  }
+  /* scrim behind blocks that sit over the lens (top/bottom centre) so text
+     always wins against the wireframe. --scrim-rgb is set per THEME by the page
+     (#lens-hero) — dark stage vs warm paper — and inherits down to here. */
+  .lens-cap[data-pos="top"]::before,
+  .lens-cap[data-pos="bottom"]::before {
+    content: "";
+    position: absolute;
+    inset: -46px -110px;
+    z-index: -1;
+    background: radial-gradient(
+      ellipse 66% 100% at 50% 50%,
+      rgb(var(--scrim-rgb, 18 16 11) / 0.86),
+      rgb(var(--scrim-rgb, 18 16 11) / 0) 72%
+    );
+  }
+  /* right-placed blocks: dramatic rag-right heading, but body copy reads left */
+  .lens-cap[data-pos="right"] :global(.cap-rack),
+  .lens-cap[data-pos="right"] :global(.cap-body) {
+    text-align: left;
+  }
+
+  /* ---- mobile / portrait: every block collapses into a scrimmed BOTTOM band
+         (pos="top" keeps a top band) — never floating mid-screen over the lens */
+  @media (max-width: 760px) {
+    /* [data-pos] keeps specificity level with the desktop placement rules, so
+       source order (this block is later) wins — a bare .lens-cap would lose
+       text-align to .lens-cap[data-pos="right"] and leave ragged-right titles */
+    .lens-cap,
+    .lens-cap[data-pos] {
+      left: 50% !important;
+      right: auto !important;
+      top: auto !important;
+      bottom: 11vh;
+      transform: translateX(-50%) !important;
+      text-align: center;
+      align-items: center;
+      max-width: min(88vw, 460px);
+    }
+    .lens-cap[data-pos="top"] {
+      top: 12vh !important;
+      bottom: auto;
+    }
+    /* the desktop-only ghost numerals eat half the band on a phone */
+    .lens-cap :global(.cap-ghost) {
+      display: none;
+    }
+    /* scrim behind EVERY mobile block (theme-tinted, same var as above) */
+    .lens-cap::before {
+      content: "";
+      position: absolute;
+      inset: -36px -70px;
+      z-index: -1;
+      background: radial-gradient(
+        ellipse 70% 100% at 50% 50%,
+        rgb(var(--scrim-rgb, 18 16 11) / 0.85),
+        rgb(var(--scrim-rgb, 18 16 11) / 0) 74%
+      );
+    }
+    .lens-cap :global(.cap-rack),
+    .lens-cap :global(.cap-body) {
+      text-align: center;
+    }
+    .lens-cap :global(.cap-rack) {
+      align-items: center;
+      gap: 8px;
+    }
+  }
+</style>

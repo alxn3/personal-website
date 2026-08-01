@@ -1,0 +1,108 @@
+---
+/**
+ * A tracking annotation pinned to a PART of the 3D lens: a dot anchored on the
+ * named model node's live screen position (following it through zoom, focus,
+ * explode…), a short leader line, and a small mono label (the slot, or `label`).
+ *
+ *   <LensPin scene="focus" track="Focus_LeadScrew" label="STM LEAD SCREW" />
+ *
+ * `scene` ties the pin's fade band to a story scene (same mechanism as
+ * LensSceneContent); `track` names a node in the model (object names are the
+ * API — see core/parts.ts). The scroll driver positions every `[data-track]`
+ * element from SceneHandle.onFrame's projector each frame. Place pins in a
+ * full-stage overlay (NOT the .cap-frame column) so their coordinates line up
+ * with the canvas. Anchor to solid parts (elements, rings, screws) — shader-
+ * deformed shell wedges keep their object transform, so their anchor would sit
+ * at the un-exploded position.
+ */
+interface Props {
+  /** StoryScene id — when the pin is visible (fade band). */
+  scene: string;
+  /** Model node name to follow, e.g. "Focus_LeadScrew", "Element_12". */
+  track: string;
+  /** Label text (or use the slot for custom markup). */
+  label?: string;
+  /** Which side of the dot the label sits on. Default "right". */
+  side?: "left" | "right";
+  class?: string;
+}
+const { scene, track, label, side = "right", class: className } = Astro.props;
+---
+
+<div
+  class:list={["lens-pin", className]}
+  data-scene-content={scene}
+  data-track={track}
+  data-side={side}
+>
+  <span class="pin-dot" aria-hidden="true"></span>
+  <span class="pin-label"><slot>{label}</slot></span>
+</div>
+
+<style>
+  /* The root is a ZERO-SIZE point placed on the tracked part each frame (the
+     scroll driver sets transform: translate(x, y)); dot/label hang off it. */
+  .lens-pin {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 0;
+    height: 0;
+    opacity: 0; /* driven by the scroll band, like all scene content */
+    pointer-events: none;
+    will-change: opacity, transform;
+  }
+  .pin-dot {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--orange, #d18a5d);
+    box-shadow: 0 0 0 3px rgba(209, 138, 93, 0.22);
+    transform: translate(-50%, -50%); /* centred exactly on the anchor */
+  }
+  .pin-label {
+    position: absolute;
+    top: 0;
+    left: 30px;
+    transform: translateY(-50%);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    color: var(--ink, #ece7da);
+    text-shadow: 0 1px 10px rgba(0, 0, 0, 0.8);
+  }
+  /* leader line from the dot out to the label */
+  .pin-label::before {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: -24px;
+    width: 20px;
+    height: 1px;
+    background: rgba(209, 138, 93, 0.55);
+  }
+  /* mirrored: label on the LEFT of the dot */
+  .lens-pin[data-side="left"] .pin-label {
+    left: auto;
+    right: 30px;
+    text-align: right;
+  }
+  .lens-pin[data-side="left"] .pin-label::before {
+    left: auto;
+    right: -24px;
+  }
+
+  /* Phones: the outward labels run off a narrow screen, and the caption band
+     already carries the story — annotations are a desktop affordance. (Pass a
+     custom class re-enabling display if a specific pin must survive mobile.) */
+  @media (max-width: 760px) {
+    .lens-pin {
+      display: none;
+    }
+  }
+</style>

@@ -1,36 +1,226 @@
 ---
-import BaseLayout from "../layouts/BaseLayout.astro";
+import { getCollection } from "astro:content";
+import Footer from "../components/Footer.astro";
+import Navbar from "../components/Navbar.astro";
+import HtmlShell from "../layouts/HtmlShell.astro";
+import LensPreloads from "../components/LensPreloads.astro";
+import LensStory from "../components/LensStory.astro";
+
+const projects = (await getCollection("projects")).sort(
+  (a, b) => b.data.date.valueOf() - a.data.date.valueOf(),
+);
+const posts = (await getCollection("blog")).sort(
+  (a, b) => b.data.date.valueOf() - a.data.date.valueOf(),
+);
+
+const fmtDate = (d: Date) =>
+  d.toLocaleDateString("en-US", { year: "numeric", month: "short" });
 ---
 
-<BaseLayout title="Personal Website" description="Personal website">
-  <section class="py-20 sm:py-28">
-    <div>
-      <p class="text-accent text-sm font-semibold tracking-wide uppercase">
-        Personal Website
-      </p>
-      <h1
-        class="text-text mt-4 max-w-3xl text-5xl leading-tight font-black text-balance sm:text-6xl"
+<HtmlShell
+  title="Alex Lin"
+  description="Alex Lin builds thoughtful software — systems, graphics, and the web."
+>
+  <Navbar />
+  <main class="w-full flex-1">
+    <LensPreloads />
+
+    <LensStory />
+
+    {
+      /* Below-hero content adopts the hero's dark cinematic palette so the whole
+      landing reads as one piece (the example is fully dark). Theme tokens are
+      overridden on this wrapper, so the existing utility classes just work. */
+    }
+    <div class="home-dark">
+      {
+        /* ================================ DEMOS ================================ */
+      }
+      <section
+        class="max-w-layout mx-auto px-4 py-20 sm:px-6 sm:py-28 lg:px-8"
+        data-reveal
       >
-        Building thoughtful software with clear systems and practical details.
-      </h1>
-      <p class="text-text-muted mt-6 max-w-2xl text-lg leading-8">
-        I write about engineering, design durable web interfaces, and collect
-        projects that make day-to-day work a little sharper.
-      </p>
-      <div class="mt-8 flex flex-wrap gap-3">
-        <a
-          href="/projects"
-          class="bg-accent text-bg hover:bg-text focus-visible:ring-accent inline-flex h-10 items-center rounded-md px-4 text-sm font-semibold transition-colors focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
+        <div
+          class="border-border mb-10 flex items-baseline justify-between border-b pb-4"
         >
-          View projects
-        </a>
-        <a
-          href="/blog"
-          class="border-border text-text hover:bg-accent-soft focus-visible:ring-accent inline-flex h-10 items-center rounded-md border px-4 text-sm font-semibold transition-colors focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
+          <h2
+            class="text-text font-mono text-sm font-semibold tracking-[0.18em] uppercase"
+          >
+            Demos, running live
+          </h2>
+          <a
+            href="/projects"
+            class="text-text-muted hover:text-accent font-mono text-xs tracking-wide"
+          >
+            all projects →
+          </a>
+        </div>
+        <ul class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {
+            projects.map((p, i) => (
+              <li class="demo-card" data-reveal style={`--d:${i * 60}ms`}>
+                <a
+                  href={`/projects/${p.id}`}
+                  class="flex h-full flex-col gap-2.5 p-6"
+                >
+                  <span class="text-accent font-mono text-[11px] font-semibold tracking-[0.15em] uppercase">
+                    {p.data.tags[0] ?? "PROJECT"}
+                  </span>
+                  <span class="text-text font-heading text-xl font-bold">
+                    {p.data.title}
+                  </span>
+                  <span class="text-text-muted flex-1 text-sm leading-6">
+                    {p.data.description}
+                  </span>
+                  <span class="demo-cta font-mono text-[11px] tracking-wide">
+                    {p.data.url ? "run demo →" : "case study →"}
+                  </span>
+                </a>
+              </li>
+            ))
+          }
+        </ul>
+      </section>
+
+      {
+        /* ================================ WRITING ================================ */
+      }
+      <section
+        class="max-w-layout mx-auto px-4 pb-24 sm:px-6 lg:px-8"
+        data-reveal
+      >
+        <div
+          class="border-border mb-2 flex items-baseline justify-between border-b pb-4"
         >
-          Read blog
-        </a>
-      </div>
+          <h2
+            class="text-text font-mono text-sm font-semibold tracking-[0.18em] uppercase"
+          >
+            Writing
+          </h2>
+          <a
+            href="/blog"
+            class="text-text-muted hover:text-accent font-mono text-xs tracking-wide"
+          >
+            all posts →
+          </a>
+        </div>
+        <ul>
+          {
+            posts.map((post) => (
+              <li class="border-border border-b">
+                <a
+                  href={`/blog/${post.id}`}
+                  class="group flex flex-col gap-1 py-5 sm:flex-row sm:items-baseline sm:justify-between sm:gap-6"
+                >
+                  <span class="text-text group-hover:text-accent font-heading text-lg font-bold transition-colors">
+                    {post.data.title}
+                  </span>
+                  <span class="text-text-muted shrink-0 font-mono text-xs tracking-wide">
+                    {fmtDate(post.data.date)}
+                  </span>
+                </a>
+              </li>
+            ))
+          }
+        </ul>
+      </section>
     </div>
-  </section>
-</BaseLayout>
+  </main>
+  <Footer />
+</HtmlShell>
+
+<style>
+  /* ---- below-hero content: follows the site theme. In light mode the sections
+         use the normal light tokens (the light stage hands off to a light page);
+         in dark mode a warm cinematic palette overrides the theme tokens so the
+         utility classes match the dark hero seamlessly. ---- */
+  /* NOTE: Tailwind v4 resolves `--color-x: var(--x)` at :root, so that computed
+     (theme) value inherits down — overriding the raw `--x` here would NOT update
+     the utilities. We override the `--color-*` tokens the utilities actually read. */
+  .home-dark {
+    background: var(--color-bg);
+    position: relative;
+    z-index: 1;
+  }
+  :global(html.dark) .home-dark {
+    --color-bg: #1d1a14;
+    --color-surface: #232019;
+    --color-text: #ece7da;
+    --color-text-muted: rgba(236, 231, 218, 0.6);
+    --color-border: rgba(236, 231, 218, 0.13);
+    --color-accent: #93a37f;
+    --color-accent-soft: rgba(147, 163, 127, 0.14);
+    --color-highlight: #d18a5d;
+    background: #1d1a14;
+  }
+  /* keep the shared footer matched to the homepage landing (warm dark palette in
+     dark mode only — this CSS only ships with the index page) */
+  :global(body:has(#lens-hero)) :global(footer) {
+    position: relative;
+    z-index: 1;
+  }
+  :global(html.dark body:has(#lens-hero)) :global(footer) {
+    --color-border: rgba(236, 231, 218, 0.13);
+    --color-text-muted: rgba(236, 231, 218, 0.5);
+    background: #1d1a14;
+  }
+
+  /* ---- demo cards + reveal ---- */
+  .demo-card {
+    border: 1px solid var(--color-border);
+    background: color-mix(in srgb, var(--color-surface) 92%, transparent);
+    border-radius: 10px;
+    transition:
+      border-color 0.25s,
+      transform 0.25s,
+      background 0.25s;
+  }
+  .demo-card:hover {
+    border-color: color-mix(
+      in srgb,
+      var(--color-highlight) 55%,
+      var(--color-border)
+    );
+    transform: translateY(-3px);
+    background: var(--color-surface);
+  }
+  .demo-cta {
+    margin-top: 6px;
+    color: var(--color-highlight);
+  }
+
+  [data-reveal] {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+  [data-reveal].is-in {
+    opacity: 1;
+    transform: none;
+    transition:
+      opacity 0.6s ease,
+      transform 0.6s ease;
+    transition-delay: var(--d, 0ms);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    [data-reveal] {
+      opacity: 1;
+      transform: none;
+    }
+  }
+</style>
+
+<script>
+  // scroll-reveal for the sections below the hero
+  const io = new IntersectionObserver(
+    (entries) => {
+      for (const e of entries) {
+        if (e.isIntersecting) {
+          e.target.classList.add("is-in");
+          io.unobserve(e.target);
+        }
+      }
+    },
+    { threshold: 0.12 },
+  );
+  document.querySelectorAll("[data-reveal]").forEach((el) => io.observe(el));
+</script>

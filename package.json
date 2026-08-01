@@ -18,14 +18,17 @@
   "dependencies": {
     "@astrojs/alpinejs": "^1.0.0",
     "@tailwindcss/vite": "^4.3.2",
+    "animejs": "^4.5.0",
     "astro": "^7.0.6",
     "astro-icon": "^1.1.5",
-    "tailwindcss": "^4.3.2"
+    "tailwindcss": "^4.3.2",
+    "three": "^0.185.1"
   },
   "devDependencies": {
     "@astrojs/check": "^0.9.9",
     "@iconify-json/lucide": "^1.2.116",
     "@tailwindcss/typography": "^0.5.20",
+    "@types/three": "^0.185.1",
     "@typescript-eslint/parser": "^8.65.0",
     "eslint": "^10.7.0",
     "eslint-plugin-astro": "^3.0.1",

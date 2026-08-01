@@ -1,0 +1,20 @@
+---
+// Preload the lens model + Draco decoder during HTML parse — these fetches
+// otherwise wait for the module script to boot + the WebGPU init (hundreds of
+// ms on a real network before the lens can appear). crossorigin="anonymous"
+// matches three's fetch() request (mode cors, same-origin credentials); without
+// it the preload wouldn't match and would be downloaded twice. Model paths are
+// owned by core/model.ts (MODEL_URL / ACCESSORIES_URL).
+import { MODEL_URL, ACCESSORIES_URL } from "../lib/lens";
+// Hashed URLs of the SAME glTF Draco decoder assets three's DRACOLoader loads at
+// runtime (three's DRACO_GLTF_CONFIG, which core/model.ts passes to
+// setDecoderPath) — content-hashed, so these ?url
+// imports dedupe to the identical files and the preloads below actually hit.
+import dracoWrapperUrl from "three/examples/jsm/libs/draco/gltf/draco_wasm_wrapper.js?url";
+import dracoWasmUrl from "three/examples/jsm/libs/draco/gltf/draco_decoder.wasm?url";
+---
+
+<link rel="preload" href={MODEL_URL} as="fetch" crossorigin="anonymous" />
+<link rel="preload" href={ACCESSORIES_URL} as="fetch" crossorigin="anonymous" />
+<link rel="preload" href={dracoWrapperUrl} as="fetch" crossorigin="anonymous" />
+<link rel="preload" href={dracoWasmUrl} as="fetch" crossorigin="anonymous" />

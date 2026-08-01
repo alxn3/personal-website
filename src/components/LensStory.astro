@@ -1,0 +1,582 @@
+---
+import LensPin from "./LensPin.astro";
+import LensSceneContent from "./LensSceneContent.astro";
+import { STORY, TRACK_HEIGHT_CSS } from "../lib/lens";
+
+// The scroll-jacked lens hero. The story TABLE — scene order, durations, camera
+// poses, mechanism windows, stage tints — lives in lib/lens/story/story.ts (the
+// SINGLE SOURCE OF TRUTH; everything derives from it). This component renders
+// the hero around it: the pinned stage, the per-scene overlay content below,
+// the chrome (HUD / rail / scroll cue), and the boot script.
+//
+// Scene overlay content is authored BELOW as real markup (<LensSceneContent
+// scene="…">), so any scene can host arbitrary HTML/components — the story table
+// only carries the engine data (durations, camera, tint). The scroll
+// driver fades each block over its scene's derived range.
+---
+
+{
+  /* ========================= SCROLL-JACKED LENS HERO ========================= */
+}
+<section id="lens-hero" class="relative" aria-label="Intro">
+  <div id="lens-track" class="relative" style={`height:${TRACK_HEIGHT_CSS}`}>
+    {/* Pinned stage */}
+    <div
+      id="lens-stage"
+      class="bg-bg sticky top-0 flex h-dvh items-center justify-center overflow-hidden"
+    >
+      <canvas
+        id="hero-lens"
+        class="pointer-events-none absolute inset-0 size-full"></canvas>
+
+      {/* grain dither — subtle film texture, breaks up any tint banding */}
+      <div
+        class="hero-grain pointer-events-none absolute inset-0"
+        aria-hidden="true"
+      >
+      </div>
+
+      {/* ---- HERO intro (scene 00): big display type, fades out first ---- */}
+      <div
+        id="hero-intro"
+        class="cap-frame pointer-events-none absolute inset-0"
+      >
+        <div class="hero-intro-inner">
+          <div class="hero-eyebrow">
+            <span>PORTFOLIO — 2026</span>
+            <span>SYSTEMS · WEB · GRAPHICS</span>
+          </div>
+          <h1 class="hero-title">Wide angle,<br /><em>sharp</em> focus.</h1>
+          <div class="hero-sub">
+            <p>
+              Backend systems by trade, graphics by obsession. Scroll — the lens
+              zooms, pulls focus, stops down, and comes apart.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {
+        /* ---- Per-scene stage content ----
+             Each block is ARBITRARY markup tied to a scene id — swap any of these
+             for custom components (charts, images, demos…). `pos` places it where
+             that scene parks the lens; the classes below are the house caption
+             style, not a requirement. */
+      }
+      <div class="cap-frame pointer-events-none absolute inset-0">
+        <LensSceneContent scene="zoom" pos="left">
+          <span class="cap-ghost" aria-hidden="true">01</span>
+          <span class="cap-tag">ZOOM — BREADTH</span>
+          <h2 class="cap-title">18mm to 50mm, and everything between.</h2>
+          <p class="cap-body">
+            I range wide — infrastructure, the web, graphics — and rack in close
+            when a problem earns it.
+          </p>
+        </LensSceneContent>
+
+        <LensSceneContent
+          scene="focus"
+          pos="right"
+          progressFrom={0.25}
+          progressTo={0.75}
+        >
+          <span class="cap-ghost" aria-hidden="true">02</span>
+          <span class="cap-tag">FOCUS — PERSPECTIVE</span>
+          <h2 class="cap-title">Same scene, different planes.</h2>
+          <div class="cap-rack">
+            <p class="rack-near">
+              Near plane: the systems underneath — queues, storage, schedulers.
+            </p>
+            <p class="rack-far">
+              Far plane: the surfaces people touch — the web, rendered fast.
+            </p>
+          </div>
+        </LensSceneContent>
+
+        <LensSceneContent scene="aperture" pos="bottom">
+          <span class="cap-ghost" aria-hidden="true">03</span>
+          <span class="cap-tag">APERTURE — DEPTH</span>
+          <h2 class="cap-title">Seven blades, wide open to a star.</h2>
+          <p class="cap-body">
+            Stopping down f/2.8 → f/22: less light in, more of the frame held
+            sharp.
+          </p>
+        </LensSceneContent>
+
+        <LensSceneContent scene="explode" pos="top">
+          <span class="cap-ghost" aria-hidden="true">04</span>
+          <span class="cap-tag">EXPLODE — TEARDOWN</span>
+          <h2 class="cap-title">Take it apart, piece by piece.</h2>
+          <p class="cap-body">
+            Housing, rings, contacts, motor — every part fans away from the
+            axis.
+          </p>
+        </LensSceneContent>
+
+        <LensSceneContent scene="lightPath" pos="left">
+          <span class="cap-ghost" aria-hidden="true">05</span>
+          <span class="cap-tag">LIGHT PATH</span>
+          <h2 class="cap-title">Only the light path is left.</h2>
+          <p class="cap-body">
+            Thirteen elements on a single axis — the reason the whole thing
+            works.
+          </p>
+        </LensSceneContent>
+
+        <LensSceneContent scene="rewrap" pos="right">
+          <span class="cap-ghost" aria-hidden="true">06</span>
+          <span class="cap-tag">REWRAP — ASSEMBLY</span>
+          <h2 class="cap-title">And it all wraps back on.</h2>
+          <p class="cap-body">
+            Layer by layer — each shell flies home flat and curls around the
+            glass until the lens is whole again.
+          </p>
+        </LensSceneContent>
+
+        <LensSceneContent scene="capsOn" pos="right">
+          <span class="cap-ghost" aria-hidden="true">07</span>
+          <span class="cap-tag">CAPS ON</span>
+          <h2 class="cap-title">That's the tour. The rest is the work.</h2>
+          <p class="cap-body">
+            Caps on. Demos and writing below — keep scrolling.
+          </p>
+        </LensSceneContent>
+      </div>
+
+      {
+        /* ---- Tracked part annotations ----
+             Full-stage overlay (coordinates line up with the canvas, unlike the
+             centred .cap-frame column). Each pin follows its model node's live
+             screen position every frame — add more by naming any solid node. */
+      }
+      <div class="pointer-events-none absolute inset-0 z-4">
+        <LensPin
+          scene="focus"
+          track="Focus_LeadScrew"
+          label="STM lead screw · 327°/mm"
+        />
+        <LensPin
+          scene="focus"
+          track="Element_12"
+          side="left"
+          label="Focusing element (E12)"
+        />
+      </div>
+
+      {/* ---- scroll cue (bottom-center, hero only) ---- */}
+      <div
+        id="scroll-cue"
+        class="pointer-events-none absolute bottom-6 left-1/2 -translate-x-1/2"
+      >
+        SCROLL
+      </div>
+
+      {/* ---- HUD (bottom-left): live scene + spec readout ---- */}
+      <div
+        id="hud"
+        class="pointer-events-none absolute bottom-6 left-4 sm:left-6 lg:left-8"
+      >
+        SCN 00 / HERO
+      </div>
+
+      {
+        /* ---- Scene rail (bottom-right): progress dots ----
+             Generated from the story table's rail-flagged scenes and keyed by
+             scene id — the driver toggles .is-on; the ○/● dot comes from CSS. */
+      }
+      <div
+        id="scene-rail"
+        class="pointer-events-none absolute right-4 bottom-6 sm:right-6 lg:right-8"
+      >
+        {
+          STORY.filter((s) => s.rail).map((s) => (
+            <span data-rail={s.id}>{s.title}</span>
+          ))
+        }
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  /* The lens stage follows the SITE THEME: warm-paper drafting sheet in light
+     mode (dark sepia ink), dark cinematic stage in dark mode (bright ink). The
+     3D palette flips with it (scene.setTheme). All stage copy reads from these
+     vars, so each block below only has to restate the custom properties. */
+  #lens-hero {
+    background: #f2eee4;
+    --ink: #2c2822;
+    --ink-dim: rgba(44, 40, 34, 0.66);
+    --ink-faint: rgba(44, 40, 34, 0.45);
+    --ink-ghost: rgba(44, 40, 34, 0.1);
+    --ink-border: rgba(44, 40, 34, 0.18);
+    --olive: #66754f;
+    --orange: #b06a3c;
+    /* scrim + caption halo pull from the paper, keeping text legible over the lens */
+    --scrim-rgb: 242 238 228;
+    --cap-shadow: 0 2px 24px rgba(242, 238, 228, 0.8);
+    --cap-shadow-sm: 0 1px 16px rgba(242, 238, 228, 0.85);
+  }
+  :global(html.dark) #lens-hero {
+    background: #1d1a14;
+    --ink: #ece7da;
+    --ink-dim: rgba(236, 231, 218, 0.6);
+    --ink-faint: rgba(236, 231, 218, 0.4);
+    --ink-ghost: rgba(236, 231, 218, 0.11);
+    --ink-border: rgba(236, 231, 218, 0.15);
+    --olive: #93a37f;
+    --orange: #d18a5d;
+    --scrim-rgb: 18 16 11;
+    --cap-shadow: 0 2px 24px rgba(0, 0, 0, 0.55);
+    --cap-shadow-sm: 0 1px 16px rgba(0, 0, 0, 0.6);
+  }
+
+  /* grain overlay (the old vignette was removed — owner wants the stage open) */
+  #lens-hero .hero-grain {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    background-size: 180px 180px;
+    opacity: 0.06;
+    z-index: 2;
+  }
+
+  /* caption frame: a centred max-width column so edge captions align to the grid */
+  .cap-frame {
+    left: 50%;
+    right: auto;
+    width: 100%;
+    max-width: var(--container-layout);
+    transform: translateX(-50%);
+    padding: 0 1.5rem;
+    z-index: 3;
+  }
+  @media (min-width: 1024px) {
+    .cap-frame {
+      padding: 0 2rem;
+    }
+  }
+
+  /* ---- hero intro ---- */
+  .hero-intro-inner {
+    position: absolute;
+    top: 50%;
+    left: 1.5rem;
+    right: 1.5rem;
+    transform: translateY(-50%);
+  }
+  @media (min-width: 1024px) {
+    .hero-intro-inner {
+      left: 2rem;
+      right: 2rem;
+    }
+  }
+  .hero-eyebrow {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    border-bottom: 1px solid var(--ink-border);
+    padding-bottom: 14px;
+    margin-bottom: 26px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.18em;
+  }
+  .hero-eyebrow span:first-child {
+    color: var(--olive);
+  }
+  .hero-eyebrow span:last-child {
+    color: var(--ink-faint);
+  }
+  .hero-title {
+    margin: 0;
+    font-family: var(--font-heading);
+    font-weight: 300;
+    font-size: clamp(54px, 8.4vw, 122px);
+    line-height: 0.98;
+    letter-spacing: -0.02em;
+    color: var(--ink);
+  }
+  .hero-title em {
+    font-style: italic;
+    font-weight: 400;
+    color: var(--orange);
+  }
+  .hero-sub {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    gap: 2rem;
+    margin-top: 30px;
+  }
+  .hero-sub p {
+    margin: 0;
+    max-width: 360px;
+    font-size: 15px;
+    line-height: 1.6;
+    color: var(--ink-dim);
+  }
+
+  /* ---- .cap-*: house caption typography (see CLAUDE.md — placement rules
+         live in LensSceneContent.astro) ---- */
+  .cap-ghost {
+    font-family: var(--font-heading);
+    font-weight: 300;
+    font-size: 132px;
+    line-height: 0.8;
+    color: var(--ink-ghost);
+    margin-bottom: 4px;
+    user-select: none;
+  }
+  .cap-tag {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--olive);
+  }
+  .cap-title {
+    margin: 12px 0 14px;
+    font-family: var(--font-heading);
+    font-weight: 400;
+    font-size: clamp(30px, 3.4vw, 44px);
+    line-height: 1.08;
+    color: var(--ink);
+    text-wrap: balance;
+    text-shadow: var(--cap-shadow);
+  }
+  .cap-body,
+  .cap-rack p {
+    margin: 0;
+    font-size: 14.5px;
+    line-height: 1.65;
+    color: var(--ink-dim);
+    text-shadow: var(--cap-shadow-sm);
+  }
+  .cap-rack {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  /* focus blur-rack: near sharpens as far blurs across the focus scene. Blur
+     is capped low and opacity kept up so the "out of focus" line still READS.
+     Driven by --beat-progress — the scroll driver sweeps it 0→1 over this
+     block's progressFrom/progressTo window (0.25..0.75 of the focus scene, set
+     on the <LensSceneContent> above). The effect is content-specific, so it
+     lives here with the markup, not in the driver. */
+  .rack-near {
+    filter: blur(calc(var(--beat-progress, 0) * 3px));
+    opacity: calc(1 - var(--beat-progress, 0) * 0.3);
+  }
+  .rack-far {
+    filter: blur(calc((1 - var(--beat-progress, 0)) * 3px));
+    opacity: calc(0.7 + var(--beat-progress, 0) * 0.3);
+  }
+
+  /* ---- mobile / portrait: hero type + chrome (content-block placement is
+         handled inside LensSceneContent.astro) ---- */
+  @media (max-width: 760px) {
+    .hero-title {
+      font-size: clamp(40px, 11vw, 64px);
+    }
+    /* type anchored near the top so it clears the centred lens instead of sitting
+       on top of it */
+    .hero-intro-inner {
+      top: 13vh;
+      transform: none;
+      left: 1.25rem;
+      right: 1.25rem;
+    }
+    .hero-sub {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 1rem;
+    }
+    /* tighter caption type on phones so the bottom band stays a BAND — the
+       desktop sizes stack four-line titles up into the lens */
+    .cap-title {
+      font-size: clamp(22px, 6.4vw, 28px);
+      margin: 8px 0 10px;
+    }
+    .cap-body,
+    .cap-rack p {
+      font-size: 13.5px;
+      line-height: 1.55;
+    }
+  }
+
+  /* ---- HUD + scene rail + scroll cue ---- */
+  #hud,
+  #scene-rail,
+  #scroll-cue {
+    z-index: 3;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    color: var(--ink-faint);
+  }
+  #scene-rail {
+    display: flex;
+    gap: 16px;
+  }
+  /* Rail colors were previously written inline by the driver every frame. The
+     inactive value is deliberately theme-fixed (the dark-stage faint ink, on
+     both themes) — kept exactly; the active color is the stage orange token. */
+  #scene-rail span {
+    transition: color 0.3s;
+    color: rgba(236, 231, 218, 0.35);
+  }
+  #scene-rail span::before {
+    content: "○ ";
+  }
+  #scene-rail span.is-on {
+    color: var(--orange);
+  }
+  #scene-rail span.is-on::before {
+    content: "● ";
+  }
+  #scroll-cue {
+    letter-spacing: 0.16em;
+    transition: opacity 0.4s;
+  }
+  #scroll-cue::after {
+    content: " ↓";
+    display: inline-block;
+    animation: scrollBob 1.8s ease-in-out infinite;
+  }
+  @keyframes scrollBob {
+    0%,
+    100% {
+      transform: translateY(0);
+      opacity: 0.5;
+    }
+    50% {
+      transform: translateY(3px);
+      opacity: 1;
+    }
+  }
+
+  /* ---- reduced motion / fallback: un-pin, stack captions ---- */
+  #lens-hero[data-static] #lens-track {
+    height: auto;
+  }
+  #lens-hero[data-static] #lens-stage {
+    position: static;
+    height: auto;
+    display: block;
+    padding: 7rem 0 5rem;
+  }
+  #lens-hero[data-static] .cap-frame {
+    position: static;
+    transform: none;
+    margin: 0 auto;
+  }
+  #lens-hero[data-static] #hero-intro {
+    position: relative;
+    min-height: 60vh;
+  }
+  /* :global — the wrapper is rendered by LensSceneContent, outside this
+     component's scope */
+  #lens-hero[data-static] :global(.lens-cap) {
+    position: static;
+    transform: none !important;
+    opacity: 1 !important;
+    max-width: 640px;
+    margin: 4rem auto 0;
+    text-align: left;
+    align-items: flex-start;
+  }
+  #lens-hero[data-static] #hud,
+  #lens-hero[data-static] #scene-rail {
+    display: none;
+  }
+  #lens-hero[data-static] #hero-lens {
+    position: fixed;
+    inset: 0;
+    opacity: 0.16;
+  }
+
+  /* drop the instrument chrome on phones — too cramped; the scroll cue is
+     enough. MUST come after the base #hud/#scene-rail rules: same specificity,
+     so only source order lets the hide win. */
+  @media (max-width: 760px) {
+    #scene-rail,
+    #hud {
+      display: none;
+    }
+  }
+</style>
+
+<script>
+  import {
+    initScene,
+    startHeroStory,
+    watchTheme,
+    type HeroDriver,
+  } from "../lib/lens";
+
+  const hero = document.getElementById("lens-hero")!;
+  const canvas = document.getElementById(
+    "hero-lens",
+  ) as HTMLCanvasElement | null;
+  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  async function boot() {
+    if (!canvas) return;
+    let scene;
+    try {
+      // formations: [] — the hero drives ONLY the classic explode/unwrap/rewrap
+      // channels (hero-driver.ts), so no formation preset need be folded into the
+      // bloom deform: a lighter shader and faster first frame. IMPORTANT: when the
+      // scroll story is ported to the ops `assemble` channel (docs/superpowers/
+      // plans/2026-07-25-ops-formation-port.md Tasks 7-9), this MUST become
+      // ["assemble"] so that preset is folded in.
+      scene = await initScene(canvas, { story: true, formations: [] });
+    } catch (err) {
+      console.warn("lens hero: init failed, using static fallback", err);
+      hero.dataset.static = "true";
+      return;
+    }
+    scene.setShading("ink");
+
+    // Follow the site theme (navbar toggle / OS change flips `.dark` on <html>):
+    // re-palette the 3D scene and re-tint the stage bg (the scroll driver is
+    // assigned below once it exists — the reduced-motion static variant has no
+    // driver but still re-palettes). The fixed nav just uses its normal themed
+    // styling (translucent blurred bar) over the stage on both themes.
+    let driver: HeroDriver | null = null;
+    watchTheme((light) => {
+      scene!.setTheme(light);
+      driver?.onThemeChange(light);
+    });
+
+    // Story mode renders every frame (dust/rays keep animating), so once the
+    // user scrolls past the hero the loop would burn GPU forever. Pause it once
+    // the pinned stage has (almost) left the viewport. The margin must be
+    // NEGATIVE: the page ends with ~100px of the stage still geometrically under
+    // the viewport top (covered by the sections painted over it), so a plain
+    // isIntersecting never goes false at max scroll. Shrinking the root by 15%
+    // counts a <15%-visible stage as gone — safe, because the stage only starts
+    // exiting after the scroll track ends, i.e. the story is already complete.
+    // Wired BEFORE the reduced-motion return so the static variant stops
+    // rendering below the fold too.
+    const stage = document.getElementById("lens-stage")!;
+    new IntersectionObserver(
+      ([entry]) => scene!.setPaused(!entry.isIntersecting),
+      { rootMargin: "-15% 0% -15% 0%" },
+    ).observe(stage);
+
+    if (reduce) {
+      hero.dataset.static = "true";
+      scene.state.explodeTarget = 0.35;
+      scene.state.zoomTarget = 0.3;
+      scene.state.storyTarget = 0.82;
+      return;
+    }
+
+    // Everything scroll-driven lives in the driver module (envelopes, captions,
+    // HUD/rail, bg tint, pins) — see story/hero-driver.ts.
+    driver = startHeroStory(scene);
+  }
+
+  boot();
+</script>

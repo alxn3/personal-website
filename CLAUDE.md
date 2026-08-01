@@ -5,6 +5,7 @@ Astro 7 personal site: Tailwind v4, Alpine.js, three.js (WebGPU/TSL) lens viewer
 ## Commands
 
 - Dev server: `npx astro dev --port 4321` (daemonized; stop with `astro dev stop`). Not `npm run dev`.
+- Restart the dev server after refactors that move/rename/delete files: the long-lived daemon's Vite/HMR graph goes stale and serves a MIX of old and new modules — presents as broken styling or a boot falling into the static fallback while builds stay clean.
 - Before committing: `npm run format`; then `npm run format:check`, `npm run lint`, and `npx astro check --minimumSeverity hint` must all pass clean.
 - Build: `npm run build`.
 
@@ -34,7 +35,6 @@ Alpine-driven panels (project page) bind a `data-open` attribute that Tailwind `
 
 - `HtmlShell` = document head/body + pre-paint bootstraps; `BaseLayout` = the standard chromed, contained page; `ProseLayout` = chromed narrow prose column; `ProjectLayout` = project app bar, no site chrome. No layout flags — a page needing a different arrangement composes `HtmlShell`/`Navbar`/`Footer` directly (the homepage and /lens do).
 - Chrome-less embedding is opt-in via a `?embed` query param: HtmlShell's pre-paint script sets `data-embedded` on `<html>` and global.css hides header/footer under it. The project page iframes internal demos with `?embed`; omit the param to embed a page with full chrome.
-- Iframe embeds: HtmlShell's pre-paint script sets `data-embedded` on `<html>` when `self !== top`; `global.css` hides `header`/`footer` under it, so an internal demo iframed on a project page shows no double chrome.
 
 ## Content
 
@@ -44,11 +44,11 @@ Alpine-driven panels (project page) bind a `data-open` attribute that Tailwind `
 
 ## Homepage hero captions
 
-- `.cap-*` classes in `index.astro`'s `<style>` are the house caption typography for scene-slotted content; the wrapper's placement/responsive rules live in `LensSceneContent.astro`. Slotted blocks are arbitrary markup — the house classes are optional.
+- The hero (captions + pins + boot) is colocated in `src/components/LensStory.astro` (the story table itself lives in `src/lib/lens/story/story.ts`); `index.astro` just renders `<LensStory />`. `.cap-*` classes in LensStory's `<style>` are the house caption typography for scene-slotted content; the wrapper's placement/responsive rules live in `LensSceneContent.astro`. Slotted blocks are arbitrary markup — the house classes are optional.
 
-## Lens 3D stack (`src/lib/lens-*`)
+## Lens 3D stack (`src/lib/lens/`)
 
-- `lens-scene` orchestrates; `lens-camera` (scroll-story camera path), `lens-rig` (mechanism drives), `lens-bloom` (TSL wedge-deform shader), `lens-shading` (render styles + per-theme palettes), `lens-cinematics` (rays/dust/caps), `lens-story` (scene table — single source of truth for pacing), `lens-depthfade`, `lens-model`, `lens-math`.
+- Organized as `story/` (the STORY table + derived pacing, camera, hero driver + `?story` dev scrubber, cinematics), `materials/` (shading, bloom = the TSL explode/peel deform, depthfade), `core/` (scene orchestrator + channel registry, model, rig, parts, theme, math). Pages/components import ONLY the `index.ts` barrel. The STORY table lives in `story/story.ts`; `LensStory.astro` renders the hero + captions around it. **`src/lib/lens/README.md` has the "change X → touch Y" map — start there.**
 - Only `lens_web_*.glb` models ship; never add `lens_full.glb` to the repo.
 
 ## Workflow
