@@ -1,7 +1,6 @@
 // Page-level HARD wipe backdrop for the /lens demo compositions. Owner's note:
 // the reveal is a PAGE element BEHIND the transparent WebGPU canvas, with a HARD
-// line (no feather) — distinct from the in-scene materials/wipe.ts split. The
-// DOM lives in lens.astro; this drives it. Two stacked full-viewport layers:
+// line (no feather). The DOM lives in lens.astro; this drives it. Two stacked full-viewport layers:
 // `below` paints the whole viewport, `above` is clipped to the region above the
 // tilted line, so the line reads as a hard boundary between the two colors.
 

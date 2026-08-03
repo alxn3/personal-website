@@ -14,13 +14,6 @@ const sliders = [
   { id: "focus", label: "Focus", hint: "∞ — 0.12m" },
   { id: "aperture", label: "Aperture", hint: "f/2.8 — f/22" },
   { id: "explode", label: "Exploded view", hint: "assembled — parts" },
-  { id: "unwrap", label: "Unwrap", hint: "stuck — peeled" },
-  // what the PEELED material does — independent of how much is peeled
-  { id: "curl", label: "Peel curl", hint: "flat sheet — curled", value: 100 },
-  // tilt of the peel front: 0 = straight edge peel, 1 = diagonal corner peel
-  { id: "shear", label: "Peel shear", hint: "straight — diagonal", value: 50 },
-  // unwrapped sheets square into uniform photo cards (picture develops late)
-  { id: "cardify", label: "Cardify", hint: "sheets — photo cards" },
 ];
 
 const accessories = [
@@ -39,9 +32,6 @@ const shadingModes = [
   { id: "paper", label: "Paper" },
   { id: "riso", label: "Riso" },
   { id: "bronze", label: "Bronze" },
-  { id: "toon", label: "Toon" },
-  { id: "clay", label: "Clay" },
-  { id: "wire", label: "Wire" },
 ];
 
 // Look-swap choreographies (lib/lens core/transitions.ts) — how the shading
@@ -187,7 +177,7 @@ const shadingTransitions = [
                       id={`slider-${s.id}`}
                       min="0"
                       max="100"
-                      value={String(s.value ?? 0)}
+                      value="0"
                       class="accent-accent h-2 w-full cursor-pointer"
                     />
                   </label>
@@ -303,6 +293,7 @@ const shadingTransitions = [
                   min="0"
                   max="100"
                   value="0"
+                  step="any"
                   class="accent-accent h-2 w-full cursor-pointer"
                 />
               </label>
@@ -328,6 +319,31 @@ const shadingTransitions = [
                 <span
                   id="paths-status"
                   class="text-text-muted text-[0.6875rem] leading-snug"></span>
+              </div>
+              {
+                /* DEV: piece-name inspector. Same opt-in shape as the paths
+                   toggle — the inspector module is only imported once ticked. */
+              }
+              <div
+                id="inspect-row"
+                class="border-border mt-1 flex flex-col gap-1 border-t pt-3"
+              >
+                <label
+                  class="text-text flex cursor-pointer items-center gap-2 text-sm font-medium"
+                >
+                  <input
+                    type="checkbox"
+                    id="inspect-toggle"
+                    class="accent-accent size-4 cursor-pointer"
+                  />
+                  Inspect
+                </label>
+                <span
+                  id="inspect-status"
+                  class="text-text-muted text-[0.6875rem] leading-snug"
+                >
+                  Hover a piece for its node name; click to copy it.
+                </span>
               </div>
               {
                 /* DEV: hero-camera preview — while ON (and an animation is
@@ -442,6 +458,7 @@ const shadingTransitions = [
                   min="0"
                   max="100"
                   value="0"
+                  step="any"
                   class="accent-accent h-2 w-full cursor-pointer"
                 />
               </label>
@@ -549,7 +566,10 @@ const shadingTransitions = [
     initScene,
     rangeOf,
     ANIMATIONS,
+    ANIM_RESET_CHANNELS,
+    CHANNEL_DEFAULTS,
     loadDemos,
+    resetRecipeKnobs,
     setPageWipe,
     setPageText,
     type AccessoryGroup,
@@ -595,16 +615,7 @@ const shadingTransitions = [
     // Slider ids match SceneState channel names 1:1 (`slider-zoom` →
     // `state.zoomTarget`), so adding a slider is one row in the frontmatter
     // table plus one entry here — the template-literal key keeps it type-safe.
-    const sliderChannels = [
-      "zoom",
-      "focus",
-      "aperture",
-      "explode",
-      "unwrap",
-      "curl",
-      "shear",
-      "cardify",
-    ] as const;
+    const sliderChannels = ["zoom", "focus", "aperture", "explode"] as const;
     for (const id of sliderChannels) {
       const input = document.getElementById(
         `slider-${id}`,
@@ -723,21 +734,43 @@ const shadingTransitions = [
       if (!pathViz) return;
       await pathViz.show(activeAnim, progressOf);
     };
-    if (pathsToggle) {
-      pathsToggle.addEventListener("change", async () => {
-        if (pathsToggle.checked) {
-          pathViz ??= await scene.enablePathViz(setPathStatus);
-          pathViz?.setVisible(true);
-          await refreshPaths();
-        } else {
-          pathViz?.setVisible(false);
-        }
-      });
-    }
+    // (Re)apply the toggle. Split out of the listener because the BROWSER
+    // restores `checked` across a reload without firing `change` — see the
+    // restore block near the end of boot().
+    const applyPathsToggle = async () => {
+      if (pathsToggle?.checked) {
+        pathViz ??= await scene.enablePathViz(setPathStatus);
+        pathViz?.setVisible(true);
+        await refreshPaths();
+      } else {
+        pathViz?.setVisible(false);
+      }
+    };
+    pathsToggle?.addEventListener("change", () => void applyPathsToggle());
+
+    // --- Inspect -------------------------------------------------------------
+    // Same opt-in shape as the paths toggle: the module loads on the first tick
+    // and the scene keeps the single inspector.
+    const inspectToggle = document.getElementById(
+      "inspect-toggle",
+    ) as HTMLInputElement | null;
+    const inspectStatus = document.getElementById("inspect-status");
+    const INSPECT_HINT = "Hover a piece for its node name; click to copy it.";
+    const applyInspectToggle = async () => {
+      if (!inspectToggle) return;
+      const ok = await scene.enableInspect(inspectToggle.checked);
+      if (!inspectStatus) return;
+      inspectStatus.textContent = ok
+        ? INSPECT_HINT
+        : "inspector failed to start — see console";
+      inspectStatus.classList.toggle("text-highlight", !ok);
+      inspectStatus.classList.toggle("text-text-muted", ok);
+    };
+    inspectToggle?.addEventListener("change", () => void applyInspectToggle());
 
     // fromDefaults: while an ANIMATION is active, slider channels must sit at
     // their markup defaults, NOT the user's current slider positions — a
-    // dragged explode/unwrap slider would otherwise keep flying the rig ladder
+    // dragged explode slider would otherwise keep flying the ladder recipe
     // underneath the animation (adversarial review finding). The live values
     // return when None re-enables manual control.
     const applyManualSliders = (fromDefaults = false) => {
@@ -751,27 +784,31 @@ const shadingTransitions = [
       }
     };
 
-    // Non-slider channels an animation may drive — reset to their registry
-    // defaults on switch/None so no stale pose survives (slider channels are
-    // restored by applyManualSliders).
+    // Channels an animation may drive — rest each to its registry default on
+    // switch/None so no stale pose survives. The LIST is derived from the one
+    // channel registry (core/scene ANIM_RESET_CHANNELS), so a new animReset
+    // channel needs no edit here. Slider channels are restored by
+    // applyManualSliders instead (explode is in both — the slider default wins
+    // because applyManualSliders runs right after this).
     const resetAnimChannels = () => {
-      scene.state.helixTarget = 0;
-      scene.state.assembleTarget = 0;
-      scene.state.rewrapTarget = 0;
-      scene.state.rewrapOnTarget = 0;
-      scene.state.rolloutTarget = 0;
-      scene.state.cardifyTarget = 0;
-      scene.state.genieTarget = 0;
+      for (const c of ANIM_RESET_CHANNELS)
+        scene.state[`${c}Target`] = CHANNEL_DEFAULTS[c];
     };
 
     const progressOf = () => Number(progressInput?.value ?? 0) / 100;
 
     // --- Hero camera preview -------------------------------------------------
     // Maps animation progress p (0..1) onto the hero's story progress: p=0
-    // opens on the rewrap scene's camera, p=1 lands on the caps-on hand-off
-    // pose. THE span to tune if the preview should cover a different slice of
-    // the story (e.g. start mid-rewrap): [storyP at p=0, storyP at p=1].
-    const STORY_CAM_SPAN: readonly [number, number] = [rangeOf("rewrap").p0, 1];
+    // opens on the rewrap scene's camera, p=1 lands on the END of the caps-on
+    // scene — the hand-off pose. Both ends are derived, so appending a beat
+    // after capsOn keeps the preview on the finale instead of stretching it
+    // over the new scene. THE span to tune if the preview should cover a
+    // different slice of the story (e.g. start mid-rewrap): [storyP at p=0,
+    // storyP at p=1].
+    const STORY_CAM_SPAN: readonly [number, number] = [
+      rangeOf("rewrap").p0,
+      rangeOf("capsOn").p1,
+    ];
     const storyPOf = (p: number) =>
       STORY_CAM_SPAN[0] + (STORY_CAM_SPAN[1] - STORY_CAM_SPAN[0]) * p;
     const storyCamToggle = document.getElementById(
@@ -792,8 +829,72 @@ const shadingTransitions = [
       syncStoryCam();
     });
 
+    // Ease the INPUT, not the channels: `shown` chases the slider p with the
+    // classic scrub cushion (EASE of the remaining gap per 60Hz frame,
+    // dt-normalized), then LANDS EXACTLY on the input p. Same damped feel the
+    // target-easing bench had — but in p-space, so every transient frame
+    // replays the actual choreography (a drag is low-passed between pointer
+    // pixels; a click fast-forwards through the scene) and at rest the frame
+    // is still a pure function of the slider: no easing residue, exact
+    // endpoints. Reduced-motion always lands directly.
+    const makeScrubGlide = (applyAt: (p: number) => void) => {
+      const EASE = 0.15;
+      let shown = 0;
+      let target = 0;
+      let raf = 0;
+      let last = 0;
+      const cancel = () => {
+        if (raf) cancelAnimationFrame(raf);
+        raf = 0;
+      };
+      const snap = (p: number) => {
+        cancel();
+        shown = target = p;
+        applyAt(p);
+      };
+      // stop the chase WITHOUT applying — for teardown, where a trailing eased
+      // frame must not reach the outgoing composition (see selectDemo).
+      const stop = () => {
+        cancel();
+        target = shown;
+      };
+      const step = (now: number) => {
+        raf = 0;
+        const gap = target - shown;
+        if (Math.abs(gap) < 5e-4) return snap(target);
+        const a = 1 - Math.pow(1 - EASE, (now - last) / 16.7);
+        last = now;
+        shown += gap * Math.min(1, a);
+        applyAt(shown);
+        raf = requestAnimationFrame(step);
+      };
+      const to = (p: number) => {
+        if (window.matchMedia("(prefers-reduced-motion: reduce)").matches)
+          return snap(p);
+        target = p; // a running chase just retargets
+        if (!raf) {
+          last = performance.now();
+          raf = requestAnimationFrame(step);
+        }
+      };
+      return { to, snap, stop };
+    };
+    const animGlide = makeScrubGlide((p) => {
+      const anim = activeAnim;
+      if (!anim) return;
+      anim.apply(p, scene.state);
+      scene.invalidate();
+    });
+
     const selectAnimation = (anim: LensAnimation | null) => {
       activeAnim?.exit?.(); // restore anything the outgoing animation turned on
+      // …then put EVERY recipe knob back on its default. The exits above only
+      // undo what an animation hand-listed; the three core animations expose 28
+      // knob sliders and have no exit() at all, so without this a knob dragged
+      // under one animation followed the selection into the next one.
+      // BETWEEN the two calls on purpose: after exit() so a restore isn't
+      // re-clobbered, before enter() so the incoming preset survives.
+      resetRecipeKnobs();
       activeAnim = anim;
       anim?.enter?.();
       localStorage.setItem("lens-anim", anim?.id ?? "none");
@@ -805,7 +906,9 @@ const shadingTransitions = [
       }
       resetAnimChannels();
       applyManualSliders(Boolean(anim));
-      if (anim) anim.apply(progressOf(), scene.state);
+      // direct apply (snap): selecting isn't a scrub jump — also cancels any
+      // glide left running by the outgoing animation
+      animGlide.snap(progressOf());
       scene.invalidate(); // enter/apply may drive bare uniforms (wipe et al.)
       const disabled = Boolean(anim);
       sliderGroup?.classList.toggle("pointer-events-none", disabled);
@@ -817,11 +920,20 @@ const shadingTransitions = [
         if (input) input.disabled = disabled;
       }
       // visibility (not display) so the reserved space never changes — the
-      // Animations tab keeps one stable height across None/helix/teardown
+      // Animations tab keeps one stable height across None/helix/reassemble
       if (progressRow) setStacked(progressRow, disabled);
       if (animHint) animHint.textContent = anim?.hint ?? "";
       for (const c of paramContainers) {
         setStacked(c, c.dataset.animParams === anim?.id);
+        // Every knob behind these sliders was just put back on its default
+        // (resetRecipeKnobs) or re-preset by enter(), and each input's markup
+        // `value` is the position that reproduces exactly that — so put the
+        // thumbs back on it rather than leaving one claiming a value the
+        // uniform no longer holds.
+        for (const input of c.querySelectorAll<HTMLInputElement>(
+          "input[data-param]",
+        ))
+          input.value = input.defaultValue;
       }
       syncStoryCam(); // hero camera engages/releases with the selection
       void refreshPaths();
@@ -843,13 +955,19 @@ const shadingTransitions = [
     // restores everything, so None / leaving the tab returns the seated view.
     // DEMOS arrives via the lazy chunk (see lib/lens index.ts — this is what
     // keeps anime.js out of the homepage bundle).
-    const { DEMOS } = await loadDemos();
+    const { DEMOS, createDemoKit, withKit } = await loadDemos();
+    // The kit wraps the base api into a RECORDING api: demos drive the scene
+    // through the free-function verbs (scene-kit), which withKit() points at
+    // kit.api for the duration of each demo callback; the kit auto-restores
+    // every recorded write on deselect, so demos need no hand-written exit()
+    // beyond truly custom teardown (disposing an object, clearing part offsets).
     const demoApi: DemoApi = {
       state: scene.state,
       scene,
       setPageWipe,
       setPageText,
     };
+    const kit = createDemoKit(demoApi); // recording api the verbs write through
     const demoButtons = [
       ...document.querySelectorAll<HTMLButtonElement>(
         "#demo-group button[data-demo]",
@@ -862,6 +980,15 @@ const shadingTransitions = [
     const demoHint = document.getElementById("demo-hint");
     const demoPlayBtn = document.getElementById("demo-play");
     let activeDemo: LensDemo | null = null;
+    // same fast-forward-on-jump as the animation slider; a glide sweeping a
+    // spans boundary fires that boundary's gesture (each step is a single
+    // crossing), so a Lookbook jump plays its cuts in sequence
+    const demoGlide = makeScrubGlide((p) => {
+      const demo = activeDemo;
+      if (!demo) return;
+      withKit(kit.api, () => demo.apply(p));
+      scene.invalidate();
+    });
     let demoRAF = 0;
     const demoProgressOf = () => Number(demoProgress?.value ?? 0) / 100;
     const stopDemoPlay = () => {
@@ -872,7 +999,19 @@ const shadingTransitions = [
     const selectDemo = (demo: LensDemo | null) => {
       if (demo === activeDemo) return; // ignore re-selecting the same demo
       stopDemoPlay();
-      activeDemo?.exit(demoApi); // undo the outgoing composition
+      // Freeze the eased scrub BEFORE the teardown (stop, not snap: applying
+      // would drive the outgoing demo one more time). An eased frame landing
+      // after kit.restore() re-records the outgoing writes into a FRESH
+      // recording, and on a deselect there is no incoming begin() to run them —
+      // the bench then sits dirty until some later selection flushes it.
+      demoGlide.stop();
+      // Tear down the outgoing composition: its optional custom exit() first,
+      // then the kit's auto-restore of every recorded write (reverse order).
+      // DESELECTING TO NONE IS THE SAME TEARDOWN as switching demos — None is
+      // just a null incoming demo — so nothing below this point may be gated on
+      // `demo`, or the outgoing composition's writes survive the deselect.
+      withKit(kit.api, () => activeDemo?.exit?.());
+      kit.restore();
       // Clear the page text centrally so switching demos / picking None always
       // wipes it, without each demo having to remember (mirrors how the wipe is
       // torn down — but page-owned, not per-demo).
@@ -881,7 +1020,12 @@ const shadingTransitions = [
       // demos own the whole scene — drop any active animation so their channel
       // drives don't fight
       if (demo) selectAnimation(null);
-      demo?.enter(demoApi);
+      // Fresh recording for whatever comes next, INCLUDING None: begin() runs an
+      // outstanding recording rather than discarding it, so leaving it out of
+      // the deselect path is the one way a write can end up in a recording that
+      // no selection ever closes.
+      kit.begin();
+      withKit(kit.api, () => demo?.enter());
       localStorage.setItem("lens-demo", demo?.id ?? "none");
       for (const btn of demoButtons) {
         btn.setAttribute(
@@ -889,7 +1033,7 @@ const shadingTransitions = [
           String((btn.dataset.demo ?? "none") === (demo?.id ?? "none")),
         );
       }
-      if (demo) demo.apply(demoProgressOf(), demoApi);
+      demoGlide.snap(demoProgressOf()); // selecting isn't a scrub jump
       scene.invalidate();
       if (demoProgressRow) setStacked(demoProgressRow, Boolean(demo));
       if (demoPlayBtn) setStacked(demoPlayBtn, Boolean(demo));
@@ -906,7 +1050,7 @@ const shadingTransitions = [
     }
     demoProgress?.addEventListener("input", () => {
       stopDemoPlay(); // a manual scrub cancels autoplay
-      if (activeDemo) activeDemo.apply(demoProgressOf(), demoApi);
+      if (activeDemo) demoGlide.to(demoProgressOf());
       scene.invalidate();
     });
     // Autoplay: drive apply over durationMs with rAF, updating the slider so the
@@ -919,7 +1063,7 @@ const shadingTransitions = [
       const step = (now: number) => {
         const p = Math.min(1, (now - start) / dur);
         if (demoProgress) demoProgress.value = String(Math.round(p * 100));
-        activeDemo?.apply(p, demoApi);
+        demoGlide.snap(p); // autoplay IS the fast-forward; keep `shown` synced
         scene.invalidate();
         demoRAF = p < 1 ? requestAnimationFrame(step) : 0;
       };
@@ -945,6 +1089,14 @@ const shadingTransitions = [
         storyCamToggle.checked = true;
         syncStoryCam();
       }
+      // The two dev toggles restore themselves — the BROWSER reinstates a
+      // checkbox's `checked` across a reload, but silently: no `change` fires,
+      // so the listener alone leaves the box ticked over a dead instrument
+      // (the fix is to honour the restored state, not to clear it — these stay
+      // on all session). Applied HERE, after the animation restore, because
+      // the path walk is of the selected animation.
+      void applyPathsToggle();
+      void applyInspectToggle();
       // Restore the demo only on its own tab — its transparent bg + camera pose
       // shouldn't bleed into the Controls/Animations tabs.
       const storedDemo = localStorage.getItem("lens-demo");
@@ -954,7 +1106,7 @@ const shadingTransitions = [
       }
     }
     progressInput?.addEventListener("input", () => {
-      if (activeAnim) activeAnim.apply(progressOf(), scene.state);
+      if (activeAnim) animGlide.to(progressOf());
       scene.invalidate(); // apply may drive bare uniforms (wipe et al.)
       localStorage.setItem("lens-progress", progressInput.value);
       // Target only (eased): the camera glides after the scrub exactly like

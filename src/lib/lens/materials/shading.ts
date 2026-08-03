@@ -1,20 +1,18 @@
 import * as THREE from "three/webgpu";
 import { uniform, float } from "three/tsl";
+// The DEFORM comes from the op pipeline (ops/host.ts), and `hasOpFrames` — the
+// packed `_opA` frame attribute — gates WHICH meshes get it. That is the SAME
+// test core/scene's applyOps uses for the realistic look, so every stylized
+// mode deforms exactly the set realistic does: glass, rings and hardware
+// included, not just the shell wedges.
 import {
-  hasBloom,
-  attachBloom,
-  attachBloomLine,
-  attachBloomHull,
-  bloomEdgeGeometry,
-  cardPhotoMix,
-  uIsolateHide,
-} from "./bloom";
-import { cardColorNode } from "./cards";
-// Non-bloom materials get the genie minimize warp directly (the bloom graph
-// composes it itself for the wedges) — every mode's build sites below pair
-// `attachBloom` (bloom) with `attachGenie` (everything else) so the WHOLE
-// model funnels, glass and solid rings included.
-import { attachGenie } from "./genie";
+  attachOps,
+  attachOpsLine,
+  attachOpsHull,
+  opsEdgeGeometry,
+  hasOpFrames,
+  opsVariantKey,
+} from "../ops/host";
 import { depthFadeFactor } from "./depthfade";
 import { isOpticalGlass, isDecal } from "../core/parts";
 import {
@@ -31,7 +29,7 @@ import {
 
 // CEL SHADE: quantized N·L against a fixed key light — three flat bands that
 // give the unlit ink fills FORM (pop) without abandoning the blueprint look.
-// Uses the transformed normal, so bloom-deformed wedges band correctly as they
+// Uses the transformed normal, so op-deformed pieces band correctly as they
 // peel and wrap. Fresh node per material.
 const CEL_LIGHT = new THREE.Vector3(0.45, 0.8, 0.55).normalize();
 const celShade = () => {
@@ -45,15 +43,24 @@ const celShade = () => {
   return float(0.78).add(band.mul(0.38)) as any; // 0.78 · 0.97 · 1.16
 };
 
-// Ink fill opacity, 0 = pure wireframe (edge lines only) → 1 = solid toon fills.
+// Ink fill opacity, 0 = pure line drawing (edge lines only) → 1 = solid fills.
 // The scroll hero drives this so the intro reads as a blueprint that fills in.
 export const uInkFill = uniform(1);
 
+// Light-path isolate as a FADE (0 = everything shown, 1 = non-glass dissolved):
+// multiplied into the non-glass ink fills/lines below. The old whole-mesh
+// visibility toggle made every structural piece vanish in a single frame
+// ("pieces just disappear instead of fade out" — owner). story/cinematics.ts
+// drives it; meshes are still visibility-culled once fully faded (fill-rate).
+// It lives HERE, with the two sites that read it: it is a colour-side uniform,
+// not a deform one.
+export const uIsolateHide = uniform(0);
+
 // Swappable render styles for the lens viewer, as Node materials (WebGPU). Each
 // mode re-materials every mesh; "realistic" restores the originals captured at
-// load. Wedge/decal meshes (those carrying the `_bloom` attributes) get the
-// bloom position/normal graph attached so they still deform in every mode.
-// Textures (toon ramp, matcap) are generated procedurally — nothing external.
+// load. Every FRAMED mesh (one carrying the derived `_op*` attributes) gets the
+// op position/normal graph attached so it still deforms in every mode.
+// Textures (the bronze matcap) are generated procedurally — nothing external.
 export type ShadingMode =
   | "realistic"
   | "ink"
@@ -63,10 +70,7 @@ export type ShadingMode =
   | "ember"
   | "paper"
   | "riso"
-  | "bronze"
-  | "toon"
-  | "clay"
-  | "wire";
+  | "bronze";
 
 // isOpticalGlass (core/parts): true optical glass only — the lens elements and
 // the UV filter. NOT the iris blades (they're metal; they were previously
@@ -242,18 +246,6 @@ const TECHNICAL_PALETTES: Partial<Record<ShadingMode, TechnicalPalette>> = {
   },
 };
 
-// Backdrop color pairs matched to the wipe-capable palettes, for the wipe
-// split plane (materials/wipe.ts uWipeBgBelow/uWipeBgTo via setWipeBackdrop):
-// `below` = the stage behind the already-wiped (seated) region, `to` = above
-// the advancing line. Kept here so a palette tweak updates its backdrop in the
-// same diff; wave agents pick the pair for whatever palette the wipe lands on.
-export const WIPE_BACKDROPS: Partial<
-  Record<ShadingMode, { below: number; to: number }>
-> = {
-  ember: { below: 0x160d07, to: 0xff5c1f },
-  paper: { below: 0xf8f4ea, to: 0x17130d },
-};
-
 // OUTLINE: thick screen-print contour — a constant-width inverted-hull outline
 // (silhouette + every depth step) over pure UNLIT two-tone fills, cream/ink from
 // the house palette. Deliberately the anti-x-ray: NOTHING is transparent — the
@@ -365,49 +357,6 @@ function makeBronzeMatcap(light: boolean): THREE.Texture {
   return tex;
 }
 
-// 4-step grayscale ramp -> hard-stepped toon lighting.
-function makeToonRamp(): THREE.DataTexture {
-  const steps = [60, 120, 190, 245];
-  const data = new Uint8Array(steps.length * 4);
-  steps.forEach((v, i) => {
-    data[i * 4] = data[i * 4 + 1] = data[i * 4 + 2] = v;
-    data[i * 4 + 3] = 255;
-  });
-  const tex = new THREE.DataTexture(data, steps.length, 1, THREE.RGBAFormat);
-  tex.minFilter = tex.magFilter = THREE.NearestFilter;
-  tex.needsUpdate = true;
-  return tex;
-}
-
-// Soft studio-sphere matcap (light from the upper-left) for a clay/putty look.
-function makeMatcap(): THREE.Texture {
-  const s = 256;
-  const canvas = document.createElement("canvas");
-  canvas.width = canvas.height = s;
-  const ctx = canvas.getContext("2d")!;
-  ctx.fillStyle = "#2b3038";
-  ctx.fillRect(0, 0, s, s);
-  const g = ctx.createRadialGradient(
-    s * 0.36,
-    s * 0.3,
-    s * 0.04,
-    s * 0.5,
-    s * 0.5,
-    s * 0.58,
-  );
-  g.addColorStop(0, "#ffffff");
-  g.addColorStop(0.35, "#d2dae2");
-  g.addColorStop(0.72, "#7c858f");
-  g.addColorStop(1, "#2b3038");
-  ctx.fillStyle = g;
-  ctx.beginPath();
-  ctx.arc(s / 2, s / 2, s / 2, 0, Math.PI * 2);
-  ctx.fill();
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
-}
-
 export interface ShadingController {
   set(mode: ShadingMode): void;
   /** Fold meshes that loaded AFTER creation (the background accessories) into the
@@ -430,23 +379,16 @@ export function createShading(root: THREE.Object3D): ShadingController {
   let currentMode: ShadingMode = "realistic";
   const meshes: THREE.Mesh[] = [];
   const original = new Map<THREE.Mesh, THREE.Material | THREE.Material[]>();
-  const baseColor = new Map<THREE.Mesh, THREE.Color>();
 
   root.traverse((o) => {
     if (!(o instanceof THREE.Mesh)) return;
     meshes.push(o);
     original.set(o, o.material);
-    const first = Array.isArray(o.material) ? o.material[0] : o.material;
-    const col = (first as THREE.MeshStandardMaterial).color;
-    baseColor.set(o, col ? col.clone() : new THREE.Color(0x808080));
   });
 
-  // lazily-built shared resources, disposed with the controller
-  let toonRamp: THREE.DataTexture | null = null;
-  let matcap: THREE.Texture | null = null;
   // Ink edge lines cached per mesh × crease threshold: they're a pure function
   // of the (immutable) source geometry, and rebuilding ~260 EdgesGeometry + the
-  // bloom attribute copy on EVERY re-entry into ink made the toggle visibly
+  // frame attribute copy on EVERY re-entry into ink made the toggle visibly
   // janky. Threshold is in the key because "flat" runs the same construction at
   // a coarser crease angle than ink/blueprint.
   const edgeGeoCache = new Map<string, THREE.BufferGeometry>();
@@ -462,12 +404,10 @@ export function createShading(root: THREE.Object3D): ShadingController {
   const fillCache = new Map<string, THREE.MeshBasicNodeMaterial>();
   const lineCache = new Map<string, THREE.LineBasicNodeMaterial>();
   // shared materials for the self-contained modes (riso/bronze) — keyed by
-  // mode × part-class × bloom, same lifecycle as fillCache
+  // mode × part-class × framed, same lifecycle as fillCache
   const modeCache = new Map<string, THREE.Material>();
-  let uniformPlain: THREE.NodeMaterial | null = null;
-  let uniformBloomed: THREE.NodeMaterial | null = null;
   // bronze matcap is theme-dependent (lifted shadow floor on light), so it's
-  // cached per theme flag and rebuilt on a flip (unlike the neutral clay matcap)
+  // cached per theme flag and rebuilt on a flip
   let bronzeMatcap: THREE.Texture | null = null;
   let bronzeMatcapLight = false;
   const track = <T extends THREE.Material>(m: T): T => {
@@ -488,23 +428,7 @@ export function createShading(root: THREE.Object3D): ShadingController {
     fillCache.clear();
     lineCache.clear();
     modeCache.clear();
-    uniformPlain = null;
-    uniformBloomed = null;
   };
-
-  // A fresh material for a "uniform" mode (same look for every mesh).
-  function makeUniform(mode: ShadingMode): THREE.NodeMaterial {
-    switch (mode) {
-      case "wire":
-        return new THREE.MeshBasicNodeMaterial({
-          color: light ? 0x44546a : 0x9db4c8, // dark strands on paper, pale on the stage
-          wireframe: true,
-        });
-      default: // clay
-        matcap ??= makeMatcap();
-        return new THREE.MeshMatcapNodeMaterial({ color: 0xc4ccd4, matcap });
-    }
-  }
 
   // Apply the CURRENT mode's material(s) to ONE mesh, drawing from the shared
   // per-mode caches above. This is the per-mesh half of set(); integrate() calls
@@ -516,10 +440,16 @@ export function createShading(root: THREE.Object3D): ShadingController {
     const mode = currentMode;
 
     if (mode === "realistic") {
-      // originals already carry the bloom node material on the wedges
+      // originals already carry the op node material on the framed pieces
       mesh.material = original.get(mesh)!;
       return;
     }
+
+    // Every look below classifies by NAME. Runtime names ARE node names now
+    // (one primitive per mesh — lens_work MIGRATION §2), so the palettes see
+    // e.g. `Focus_LeadScrew` where they used to see a Blender datablock name
+    // (`Cylinder012`) that no rule matched.
+    const name = mesh.name;
 
     const palette = TECHNICAL_PALETTES[mode];
     if (palette) {
@@ -529,32 +459,32 @@ export function createShading(root: THREE.Object3D): ShadingController {
       // TECHNICAL_PALETTES entry. Shell wedges get attribute-preserving edge
       // geometry so the lines deform with the fill.
       //
-      // Materials are SHARED per look (colour × glass × bloom), not per mesh: one
+      // Materials are SHARED per look (colour × glass × framed), not per mesh: one
       // material per mesh built ~260 separate node graphs, and compiling all those
       // pipelines was the single largest chunk of time-to-first-frame. The palette
       // collapses to ~a dozen fill materials and 4 line materials (fillCache/lineCache).
       const theme = light ? ("light" as const) : ("dark" as const);
       const edgeBody = palette.edgeBody[theme];
       const edgeGlass = palette.edgeGlass[theme];
-      const glass = isOpticalGlass(mesh.name);
-      const bloom = hasBloom(mesh);
-      const colorHex = palette.fill(mesh.name, light);
-      const fillKey = `${colorHex}|${glass}|${bloom}`;
+      const glass = isOpticalGlass(name);
+      const framed = hasOpFrames(mesh);
+      // A mesh whose deform graph VARIES (a mechanism spin pivot, a decal's
+      // shrink-wrap binding) can only share a material with meshes that vary the
+      // same way — every cache key below carries the variant for that reason
+      // (ops/host.ts opsVariantKey).
+      const spin = opsVariantKey(mesh);
+      const colorHex = palette.fill(name, light);
+      const fillKey = `${colorHex}|${glass}|${framed}|${spin}`;
       let m = fillCache.get(fillKey);
       if (!m) {
         m = new THREE.MeshBasicNodeMaterial();
         m.color.setHex(colorHex);
         // cel bands on the body fills only — the translucent glass stays clean,
         // and a `flat` palette skips banding entirely (pure print fills).
-        // Bloom-carrying meshes (wedges + their decals/features) additionally
-        // crossfade to the CARDIFY photo face as uCardify → 1 (materials/
-        // cards.ts) — a hard-gated exact identity at 0, so every technical
-        // look (ink/blueprint/flat) renders untouched until cardify runs.
-        if (!glass && (!palette.flat || bloom)) {
-          let cn = colorNode(new THREE.Color(colorHex)) as any;
-          if (!palette.flat) cn = cn.mul(celShade());
-          if (bloom) cn = cardColorNode(cn);
-          m.colorNode = cn;
+        if (!glass && !palette.flat) {
+          m.colorNode = colorNode(new THREE.Color(colorHex)).mul(
+            celShade(),
+          ) as any;
         }
         m.transparent = true;
         // Push the fill's depth back a hair so the edge lines (which share the
@@ -563,17 +493,16 @@ export function createShading(root: THREE.Object3D): ShadingController {
         m.polygonOffset = true;
         m.polygonOffsetFactor = 1;
         m.polygonOffsetUnits = 1;
-        // Depth fade: shell wedges explode in-shader, so feed the fade the bloom-
+        // Depth fade: framed pieces move in-shader, so feed the fade the op-
         // deformed local position (positionView misses it); everything else moves
         // by its object matrix, which positionLocal already captures.
         // Glass elements stay filled ALWAYS (like the example) — they never fade
         // to wireframe; only the body/metal fills fade in/out with uInkFill. All
         // fills also dissolve past the near/far planes as they explode.
-        // Attach the bloom deform FIRST and feed its position node straight to the
-        // fade (was a second bloomLocalPosition() graph — one deform per material).
-        const bloomPos = bloom ? attachBloom(m) : undefined;
-        if (!bloom) attachGenie(m);
-        const fade = depthFadeFactor(bloomPos);
+        // Attach the op deform FIRST and feed its position node straight to the
+        // fade (was a second position graph — one deform per material).
+        const opsPos = framed ? attachOps(m, mesh) : undefined;
+        const fade = depthFadeFactor(opsPos);
         let op = (glass ? float(0.45) : float(1).mul(uInkFill)).mul(fade);
         if (!glass) op = op.mul(float(1).sub(uIsolateHide)); // light-path isolate FADE
         m.opacityNode = op;
@@ -588,21 +517,17 @@ export function createShading(root: THREE.Object3D): ShadingController {
 
       // edge lines (skip flat printed decals — their outline is just a
       // rectangle — and any palette-declared lineSkip parts)
-      if (isDecal(mesh.name) || palette.lineSkip?.(mesh.name)) return;
-      const lineKey = `${glass}|${bloom}`;
+      if (isDecal(name) || palette.lineSkip?.(name)) return;
+      const lineKey = `${glass}|${framed}|${spin}`;
       let lineMat = lineCache.get(lineKey);
       if (!lineMat) {
         lineMat = new THREE.LineBasicNodeMaterial();
         lineMat.color.setHex(glass ? edgeGlass : edgeBody);
         lineMat.transparent = true;
         // Attach the deform first, then share its position node with the fade.
-        const lineBloomPos = bloom ? attachBloomLine(lineMat) : undefined;
-        if (!bloom) attachGenie(lineMat);
-        let lop = float(glass ? 0.7 : 0.9).mul(depthFadeFactor(lineBloomPos));
+        const lineOpsPos = framed ? attachOpsLine(lineMat, mesh) : undefined;
+        let lop = float(glass ? 0.7 : 0.9).mul(depthFadeFactor(lineOpsPos));
         if (!glass) lop = lop.mul(float(1).sub(uIsolateHide)); // isolate fade
-        // a finished CARD is a clean photo — the flattened relief's crease
-        // lines fade out with the photo crossfade (identity at uCardify 0)
-        if (bloom) lop = lop.mul(float(1).sub(cardPhotoMix()));
         lineMat.opacityNode = lop;
         lineMat.alphaTest = 0.02; // faded lines must not depth-clip either
         lineCache.set(lineKey, track(lineMat));
@@ -611,8 +536,8 @@ export function createShading(root: THREE.Object3D): ShadingController {
       const geoKey = `${mesh.id}|${thr}`;
       let geo = edgeGeoCache.get(geoKey);
       if (!geo) {
-        geo = bloom
-          ? bloomEdgeGeometry(mesh.geometry, thr)
+        geo = framed
+          ? opsEdgeGeometry(mesh.geometry, thr)
           : new THREE.EdgesGeometry(mesh.geometry, thr);
         edgeGeoCache.set(geoKey, geo);
       }
@@ -627,38 +552,36 @@ export function createShading(root: THREE.Object3D): ShadingController {
       // Thick screen-print contour (OUTLINE above): pure unlit two-tone fills,
       // everything OPAQUE (glass = solid flat discs), plus an inverted-hull
       // second pass per mesh — the same geometry re-drawn BackSide with its
-      // vertices pushed OUT along the (bloom-deformed) normal, so a constant
+      // vertices pushed OUT along the (op-deformed) normal, so a constant
       // model-mm dark/cream rim survives wherever the surface meets anything
       // behind it: the whole silhouette + every depth step.
       const P = light ? OUTLINE.light : OUTLINE.dark;
-      const bloom = hasBloom(mesh);
-      const fillHex = outlineFill(P, mesh.name);
-      const fillKey = `outline|${fillHex}|${bloom}`;
+      const framed = hasOpFrames(mesh);
+      const spin = opsVariantKey(mesh);
+      const fillHex = outlineFill(P, name);
+      const fillKey = `outline|${fillHex}|${framed}|${spin}`;
       let m = modeCache.get(fillKey);
       if (!m) {
         const mat = new THREE.MeshBasicNodeMaterial({ color: fillHex });
-        if (bloom) attachBloom(mat);
-        else attachGenie(mat);
+        if (framed) attachOps(mat, mesh);
         m = track(mat);
         modeCache.set(fillKey, m);
       }
       mesh.material = m;
       // no hull on the flat printed decals — they'd just outline a rectangle
-      if (isDecal(mesh.name)) return;
-      const hullKey = `outline|hull|${bloom}`;
+      if (isDecal(name)) return;
+      const hullKey = `outline|hull|${framed}|${spin}`;
       let hullMat = modeCache.get(hullKey);
       if (!hullMat) {
         const mat = new THREE.MeshBasicNodeMaterial({
           color: P.line,
           side: THREE.BackSide,
         });
-        if (bloom) attachBloomHull(mat, OUTLINE_WIDTH);
-        else {
+        if (framed) attachOpsHull(mat, OUTLINE_WIDTH, mesh);
+        else
           mat.positionNode = positionLocal.add(
             normalLocal.mul(OUTLINE_WIDTH) as any,
           );
-          attachGenie(mat); // wraps the hull-push position graph just set
-        }
         hullMat = track(mat);
         modeCache.set(hullKey, hullMat);
       }
@@ -674,10 +597,10 @@ export function createShading(root: THREE.Object3D): ShadingController {
       // lines. Glass is a translucent orange overprint so the mechanism still
       // reads through it; decals print flat in the contrasting ink.
       const stops = light ? RISO.light : RISO.dark;
-      const glass = isOpticalGlass(mesh.name);
-      const decal = isDecal(mesh.name);
-      const bloom = hasBloom(mesh);
-      const key = `riso|${glass}|${decal}|${bloom}`;
+      const glass = isOpticalGlass(name);
+      const decal = isDecal(name);
+      const framed = hasOpFrames(mesh);
+      const key = `riso|${glass}|${decal}|${framed}|${opsVariantKey(mesh)}`;
       let m = modeCache.get(key);
       if (!m) {
         const mat = new THREE.MeshBasicNodeMaterial();
@@ -690,8 +613,7 @@ export function createShading(root: THREE.Object3D): ShadingController {
         } else {
           mat.colorNode = risoBands(stops);
         }
-        if (bloom) attachBloom(mat);
-        else attachGenie(mat);
+        if (framed) attachOps(mat, mesh);
         m = track(mat);
         modeCache.set(key, m);
       }
@@ -708,10 +630,10 @@ export function createShading(root: THREE.Object3D): ShadingController {
         bronzeMatcap = makeBronzeMatcap(light);
         bronzeMatcapLight = light;
       }
-      const glass = isOpticalGlass(mesh.name);
-      const grip = /Ring_/.test(mesh.name);
-      const bloom = hasBloom(mesh);
-      const key = `bronze|${glass}|${grip}|${bloom}`;
+      const glass = isOpticalGlass(name);
+      const grip = /Ring_/.test(name);
+      const framed = hasOpFrames(mesh);
+      const key = `bronze|${glass}|${grip}|${framed}|${opsVariantKey(mesh)}`;
       let m = modeCache.get(key);
       if (!m) {
         const mat = glass
@@ -724,43 +646,12 @@ export function createShading(root: THREE.Object3D): ShadingController {
               color: grip ? 0x4c4440 : 0xffffff,
               matcap: bronzeMatcap,
             });
-        if (bloom) attachBloom(mat);
-        else attachGenie(mat);
+        if (framed) attachOps(mat, mesh);
         m = track(mat);
         modeCache.set(key, m);
       }
       mesh.material = m;
-      return;
     }
-
-    if (mode === "toon") {
-      // per-mesh colour-preserving, hard-stepped
-      toonRamp ??= makeToonRamp();
-      const glass = isOpticalGlass(mesh.name);
-      const m = new THREE.MeshToonNodeMaterial();
-      m.color.copy(glass ? new THREE.Color(0xbfe3ff) : baseColor.get(mesh)!);
-      m.gradientMap = toonRamp;
-      m.transparent = glass;
-      m.opacity = glass ? 0.5 : 1;
-      if (hasBloom(mesh)) attachBloom(m);
-      else attachGenie(m);
-      mesh.material = track(m);
-      return;
-    }
-
-    // uniform modes: two shared materials — a plain one for whole parts and a
-    // bloom-attached one for the wedges/decals (a single material can't do both,
-    // since non-wedges lack the `_bloom` attributes the graph reads). Built lazily
-    // on first use so the pair persists across integrate() for the current mode.
-    if (!uniformPlain) {
-      uniformPlain = track(makeUniform(mode));
-      attachGenie(uniformPlain);
-    }
-    if (!uniformBloomed) {
-      uniformBloomed = track(makeUniform(mode));
-      attachBloom(uniformBloomed);
-    }
-    mesh.material = hasBloom(mesh) ? uniformBloomed : uniformPlain;
   }
 
   function set(mode: ShadingMode) {
@@ -779,9 +670,6 @@ export function createShading(root: THREE.Object3D): ShadingController {
       if (!(o instanceof THREE.Mesh) || original.has(o)) return;
       meshes.push(o);
       original.set(o, o.material);
-      const first = Array.isArray(o.material) ? o.material[0] : o.material;
-      const col = (first as THREE.MeshStandardMaterial).color;
-      baseColor.set(o, col ? col.clone() : new THREE.Color(0x808080));
       applyToMesh(o);
     });
   }
@@ -790,8 +678,6 @@ export function createShading(root: THREE.Object3D): ShadingController {
     clearCreated();
     edgeGeoCache.forEach((g) => g.dispose());
     edgeGeoCache.clear();
-    toonRamp?.dispose();
-    matcap?.dispose();
     bronzeMatcap?.dispose();
   }
 

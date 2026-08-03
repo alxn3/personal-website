@@ -1,5 +1,5 @@
 import * as THREE from "three/webgpu";
-import { RANGES, rangeOf, type Pose } from "./story";
+import { RANGES, rangeOf, type Pose, type Waypoint } from "./story";
 import { clamp01, smoothstep, lerp, deg } from "../core/math";
 
 // --- scroll-story camera path -------------------------------------------------
@@ -30,12 +30,12 @@ const ORIGIN: [number, number, number] = [0, 0, 0];
 // the ratio of the adjacent leg lengths (~2.6× at the rewrap→capsOn junction),
 // which read as stutter right as the finale came together.
 interface Chain {
-  path: Pose[];
+  path: Waypoint[]; // endpoints are full Poses; the interior vias only carry the four splined fields
   chord: number[]; // leg lengths (pos-space)
   cum: number[]; // cumulative, cum[0] = 0
 }
 
-function buildChain(path: Pose[]): Chain {
+function buildChain(path: Waypoint[]): Chain {
   const chord: number[] = [];
   const cum: number[] = [0];
   for (let k = 1; k < path.length; k++) {
@@ -53,7 +53,7 @@ function chainAt(
   c: Chain,
   seg: number,
   t: number,
-  get: (pose: Pose) => number,
+  get: (pose: Waypoint) => number,
 ): number {
   const n = c.path.length;
   const L = c.chord[seg];
@@ -108,7 +108,7 @@ export function sampleStory(
   const sc = r.scene;
   const local = clamp01((p - r.p0) / Math.max(1e-6, r.p1 - r.p0));
 
-  let path: Pose[];
+  let path: Waypoint[];
   let moveT: number;
   let first: Pose; // pose the move leaves from — start of the xs/ys/target slide
   let last: Pose; // pose the move settles into
@@ -169,7 +169,7 @@ export function sampleStory(
     let seg = 0;
     while (seg < n - 2 && s > chain.cum[seg + 1]) seg++;
     const st = clamp01((s - chain.cum[seg]) / chain.chord[seg]);
-    const q = (get: (pose: Pose) => number) => chainAt(chain, seg, st, get);
+    const q = (get: (pose: Waypoint) => number) => chainAt(chain, seg, st, get);
     outPos.set(
       q((o) => o.pos[0]),
       q((o) => o.pos[1]),

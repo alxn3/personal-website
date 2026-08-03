@@ -5,22 +5,16 @@
 // page-owned DOM); everything else drives the scene through the SAME SceneState
 // channels the animations use.
 //
-// LIFECYCLE CONTRACT: exit() MUST restore EVERYTHING — camera pose null, page
-// wipe null, transparent background off, every driven channel back to 0 — so
-// selecting None returns the normal seated /lens view (same rule as
-// animation-kit.ts's LensAnimation).
-import {
-  Color,
-  Mesh,
-  MeshBasicMaterial,
-  Shape,
-  ShapeGeometry,
-  Vector3,
-} from "three/webgpu";
+// LIFECYCLE CONTRACT: demos drive the scene through the scene-kit verbs
+// (setShading, drive, setCameraPose, …), which RECORD every write; on deselect
+// the kit auto-restores them in reverse, so selecting None returns the normal
+// seated /lens view without a hand-written exit(). exit() is optional — kept
+// only for truly custom teardown the kit does not record (disposing an object
+// the demo created, clearing part offsets).
+import { Color } from "three/webgpu";
 import { lerp, smoothstep } from "../core/math";
-import { createTimeline, stagger, springs, springEaseFn } from "./motion";
+import { createTimeline, stagger, springs } from "./motion";
 import type { Timeline } from "./motion";
-import { uGenieTarget } from "../materials/genie";
 import { createPrismLight, type PrismLight } from "./prism-light";
 import { createRayField, type RayField, type RayPoint } from "./ray-ribbons";
 import type {
@@ -31,16 +25,45 @@ import type {
 } from "../core/scene";
 import type { PageWipeCfg } from "./page-wipe";
 import type { PageTextCfg } from "./page-text";
+// The LIVE mask knobs the deform host folds. `recipeKnob` hands back the SAME
+// box every call (ops/host builds them once), which is what the kit's set()
+// needs: it keys its first-write undo snapshot on the object IDENTITY it is
+// handed. They are plain mutable { value } boxes — exactly what set()'s
+// clone/copy snapshot expects — so the kit's auto-restore keeps working and none
+// of the four demos needs a hand-written exit().
+import { recipeKnob } from "../ops/host";
 import {
-  uRolloutRankLo,
-  uRolloutRankHi,
-  uRolloutMaskCenter,
-  uRolloutMaskWidth,
-  uAssembleMaskCenter,
-  uAssembleMaskWidth,
-} from "../materials/formation";
-import { uCardifyRankLo, uCardifyRankHi } from "../materials/bloom";
+  posePath,
+  drive,
+  spans,
+  state,
+  scene,
+  set,
+  setCameraPose,
+  setIsolate,
+  setModelOrientation,
+  setOverlayPass,
+  setShading,
+  setPageText,
+  setPageWipe,
+  setTransparentBackground,
+  type KitApi,
+} from "./scene-kit";
+// createDemoKit/withKit are re-exported for lens.astro (the kit wraps the base
+// DemoApi into the recording KitApi; withKit brackets each demo callback so
+// the free-function verbs above target that recorder — see scene-kit.ts).
+export { createDemoKit, withKit } from "./scene-kit";
+export type { KitApi } from "./scene-kit";
 
+// The recipe mask knobs the demos below solo with (see the import note).
+const kRolloutRankLo = recipeKnob("rollout", "rankLo");
+const kRolloutRankHi = recipeKnob("rollout", "rankHi");
+const kRolloutMaskCenter = recipeKnob("rollout", "maskCenter");
+const kRolloutMaskWidth = recipeKnob("rollout", "maskWidth");
+const kAssembleMaskCenter = recipeKnob("assemble", "maskCenter");
+const kAssembleMaskWidth = recipeKnob("assemble", "maskWidth");
+
+/** The base (un-recorded) api lens.astro builds; createDemoKit wraps it. */
 export interface DemoApi {
   /** The live scene state the animations also mutate. */
   state: SceneState;
@@ -58,10 +81,16 @@ export interface LensDemo {
   hint?: string;
   /** autoplay length in ms (default 8000). */
   durationMs?: number;
-  enter(api: DemoApi): void;
+  /** Demos declare NO parameter and use the scene-kit verbs (setShading,
+   *  drive, …) — every callback runs inside withKit(), so the verbs hit the
+   *  selection's recorder. */
+  enter(): void;
   /** drive the whole composition from progress p (0..1). */
-  apply(p: number, api: DemoApi): void;
-  exit(api: DemoApi): void;
+  apply(p: number): void;
+  /** OPTIONAL: the kit auto-restores every recorded write on deselect. Keep
+   *  exit() only for truly custom teardown (disposing an object the demo made,
+   *  clearing part offsets — neither is recorded); it runs BEFORE auto-restore. */
+  exit?(): void;
 }
 
 // The seated three-quarter pose (matches the /lens boot camera). `distance` is
@@ -79,6 +108,14 @@ const SEATED = { azimuth: 0.61, elevation: 0.26 };
 const RISE_START = { azimuth: -1.35, elevation: 0.1, distScale: 0.45, fov: 30 };
 const RISE_END = { azimuth: 0.85, elevation: 0.42, distScale: 1.95, fov: 24 };
 const RISE_A0 = 0.18;
+// smoothstep(0,1,·) as a pose-path segment ease (the demos' standard in/out).
+const ss01 = (t: number) => smoothstep(0, 1, t);
+// the whole crane eased 0→1 by smoothstep (was four hand-lerps in apply).
+/* prettier-ignore */
+const risePose = posePath([
+  { p: 0, pose: { az: RISE_START.azimuth, el: RISE_START.elevation, fov: RISE_START.fov, dist: BASE_DIST * RISE_START.distScale } },
+  { p: 1, pose: { az: RISE_END.azimuth, el: RISE_END.elevation, fov: RISE_END.fov, dist: BASE_DIST * RISE_END.distScale }, ease: ss01 },
+]);
 
 // Filmstrip camera path: open ON the front-ring engravings (the very text the
 // strips display), then track sideways + pull back so the writing reads as
@@ -120,8 +157,7 @@ const TAU = Math.PI * 2;
 // Filmstrip: near-white below the roll line, warm near-black above.
 const FILM_LIGHT = "#f6f2e9";
 const FILM_DARK = "#1c120b";
-// Ember palette wipe pair (WIPE_BACKDROPS.ember in materials/shading.ts):
-// deep brown-black stage, bold orange field.
+// Ember palette page-wipe pair: deep brown-black stage, bold orange field.
 const EMBER_BELOW = "#160d07";
 const EMBER_ORANGE = "#ff5c1f";
 
@@ -139,50 +175,42 @@ const LOOK_FG = ["#f2e8cf", "#201c15", "#f2e8cf", EMBER_BELOW];
 // dist·tan(fov/2) framing constant: holds the lens size while the fov drifts
 const LOOK_FRAME = 2.9;
 const LOOK_FOV = { lo: 33, hi: 24 };
-// Lookbook swap bookkeeping (module lets — one demo instance, reset in enter):
-// lookSeg = segment the scrub is in; lookBgSeg = segment the page ground shows
-// (flips at the transition's hidden swap beat so bg and look cut TOGETHER);
-// lookPendingBg = where a retargeted in-flight swap should land the ground.
-let lookSaved: ShadingMode = "ink";
-let lookSeg: number | null = null;
-let lookBgSeg = 0;
-let lookPendingBg = 0;
-let lookReduced = false;
+// Lookbook: the segment/ground/retarget bookkeeping (was five module lets)
+// now lives inside one spans() controller — this handle is all that's left.
+let lookSpans: ReturnType<KitApi["spans"]> | null = null;
 
 // Poster: long-lens flattened hero composition. Low fov + proportionally far
 // camera renders the lens near-orthographic — a graphic object on the type.
 const POSTER_FOV = 14;
 const POSTER_FRAME = 3.35;
 const POSTER_SWAP_P = 0.55; // riso → bronze blink boundary
-let posterSaved: ShadingMode = "ink";
-let posterLook: number | null = null;
+// the single riso→bronze boundary (blink both ways) is now a spans() controller.
+let posterSpans: ReturnType<KitApi["spans"]> | null = null;
 
-// Lookbook camera: slow continuous FORWARD orbit — open dead on the mount
-// face (azimuth −π/2, the one face no other scene shows), end on the front
-// element three-quarter — with a gentle long-lens fov drift; distance rides
-// the framing constant so the lens holds its size across the looks.
-function lookPose(p: number) {
-  const fov = lerp(LOOK_FOV.lo, LOOK_FOV.hi, p);
-  return {
-    azimuth: lerp(-Math.PI / 2, 1.05, p),
-    elevation: lerp(0.1, 0.28, p),
-    distance: LOOK_FRAME / Math.tan((fov * Math.PI) / 360),
-    fov,
-  };
-}
+// Lookbook camera: slow continuous FORWARD orbit — open dead on the mount face
+// (azimuth −π/2, the one face no other scene shows), end on the front-element
+// three-quarter — with a gentle long-lens fov drift; distance rides the framing
+// constant (frame field) so the lens holds its size across the looks.
+const lookPath = posePath([
+  {
+    p: 0,
+    pose: { az: -Math.PI / 2, el: 0.1, fov: LOOK_FOV.lo, frame: LOOK_FRAME },
+  },
+  { p: 1, pose: { az: 1.05, el: 0.28, fov: LOOK_FOV.hi, frame: LOOK_FRAME } },
+]);
 
-// The lookbook's page side of a segment — flat ground + caption — driven from
-// lookBgSeg so it cuts at the swap BEAT, not at the scrub crossing.
-function lookStage(api: DemoApi): void {
-  const bg = LOOK_BG[lookBgSeg];
-  api.setPageWipe({ p: 1, skewDeg: 0, below: bg, above: bg });
-  api.setPageText({
+// The lookbook's page side of one segment — flat ground + caption. spans() calls
+// this at the swap BEAT (so bg and look cut together), not at the scrub crossing.
+function lookStage(seg: number): void {
+  const bg = LOOK_BG[seg];
+  setPageWipe({ p: 1, skewDeg: 0, below: bg, above: bg });
+  setPageText({
     // specimen label, mid-left — clear of the model in every segment (the
     // bottom-centre default collides with the lens rim at the later poses)
     front: {
-      text: LOOK_LABELS[lookBgSeg],
-      sub: `0${lookBgSeg + 1} / 04`,
-      color: LOOK_FG[lookBgSeg],
+      text: LOOK_LABELS[seg],
+      sub: `0${seg + 1} / 04`,
+      color: LOOK_FG[seg],
       x: 0.07,
       y: 0.5,
       align: "left",
@@ -244,14 +272,29 @@ const PRISM_ORTHO_FOV = 3;
 const PRISM_DIVE_FOV = 45;
 const PRISM_FRAME =
   BASE_DIST * PRISM_DIST * Math.tan((PRISM_DIVE_FOV * Math.PI) / 360);
-const prismDist = (fov: number) =>
-  PRISM_FRAME / Math.tan((fov * Math.PI) / 360);
 let prism: PrismLight | null = null;
-let prismSaved: ShadingMode = "realistic";
-// beat-keyed look: "flat" for the 2D diagram, "ink" once the dive has taken
-// the viewer into the glass (dimensionality returns with the cel bands). The
-// cut rides the ISO_ON snap — only the (identical) glass is on screen.
-let prismLook: ShadingMode = "flat";
+// beat-keyed look (flat 2D diagram → ink once the dive is inside the glass) is
+// now sequenced by spans(); this handle is the controller.
+let prismShade: ReturnType<KitApi["spans"]> | null = null;
+// Camera: ortho 2D-diagram framing → dive through the mount into the glass
+// (perspective returns as dist collapses off the frame field onto the near
+// dolly) → pull back out and seat. Every field but targetY is keyframed here;
+// targetY keeps its overlapping descend/recenter in apply() (one ease per
+// segment can't fold that overlap). Replaces the six hand-stacked pose lerps.
+// carry-forward keys: az holds throughout; each key lists only the changing
+// field, and a bare { p } holds the pose flat across that segment. dive =
+// ortho→perspective with the frame-locked dist collapsing onto the near dolly.
+/* prettier-ignore */
+const prismPose = posePath([
+  { p: 0.0, pose: { az: SEATED.azimuth, el: PRISM_EL, fov: PRISM_ORTHO_FOV, frame: PRISM_FRAME } },
+  { p: 0.3 },                                                                    // hold the ortho diagram framing
+  { p: 0.38, pose: { fov: PRISM_DIVE_FOV, dist: PRISM_NEAR_DIST }, ease: ss01 }, // dive into the glass
+  { p: 0.64 },                                                                   // hold near while descending the stack
+  { p: 0.74, pose: { dist: BASE_DIST * 1.45 }, ease: ss01 },                     // pull back out, overshooting the seat
+  { p: 0.84 },                                                                   // hold wide for the ISO_OFF wrap reveal
+  { p: 0.98, pose: { el: SEATED.elevation, dist: BASE_DIST }, ease: ss01 },      // seat home
+  { p: 1.0 },
+]);
 
 // Ribbon field: the snaking-rays primitive (ray-ribbons.ts) demonstrated
 // end-to-end — six site-palette ribbons emanate from the seated lens (ink on
@@ -408,55 +451,6 @@ const RIB_COLORS = [
   "#5f6f52",
 ].map((c) => new Color(c));
 let ribbons: RayField | null = null;
-let ribbonsSaved: ShadingMode = "ink";
-
-// Card gallery: the filmstrip payoff — the big outer shells roll out into flat
-// sheets (rollout, rank-banded like the filmstrip), CARDIFY squares the sheets
-// into uniform photo cards whose faces develop into pictures, and the finished
-// pentagon of cards turns past the camera as a carousel (model roll about the
-// optical axis — the same rig-safe move the filmstrip uses) while the cream
-// poster ground rises. The inner core stays a whole seated lens throughout.
-// GALLERY_BAND drives BOTH the rollout and the cardify rank masks — only what
-// unrolls becomes a card.
-const GALLERY_BAND = { lo: 0.62, hi: 1 };
-const GALLERY_START = {
-  azimuth: 1.45,
-  elevation: 0.08,
-  distScale: 0.55,
-  fov: 30,
-  targetY: 0.7,
-};
-const GALLERY_MID = { azimuth: 1.0, elevation: 0.26, distScale: 1.5, fov: 40 };
-const GALLERY_END = { azimuth: 0.7, elevation: 0.18, distScale: 1.95, fov: 32 };
-/** carousel roll (rad) across the arrange beat — cards parade past the camera */
-const GALLERY_ROLL = -1.15;
-let gallerySaved: ShadingMode = "ink";
-
-// Genie: the macOS dock-minimize gesture on the whole lens (materials/genie
-// uGenie — the funnel warp composes after cardify). One scrub: suck the seated
-// lens down the curved taper into a flat 2D "dock" bar at the lower right,
-// hold, then release with a springy restore (springEaseFn — anime.js, demo
-// layer only) whose overshoot lands as a little nod of the whole model.
-// GENIE_T is the funnel target in MODEL mm; the dock bar is placed at its
-// world-space image via MODEL_TO_WORLD (the boot transform: model (x,y,z) →
-// world 0.05·(y, −z, −x) + the recentring offset, read off the live scene).
-const GENIE_T: [number, number, number] = [0, 88, 48];
-const MODEL_TO_WORLD = (m: [number, number, number]) =>
-  new Vector3(
-    0.05 * m[1] - 1.78875,
-    -0.05 * m[2] + 0.00225,
-    -0.05 * m[0] - 0.0032,
-  );
-const GENIE_POSE = {
-  azimuth: SEATED.azimuth,
-  elevation: 0.24,
-  distance: BASE_DIST * 1.3,
-};
-const GENIE_SUCK_END = 0.55; // scrub: fully docked here …
-const GENIE_RELEASE = 0.62; // … held until here, then the spring restore
-const genieSpring = springEaseFn(90, 6); // visible bounce on the restore
-let genieDock: Mesh | null = null;
-let genieSaved: ShadingMode = "ink";
 
 // Piece by piece: the per-part showcase — SceneHandle.setPartOffset driven by
 // ONE anime.js timeline (explore/motion.ts; autoplay OFF, scrubbed via
@@ -478,7 +472,6 @@ const CLOCK = {
   iris: { a: 0 },
 };
 let clockTl: Timeline | null = null;
-let clockSaved: ShadingMode = "ink";
 
 // The mechanical-ballet beat map (ms), grouped by which SIDE the camera shows:
 // FRONT — rings counter-rotate, the front glass fans, an iris wink, glass
@@ -553,8 +546,8 @@ function buildClockTimeline(): Timeline {
 // Flush the timeline's current values into the scene as part offsets. PCB
 // components ride the board's tween so the pair stays one body (they are
 // sibling nodes, not children — the explode tier travels them together too).
-function applyClockOffsets(api: DemoApi): void {
-  const s = api.scene;
+function applyClockOffsets(): void {
+  const s = scene();
   s.setPartOffset("Ring_Zoom", { rotation: [0, CLOCK.ringZoom.ry, 0] });
   s.setPartOffset("Ring_Focus", { rotation: [0, CLOCK.ringFocus.ry, 0] });
   s.setPartOffset("Cam_Barrel", { rotation: [0, CLOCK.camBarrel.ry, 0] });
@@ -571,7 +564,7 @@ function applyClockOffsets(api: DemoApi): void {
   };
   s.setPartOffset("PCB_Rear", pcb);
   s.setPartOffset("PCB_Components", pcb);
-  api.state.apertureTarget = CLOCK.iris.a;
+  drive("aperture", CLOCK.iris.a);
 }
 
 function posterPose(p: number) {
@@ -588,66 +581,54 @@ export const DEMOS: LensDemo[] = [
     id: "d-rise",
     label: "Rise",
     hint: "cream line rises — the lens reassembles behind it",
-    enter(api) {
-      api.scene.setTransparentBackground(true);
+    enter() {
+      setTransparentBackground(true);
       // engage the pose at the start framing so nothing pops before the scrub
-      api.scene.setCameraPose({
-        azimuth: RISE_START.azimuth,
-        elevation: RISE_START.elevation,
-        distance: BASE_DIST * RISE_START.distScale,
-        fov: RISE_START.fov,
-      });
+      setCameraPose(risePose(0));
     },
-    apply(p, api) {
-      const s = smoothstep(0, 1, p);
+    apply(p) {
       // hard cream-below / black-above line rising with a slight left tilt;
       // already low in frame at p 0 so the detail open carries the identity
-      api.setPageWipe({
+      setPageWipe({
         p: lerp(0.06, 1, p),
         skewDeg: -6,
         below: CREAM,
         above: NEAR_BLACK,
       });
       // the lens reassembles as the line rises (assemble channel RISE_A0 → 0)
-      api.state.zoomTarget = 0;
-      api.state.focusTarget = 0;
-      api.state.apertureTarget = 0;
-      api.state.assembleTarget = RISE_A0 * (1 - s);
+      drive("zoom", 0);
+      drive("focus", 0);
+      drive("aperture", 0);
+      drive("assemble", RISE_A0 * (1 - ss01(p)));
       // crane from the mount-detail crop out and up to the high long-lens land
-      api.scene.setCameraPose({
-        azimuth: lerp(RISE_START.azimuth, RISE_END.azimuth, s),
-        elevation: lerp(RISE_START.elevation, RISE_END.elevation, s),
-        distance: BASE_DIST * lerp(RISE_START.distScale, RISE_END.distScale, s),
-        fov: lerp(RISE_START.fov, RISE_END.fov, s),
-      });
+      setCameraPose(risePose(p));
     },
-    exit(api) {
-      api.scene.setCameraPose(null);
-      api.scene.setTransparentBackground(false);
-      api.setPageWipe(null);
-      api.state.assembleTarget = 0;
-    },
+    // no exit() — auto-restore returns the bench (pose, bg, wipe, assemble).
   },
 
   {
     id: "d-filmstrip",
     label: "Filmstrip",
     hint: "the outer shells unroll into flat strips as the light rises",
-    enter(api) {
-      api.scene.setTransparentBackground(true);
+    enter() {
+      setTransparentBackground(true);
       // Only the OUTER shells roll (rank ≥ ~0.45) — the inner core stays a whole
       // lens for the flat strips to peel away from. Sector fully open.
-      uRolloutRankLo.value = 0.45;
-      uRolloutRankHi.value = 1;
-      uRolloutMaskCenter.value = 0;
-      uRolloutMaskWidth.value = TAU;
+      set(kRolloutRankLo, 0.45);
+      set(kRolloutRankHi, 1);
+      set(kRolloutMaskCenter, 0);
+      set(kRolloutMaskWidth, TAU);
+      // channels parked once (d-rise idiom); rollout is the demo's only drive
+      drive("zoom", 0);
+      drive("focus", 0);
+      drive("aperture", 0);
       // Roll the lens 180° about its own axis (front stays +x): the front-ring
       // engravings are authored to read upright in THIS roll phase, and the
       // demo opens right on them. Rolling about the optical axis only
       // re-phases the shell theta, so the rollout itself is unaffected.
-      api.scene.setModelOrientation({ x: Math.PI });
+      setModelOrientation({ x: Math.PI });
       // open ON the front-ring engravings — a text-filled detail crop
-      api.scene.setCameraPose({
+      setCameraPose({
         azimuth: FILM_START.azimuth,
         elevation: FILM_START.elevation,
         distance: BASE_DIST * FILM_START.distScale,
@@ -655,19 +636,16 @@ export const DEMOS: LensDemo[] = [
         targetY: FILM_START.targetY,
       });
     },
-    apply(p, api) {
+    apply(p) {
       // camera runs AHEAD of the roll: parked at the side pull-out by p≈0.55,
       // while the strips are still short — the unroll then plays out inside a
       // steady frame instead of down the axis
       const s = smoothstep(0, 0.55, p);
-      api.state.zoomTarget = 0;
-      api.state.focusTarget = 0;
-      api.state.apertureTarget = 0;
       // unroll as the scrub advances — the traveling roll front is the subject
-      api.state.rolloutTarget = p;
+      drive("rollout", p);
       // track sideways off the engravings and pull back so the growing flat
       // strips stay in frame; the roll front sits mid-frame around p 0.4–0.7
-      api.scene.setCameraPose({
+      setCameraPose({
         azimuth: lerp(FILM_START.azimuth, FILM_END.azimuth, s),
         elevation: lerp(FILM_START.elevation, FILM_END.elevation, s),
         distance: lerp(
@@ -679,7 +657,7 @@ export const DEMOS: LensDemo[] = [
         targetY: lerp(FILM_START.targetY, 0, s),
       });
       // near-white below rising with the roll, warm near-black above, right-dipped
-      api.setPageWipe({
+      setPageWipe({
         p: lerp(0.12, 0.82, p),
         skewDeg: 7,
         below: FILM_LIGHT,
@@ -687,7 +665,7 @@ export const DEMOS: LensDemo[] = [
       });
       // front kicker only — the strips are the star. Fades in after the wipe
       // line has passed the caption's anchor, so the dark ink lands on light.
-      api.setPageText({
+      setPageText({
         front: {
           text: "Every part, laid flat.",
           color: FILM_DARK,
@@ -696,198 +674,77 @@ export const DEMOS: LensDemo[] = [
         },
       });
     },
-    exit(api) {
-      api.scene.setCameraPose(null);
-      api.scene.setTransparentBackground(false);
-      api.scene.setModelOrientation(null);
-      api.setPageWipe(null);
-      api.state.rolloutTarget = 0;
-      uRolloutRankLo.value = 0;
-      uRolloutRankHi.value = 1;
-      uRolloutMaskCenter.value = 0;
-      uRolloutMaskWidth.value = TAU;
-    },
-  },
-
-  {
-    id: "d-gallery",
-    label: "Card gallery",
-    hint: "the outer shells unroll, square into photo cards, and parade past",
-    durationMs: 12000,
-    enter(api) {
-      // ink is the validated look for the photo crossfade; instant land +
-      // retarget-only follow-up, as in the lookbook
-      gallerySaved = api.scene.getShading();
-      api.scene.setShading("ink");
-      api.scene.swapShading("ink");
-      api.scene.setTransparentBackground(true);
-      // ONE band drives both masks: what unrolls is exactly what cardifies
-      uRolloutRankLo.value = GALLERY_BAND.lo;
-      uRolloutRankHi.value = GALLERY_BAND.hi;
-      uRolloutMaskCenter.value = 0;
-      uRolloutMaskWidth.value = TAU;
-      uCardifyRankLo.value = GALLERY_BAND.lo;
-      uCardifyRankHi.value = GALLERY_BAND.hi;
-      // filmstrip's roll phase: the front-ring engravings read upright at the
-      // detail open; the carousel beat then adds to this same axis
-      api.scene.setModelOrientation({ x: Math.PI });
-      api.scene.setCameraPose({
-        azimuth: GALLERY_START.azimuth,
-        elevation: GALLERY_START.elevation,
-        distance: BASE_DIST * GALLERY_START.distScale,
-        fov: GALLERY_START.fov,
-        targetY: GALLERY_START.targetY,
-      });
-    },
-    apply(p, api) {
-      api.state.zoomTarget = 0;
-      api.state.focusTarget = 0;
-      api.state.apertureTarget = 0;
-      // beat 1 — the outer shells roll out into flat sheets (staggered inside)
-      api.state.rolloutTarget = smoothstep(0.04, 0.42, p);
-      // beat 2 — cardify squares the sheets; the photo faces develop over the
-      // last stretch of the channel (cardPhotoMix rides uCardify 0.55..0.95)
-      api.state.cardifyTarget = smoothstep(0.4, 0.7, p);
-      // beat 3 — the finished pentagon of cards parades past the camera
-      const roll = GALLERY_ROLL * smoothstep(0.58, 0.98, p);
-      api.scene.setModelOrientation({ x: Math.PI + roll });
-      // camera: detail open on the engravings → pull out for the unroll →
-      // settle on a steady three-quarter while the carousel does the moving
-      const s1 = smoothstep(0, 0.5, p);
-      const s2 = smoothstep(0.55, 0.95, p);
-      const az = lerp(
-        lerp(GALLERY_START.azimuth, GALLERY_MID.azimuth, s1),
-        GALLERY_END.azimuth,
-        s2,
-      );
-      const el = lerp(
-        lerp(GALLERY_START.elevation, GALLERY_MID.elevation, s1),
-        GALLERY_END.elevation,
-        s2,
-      );
-      const dist =
-        BASE_DIST *
-        lerp(
-          lerp(GALLERY_START.distScale, GALLERY_MID.distScale, s1),
-          GALLERY_END.distScale,
-          s2,
-        );
-      const fov = lerp(
-        lerp(GALLERY_START.fov, GALLERY_MID.fov, s1),
-        GALLERY_END.fov,
-        s2,
-      );
-      api.scene.setCameraPose({
-        azimuth: az,
-        elevation: el,
-        distance: dist,
-        fov,
-        targetY: lerp(GALLERY_START.targetY, 0, s1),
-      });
-      // poster ground: near-white rising under the cards, warm black above
-      api.setPageWipe({
-        p: lerp(0.1, 0.88, smoothstep(0.18, 0.8, p)),
-        skewDeg: 6,
-        below: FILM_LIGHT,
-        above: FILM_DARK,
-      });
-      // kicker lands once the pictures have developed
-      api.setPageText({
-        front: {
-          text: "Pictures, not parts.",
-          color: FILM_DARK,
-          y: 0.86,
-          opacity: smoothstep(0.62, 0.82, p),
-        },
-      });
-    },
-    exit(api) {
-      api.scene.setCameraPose(null);
-      api.scene.setTransparentBackground(false);
-      api.scene.setModelOrientation(null);
-      api.setPageWipe(null);
-      api.state.rolloutTarget = 0;
-      api.state.cardifyTarget = 0;
-      uRolloutRankLo.value = 0;
-      uRolloutRankHi.value = 1;
-      uRolloutMaskCenter.value = 0;
-      uRolloutMaskWidth.value = TAU;
-      uCardifyRankLo.value = 0;
-      uCardifyRankHi.value = 1;
-      api.scene.setShading(gallerySaved);
-      api.scene.swapShading(gallerySaved);
-    },
+    // no exit() — auto-restore returns the bench (pose, bg, orientation, wipe,
+    // the rollout channel, and the four rollout-mask uniforms).
   },
 
   {
     id: "d-sector",
     label: "Sector solo",
     hint: "one 90° sector tears out, orbits, and reseats — the rest stays whole",
-    enter(api) {
-      api.scene.setTransparentBackground(true);
+    enter() {
+      setTransparentBackground(true);
       // Solo a ~90° sector; the rest of the lens stays bit-exact seated
       // (assemble mask). The lens stands front-element-UP so the overhead open
       // reads the glass as a full circle.
-      uAssembleMaskWidth.value = Math.PI / 2;
-      uAssembleMaskCenter.value = SECTOR_CENTER;
-      api.scene.setModelOrientation({ z: 0 });
-      api.scene.setCameraPose({
+      set(kAssembleMaskWidth, Math.PI / 2);
+      set(kAssembleMaskCenter, SECTOR_CENTER);
+      // channels parked once (d-rise idiom); assemble is the demo's only drive
+      drive("zoom", 0);
+      drive("focus", 0);
+      drive("aperture", 0);
+      setModelOrientation({ z: 0 });
+      setCameraPose({
         azimuth: SEATED.azimuth + SECTOR_ORBIT,
         elevation: SECTOR_TOP.elevation,
         distance: BASE_DIST * SECTOR_TOP.distScale,
       });
     },
-    apply(p, api) {
-      api.state.zoomTarget = 0;
-      api.state.focusTarget = 0;
-      api.state.apertureTarget = 0;
+    apply(p) {
       // one-scrub pulse: tears out to ~0.85 by p≈0.45, reels back in by p=1
       const up = smoothstep(0, 0.45, p);
       const down = smoothstep(0.45, 1, p);
       const pulse = up * (1 - down); // 0 → 1 (at p≈0.45) → 0
-      api.state.assembleTarget = 0.85 * pulse;
+      drive("assemble", 0.85 * pulse);
       // the sector tears out toward the overhead camera, then the lens tumbles
       // back seated (orientation z 0 → boot −π/2) while the camera swings down
       // and orbits to a LOW three-quarter for the reseat
       const swing = smoothstep(0.25, 0.75, p);
-      api.scene.setModelOrientation({ z: (-swing * Math.PI) / 2 });
-      api.scene.setCameraPose({
+      setModelOrientation({ z: (-swing * Math.PI) / 2 });
+      setCameraPose({
         azimuth: SEATED.azimuth + SECTOR_ORBIT * (1 - swing),
         elevation: lerp(SECTOR_TOP.elevation, SECTOR_END_EL, swing),
         distance: BASE_DIST * lerp(SECTOR_TOP.distScale, SECTOR_DIST, swing),
       });
       // ember wipe, steep left-dipped line following the pulse
-      api.setPageWipe({
+      setPageWipe({
         p: 0.6 * pulse,
         skewDeg: -12,
         below: EMBER_BELOW,
         above: EMBER_ORANGE,
       });
     },
-    exit(api) {
-      api.scene.setCameraPose(null);
-      api.scene.setTransparentBackground(false);
-      api.scene.setModelOrientation(null);
-      api.setPageWipe(null);
-      api.state.assembleTarget = 0;
-      uAssembleMaskWidth.value = TAU;
-      uAssembleMaskCenter.value = 0;
-    },
+    // no exit() — auto-restore returns the bench (pose, bg, orientation, wipe,
+    // the assemble channel, and the assemble-mask width/center uniforms).
   },
 
   {
     id: "d-ignition",
     label: "Ignition",
     hint: "a bold orange field wipes up and the scattered parts snap home",
-    enter(api) {
-      api.scene.setTransparentBackground(true);
+    enter() {
+      setTransparentBackground(true);
       // full assembly — mask open (self-contained, in case a solo demo ran)
-      uAssembleMaskWidth.value = TAU;
-      uAssembleMaskCenter.value = 0;
+      set(kAssembleMaskWidth, TAU);
+      set(kAssembleMaskCenter, 0);
+      // channels parked once (d-rise idiom); assemble is the demo's only drive.
       // fully disassembled at the start; worm's-eye open — camera under the
       // scattered parts, close and wide, looking up into them
-      api.state.assembleTarget = 1;
-      api.scene.setCameraPose({
+      drive("zoom", 0);
+      drive("focus", 0);
+      drive("aperture", 0);
+      drive("assemble", 1);
+      setCameraPose({
         azimuth: SEATED.azimuth,
         elevation: IGNITE_START.elevation,
         distance: BASE_DIST * IGNITE_START.distScale,
@@ -895,16 +752,13 @@ export const DEMOS: LensDemo[] = [
         targetY: IGNITE_START.targetY,
       });
     },
-    apply(p, api) {
+    apply(p) {
       const s = smoothstep(0, 1, p);
-      api.state.zoomTarget = 0;
-      api.state.focusTarget = 0;
-      api.state.apertureTarget = 0;
       // compressed ease: held disassembled, then a fast snap home over 0.25..0.8
-      api.state.assembleTarget = 1 - smoothstep(0.25, 0.8, p);
+      drive("assemble", 1 - smoothstep(0.25, 0.8, p));
       // the camera rises and levels as the orange field climbs; distance grows
       // while fov narrows — the dolly-zoom stretch rides the whole climb
-      api.scene.setCameraPose({
+      setCameraPose({
         azimuth: SEATED.azimuth,
         elevation: lerp(IGNITE_START.elevation, SEATED.elevation, s),
         distance: BASE_DIST * lerp(IGNITE_START.distScale, IGNITE_DIST_HI, s),
@@ -912,7 +766,7 @@ export const DEMOS: LensDemo[] = [
         targetY: lerp(IGNITE_START.targetY, 0, s),
       });
       // bold orange rising from below with a steep right-dipped line, near-black above
-      api.setPageWipe({
+      setPageWipe({
         p,
         skewDeg: 14,
         below: EMBER_ORANGE,
@@ -922,7 +776,7 @@ export const DEMOS: LensDemo[] = [
       // the back word SLAMS in behind the seated lens (opacity + scale snap)
       const snap = smoothstep(0.78, 0.83, p);
       if (snap > 0) {
-        api.setPageText({
+        setPageText({
           back: {
             text: "ALEX LIN",
             color: EMBER_BELOW,
@@ -938,15 +792,11 @@ export const DEMOS: LensDemo[] = [
           },
         });
       } else {
-        api.setPageText(null);
+        setPageText(null);
       }
     },
-    exit(api) {
-      api.scene.setCameraPose(null);
-      api.scene.setTransparentBackground(false);
-      api.setPageWipe(null);
-      api.state.assembleTarget = 0;
-    },
+    // no exit() — auto-restore returns the bench (pose, bg, wipe, the assemble
+    // channel, and the assemble-mask uniforms).
   },
 
   {
@@ -954,62 +804,28 @@ export const DEMOS: LensDemo[] = [
     label: "Lookbook",
     hint: "four looks, four grounds — each cut carried by a different gesture",
     durationMs: 12000,
-    enter(api) {
-      lookSaved = api.scene.getShading();
-      lookSeg = null;
-      lookReduced = window.matchMedia(
-        "(prefers-reduced-motion: reduce)",
-      ).matches;
-      api.scene.setTransparentBackground(true);
+    enter() {
+      setTransparentBackground(true);
       // channels parked ONCE here, not per apply — blink/molt drive aperture/
       // unwrap/curl during the cuts and a per-frame rewrite would fight them
-      api.state.zoomTarget = 0;
-      api.state.focusTarget = 0;
-      api.state.apertureTarget = 0;
-      api.scene.setCameraPose(lookPose(0));
+      drive("zoom", 0);
+      drive("focus", 0);
+      drive("aperture", 0);
+      setCameraPose(lookPath(0));
+      // four looks across three boundaries; each single crossing carries the
+      // boundary-keyed cut; the page ground flips at the swap beat (present).
+      lookSpans = spans({
+        at: [0.25, 0.5, 0.75],
+        looks: LOOKS,
+        cut: (b) => LOOK_CUTS[b],
+        present: lookStage,
+      });
     },
-    apply(p, api) {
-      const seg = p < 0.25 ? 0 : p < 0.5 ? 1 : p < 0.75 ? 2 : 3;
-      if (seg !== lookSeg) {
-        if (lookSeg == null || lookReduced) {
-          // entry / reduced motion: land the look and its ground instantly
-          // (the trailing swapShading only RETARGETS a swap still in flight,
-          // so its beat can't re-apply a stale mode afterwards)
-          api.scene.setShading(LOOKS[seg]);
-          api.scene.swapShading(LOOKS[seg]);
-          lookBgSeg = lookPendingBg = seg;
-        } else {
-          // boundary crossed (either direction; a jump lands on p's segment):
-          // the cut rides the boundary's choreography and the page ground
-          // flips at the hidden swap beat (t=0.5 for every registry
-          // transition) via onProgress. Module lets, not captures — a
-          // retargeted in-flight swap keeps its ORIGINAL onProgress, so the
-          // closure must read the live pending segment.
-          lookPendingBg = seg;
-          api.scene.swapShading(LOOKS[seg], {
-            transition: LOOK_CUTS[seg > lookSeg ? seg - 1 : seg],
-            onProgress: (t) => {
-              if (t >= 0.5 && lookBgSeg !== lookPendingBg) {
-                lookBgSeg = lookPendingBg;
-                lookStage(api);
-              }
-            },
-          });
-        }
-        lookSeg = seg;
-      }
-      lookStage(api);
-      api.scene.setCameraPose(lookPose(p));
+    apply(p) {
+      lookSpans?.apply(p);
+      setCameraPose(lookPath(p));
     },
-    exit(api) {
-      api.scene.setCameraPose(null);
-      api.scene.setTransparentBackground(false);
-      api.setPageWipe(null);
-      // instant restore of the bench look; the follow-up swapShading only
-      // retargets a swap still in flight (see the enter/apply note)
-      api.scene.setShading(lookSaved);
-      api.scene.swapShading(lookSaved);
-    },
+    // no exit() — spans records the bench look; auto-restore handles the rest.
   },
 
   {
@@ -1017,45 +833,42 @@ export const DEMOS: LensDemo[] = [
     label: "Poster",
     hint: "long-lens flat graphic — the lens sits ON the type",
     durationMs: 10000,
-    enter(api) {
-      posterSaved = api.scene.getShading();
-      posterLook = null;
-      api.scene.setTransparentBackground(true);
+    enter() {
+      setTransparentBackground(true);
+      // The whole poster is a flat graphic on the type — hold the silhouette
+      // LOD for its entire run so the lens reads as a clean drawn shape (no
+      // greeble clutter) at this near-orthographic long-lens size.
+      setIsolate("silhouette");
       // parked once — blink drives aperture during the mid-scrub cut
-      api.state.zoomTarget = 0;
-      api.state.focusTarget = 0;
-      api.state.apertureTarget = 0;
-      api.scene.setCameraPose(posterPose(0));
+      drive("zoom", 0);
+      drive("focus", 0);
+      drive("aperture", 0);
+      // riso below the boundary, bronze above — blink carries the single cut
+      // both ways (instant land on entry/jump; spans records the bench look).
+      posterSpans = spans({
+        at: [POSTER_SWAP_P],
+        looks: ["riso", "bronze"],
+        cut: () => "blink",
+      });
+      setCameraPose(posterPose(0));
     },
-    apply(p, api) {
+    apply(p) {
       const s = smoothstep(0, 1, p);
-      // riso below the boundary, bronze above — blink carries the cut both ways
-      const look = p < POSTER_SWAP_P ? 0 : 1;
-      if (look !== posterLook) {
-        if (posterLook == null) {
-          api.scene.setShading("riso");
-          api.scene.swapShading("riso"); // retarget-only, as in the lookbook
-        } else {
-          api.scene.swapShading(look ? "bronze" : "riso", {
-            transition: "blink",
-          });
-        }
-        posterLook = look;
-      }
+      posterSpans?.apply(p);
       // gentle explode breath — the silhouette swells over the letterforms.
       // KEEP TINY: the near-orthographic projection magnifies the axial spread
       // across the frame (0.25 buried the type entirely).
       const breath = smoothstep(0, 1, 1 - Math.abs(2 * p - 1));
-      api.state.explodeTarget = 0.08 * breath;
+      drive("explode", 0.08 * breath);
       // slow hard line climbing the poster: cream ground gives way to
       // near-black, recoloring the text-ground relationship mid-scrub
-      api.setPageWipe({
+      setPageWipe({
         p: lerp(0.3, 0.72, s),
         skewDeg: -7,
         below: CREAM,
         above: NEAR_BLACK,
       });
-      api.setPageText({
+      setPageText({
         // giant back type the lens sits ON; its slight counter-drift against
         // the azimuth sweep is the model/text parallax
         back: {
@@ -1072,16 +885,10 @@ export const DEMOS: LensDemo[] = [
           align: "left",
         },
       });
-      api.scene.setCameraPose(posterPose(p));
+      setCameraPose(posterPose(p));
     },
-    exit(api) {
-      api.scene.setCameraPose(null);
-      api.scene.setTransparentBackground(false);
-      api.setPageWipe(null);
-      api.state.explodeTarget = 0;
-      api.scene.setShading(posterSaved);
-      api.scene.swapShading(posterSaved);
-    },
+    // no exit() — auto-restore returns the bench (pose, bg, wipe, isolate, the
+    // explode channel, and the look spans records).
   },
 
   {
@@ -1089,20 +896,11 @@ export const DEMOS: LensDemo[] = [
     label: "Prism",
     hint: "a flat rainbow fans from the glass — then down through the elements, and the shell wraps home",
     durationMs: 12000,
-    enter(api) {
-      // Beat 1 is a printed 2D diagram, so the lens wears the flat vector look
-      // (owner: "It's a 2D image at that point in time"); the dive swaps it to
-      // ink — the cel bands returning WITH the dimensionality — via the
-      // beat-keyed cut in apply(). Instant land + retarget-only follow-up, as
-      // in the lookbook.
-      prismSaved = api.scene.getShading();
-      prismLook = "flat";
-      api.scene.setShading("flat");
-      api.scene.swapShading("flat");
-      api.scene.setTransparentBackground(true);
+    enter() {
+      setTransparentBackground(true);
       // stand the lens on end: boot z (−π/2) points the front at world +x, so
       // z = π turns the front element to −y (straight down)
-      api.scene.setModelOrientation({ z: Math.PI });
+      setModelOrientation({ z: Math.PI });
       prism = createPrismLight(PRISM_RAINBOW.length);
       prism.setColors(PRISM_RAINBOW);
       prism.setIntensity(0);
@@ -1111,38 +909,44 @@ export const DEMOS: LensDemo[] = [
       // second render pass after the main frame, anchored to the projected
       // mount-entry / dispersion points so it tracks the lens while its edges
       // stay ruler-parallel on screen
-      api.scene.setOverlayPass((renderer, camera) =>
-        prism?.render(renderer, camera),
-      );
+      setOverlayPass((renderer, camera) => prism?.render(renderer, camera));
       // channels parked once; assemble is the demo's only mechanism drive
-      api.state.zoomTarget = 0;
-      api.state.focusTarget = 0;
-      api.state.apertureTarget = 0;
-      api.scene.setCameraPose({
-        azimuth: SEATED.azimuth,
-        elevation: PRISM_EL,
-        distance: prismDist(PRISM_ORTHO_FOV),
-        fov: PRISM_ORTHO_FOV,
-      });
+      drive("zoom", 0);
+      drive("focus", 0);
+      drive("aperture", 0);
+      // Beat 1 is a printed 2D diagram, so the lens wears the flat vector look
+      // (owner: "It's a 2D image at that point in time"); the dive swaps it to
+      // ink — the cel bands returning WITH the dimensionality. The cut is
+      // instant (no gesture): it hides in the ISO_ON snap, where only the
+      // (identically-built) glass is on screen. spans handles change detection
+      // AND records the bench look for auto-restore.
+      prismShade = spans({ at: [PRISM_ISO_ON], looks: ["flat", "ink"] });
+      setCameraPose(prismPose(0));
     },
-    apply(p, api) {
-      // beat 2 window: barrel cut away, the camera travels through the glass
-      // assembly alone. "glass", not "optics" — the authored iris metal reads
-      // as a stark white puck on the dark stage; the through-ribbon bridges
-      // the assembly's real mid air gap instead.
-      api.scene.setIsolate(
-        p >= PRISM_ISO_ON && p < PRISM_ISO_OFF ? "glass" : null,
+    apply(p) {
+      // Isolate choreography, in one handoff (no fighting):
+      //  • beat 1 (p < ISO_ON): "silhouette" LOD — the 2D ortho diagram drops
+      //    the greebles (screws/decals/iris mechanism/PCB…) so the barrel reads
+      //    as a clean drawn illustration, not a mechanical render.
+      //  • beat 2 window (ISO_ON..ISO_OFF): "glass" — barrel cut away, the
+      //    camera travels through the glass assembly alone. "glass", not
+      //    "optics" — the authored iris metal reads as a stark white puck on
+      //    the dark stage; the through-ribbon bridges the mid-air gap instead.
+      // The silhouette→glass swap lands exactly at ISO_ON, where the dive has
+      // already carried the barrel cut off-frame (same beat the flat→ink cut
+      // hides in), so the shells simply never reappear between the two levels.
+      setIsolate(
+        p < PRISM_ISO_ON ? "silhouette" : p < PRISM_ISO_OFF ? "glass" : null,
       );
-      // flat→ink cut hidden in the ISO_ON snap (both directions): at the
-      // boundary only the glass survives on screen, and glass is built
-      // identically in both looks, so the swap itself is invisible — the cel
-      // bands are simply back when the body returns at ISO_OFF.
-      const look: ShadingMode = p < PRISM_ISO_ON ? "flat" : "ink";
-      if (look !== prismLook) {
-        api.scene.setShading(look);
-        api.scene.swapShading(look); // retarget-only, as in the lookbook
-        prismLook = look;
-      }
+      // flat→ink cut, hidden in the ISO_ON snap (both directions)
+      prismShade?.apply(p);
+      // the stack spreads apart down the light path as the camera enters it,
+      // then (structure back at ISO_OFF) wraps home around the glass. driven
+      // (value+target) so setDrop below is a pure function of p.
+      drive(
+        "assemble",
+        smoothstep(0.36, 0.5, p) * (1 - smoothstep(0.72, 0.95, p)),
+      );
       if (prism) {
         // beat 1 only: the ray diagram fans open, holds, and is gone as the
         // dive begins — the rays never return
@@ -1160,7 +964,7 @@ export const DEMOS: LensDemo[] = [
         // assemble stretch carries the stack down the axis (linear
         // approximation of Barrel_Inner's ladder flight); the through-ribbon
         // stretches with it
-        prism.setDrop(api.state.assemble * 2.1);
+        prism.setDrop(state().assemble * 2.1);
         // the passage recolors the light: rainbow → the site palette as the
         // glass "takes in" the scheme
         const k = smoothstep(0.4, 0.6, p);
@@ -1168,69 +972,40 @@ export const DEMOS: LensDemo[] = [
           prismColors[i].copy(PRISM_RAINBOW[i]).lerp(PRISM_PALETTE[i], k);
         prism.setColors(prismColors);
       }
-      // the stack spreads apart down the light path as the camera enters it,
-      // then (structure back at ISO_OFF) wraps home around the glass
-      api.state.assembleTarget =
-        smoothstep(0.36, 0.5, p) * (1 - smoothstep(0.72, 0.95, p));
       // lay-back tumble DURING the pull-back (glass-only on screen): z π →
       // 3π/2 (≡ the boot −π/2), done before the ISO_OFF reveal so the wrap
       // plays out horizontal — the composition the Rise wrap was tuned on
       const stand = smoothstep(0.72, PRISM_ISO_OFF, p);
-      api.scene.setModelOrientation({ z: Math.PI + (stand * Math.PI) / 2 });
-      // camera: hold the diagram framing, dive to the mount, descend the
-      // stack (the model stays put — the camera does the traveling), then
-      // pull back out into the seated pose. The three moves are sequential,
-      // so chained lerps compose cleanly.
-      const dive = smoothstep(0.3, 0.38, p);
-      const descend = smoothstep(0.38, 0.66, p);
-      // perspective returns across the dive: ortho diagram fov → the boot fov
-      // the descent was tuned at, with the framing-locked pullback collapsing
-      // in step so the lens holds its size until the plunge takes over
-      const fov = lerp(PRISM_ORTHO_FOV, PRISM_DIVE_FOV, dive);
-      // pull-back begins the moment the descent lands and overshoots past the
-      // seated distance, so the ISO_OFF reveal fires wide — the wrap sheets
-      // read as a composition, not giant planes filling a close-up; the final
-      // seat brings the camera home
-      const out = smoothstep(0.64, 0.74, p);
-      const seat = smoothstep(0.84, 0.98, p);
-      let targetY = lerp(0, PRISM_DIVE_Y, dive);
-      targetY = lerp(targetY, PRISM_EXIT_Y, descend);
+      setModelOrientation({ z: Math.PI + (stand * Math.PI) / 2 });
+      // camera: ortho diagram → dive → descend → pull out → seat, keyframed in
+      // prismPose. targetY alone stays hand-lerped: its recenter (0.64–0.72)
+      // overlaps the descend (0.38–0.66), and one ease per posePath segment
+      // can't fold two overlapping windows.
+      const pose = prismPose(p);
+      let targetY = lerp(0, PRISM_DIVE_Y, smoothstep(0.3, 0.38, p));
+      targetY = lerp(targetY, PRISM_EXIT_Y, smoothstep(0.38, 0.66, p));
       // recenter FASTER than the distance pull, so the spread glass column is
       // centered full-frame BEFORE the lay-back tumble starts
       targetY = lerp(targetY, 0, smoothstep(0.64, 0.72, p));
-      let dist = lerp(prismDist(fov), PRISM_NEAR_DIST, dive);
-      dist = lerp(dist, BASE_DIST * 1.45, out);
-      dist = lerp(dist, BASE_DIST, seat);
-      api.scene.setCameraPose({
-        azimuth: SEATED.azimuth,
-        elevation: lerp(PRISM_EL, SEATED.elevation, seat),
-        distance: dist,
-        fov,
-        targetY,
-      });
+      pose.targetY = targetY;
+      setCameraPose(pose);
       // near-black stage for the diagram; the cream site ground rises with
       // the wrap
-      api.setPageWipe({
+      setPageWipe({
         p: lerp(0, 0.85, smoothstep(PRISM_ISO_OFF, 0.97, p)),
         skewDeg: -6,
         below: CREAM,
         above: NEAR_BLACK,
       });
     },
-    exit(api) {
-      api.scene.setCameraPose(null);
-      api.scene.setTransparentBackground(false);
-      api.setPageWipe(null);
-      api.scene.setIsolate(null);
-      api.scene.setModelOrientation(null);
-      api.scene.setOverlayPass(null);
+    exit() {
+      // custom teardown only: dispose the prism light this demo created.
+      // auto-restore handles pose, bg, wipe, isolate, orientation, overlay
+      // pass, the flat/ink look (spans), and the assemble channel.
       if (prism) {
         prism.dispose();
         prism = null;
       }
-      api.state.assembleTarget = 0;
-      api.scene.setShading(prismSaved);
-      api.scene.swapShading(prismSaved);
     },
   },
 
@@ -1239,32 +1014,34 @@ export const DEMOS: LensDemo[] = [
     label: "Ribbon field",
     hint: "solid ribbons snake around the lens on independent paths, then settle into one rainbow band",
     durationMs: 14000,
-    enter(api) {
+    enter() {
       // ink on the dark stage (the lookbook-validated pairing); instant land
       // + retarget-only follow-up, as in the lookbook
-      ribbonsSaved = api.scene.getShading();
-      api.scene.setShading("ink");
-      api.scene.swapShading("ink");
-      api.scene.setTransparentBackground(true);
-      ribbons = createRayField(7, () => api.scene.invalidate());
-      api.scene.setOverlayPass((renderer, camera) =>
-        ribbons?.render(renderer, camera),
-      );
+      setShading("ink");
+      scene().swapShading("ink");
+      setTransparentBackground(true);
+      // capture the raw scene handle: the ray field's invalidate callback and
+      // the overlay-pass render both fire async (outside any withKit bracket),
+      // so they must NOT reach through a verb — the captured handle does the
+      // un-recorded work directly.
+      const sc = scene();
+      ribbons = createRayField(7, () => sc.invalidate());
+      setOverlayPass((renderer, camera) => ribbons?.render(renderer, camera));
       // channels parked once; the model just sits seated — the rays are the show
-      api.state.zoomTarget = 0;
-      api.state.focusTarget = 0;
-      api.state.apertureTarget = 0;
-      api.scene.setCameraPose({
+      drive("zoom", 0);
+      drive("focus", 0);
+      drive("aperture", 0);
+      setCameraPose({
         azimuth: SEATED.azimuth,
         elevation: SEATED.elevation,
         distance: RIB_FRAME / Math.tan((RIB_FOV * Math.PI) / 360),
         fov: RIB_FOV,
       });
     },
-    apply(p, api) {
+    apply(p) {
       if (!ribbons) return;
       // full-frame dark stage behind the transparent canvas
-      api.setPageWipe({
+      setPageWipe({
         p: 1,
         skewDeg: 0,
         below: NEAR_BLACK,
@@ -1312,118 +1089,13 @@ export const DEMOS: LensDemo[] = [
         trim: [0, tGrow],
       });
     },
-    exit(api) {
-      api.scene.setCameraPose(null);
-      api.scene.setTransparentBackground(false);
-      api.setPageWipe(null);
-      api.scene.setOverlayPass(null);
+    exit() {
+      // custom teardown only: dispose the ray field this demo created. auto-
+      // restore handles pose, bg, wipe, the overlay pass, and the ink look.
       if (ribbons) {
         ribbons.dispose();
         ribbons = null;
       }
-      api.scene.setShading(ribbonsSaved);
-      api.scene.swapShading(ribbonsSaved);
-    },
-  },
-
-  {
-    id: "d-genie",
-    label: "Genie",
-    hint: "the lens funnels macOS-style into a dock bar, then springs back",
-    durationMs: 9000,
-    enter(api) {
-      // ink on the cream poster ground; instant land + retarget-only follow-up
-      genieSaved = api.scene.getShading();
-      api.scene.setShading("ink");
-      api.scene.swapShading("ink");
-      api.scene.setTransparentBackground(true);
-      uGenieTarget.value.set(...GENIE_T);
-      // the flat 2D dock bar (design law: only the lens reads 3D) — an unlit
-      // rounded slab at the funnel target's world point, facing the camera
-      const w = 1.7;
-      const h = 0.2;
-      const r = 0.1;
-      const shape = new Shape();
-      shape.moveTo(-w / 2 + r, -h / 2);
-      shape.lineTo(w / 2 - r, -h / 2);
-      shape.absarc(w / 2 - r, 0, r, -Math.PI / 2, Math.PI / 2, false);
-      shape.lineTo(-w / 2 + r, h / 2);
-      shape.absarc(-w / 2 + r, 0, r, Math.PI / 2, (3 * Math.PI) / 2, false);
-      genieDock = new Mesh(
-        new ShapeGeometry(shape),
-        new MeshBasicMaterial({
-          color: new Color(NEAR_BLACK),
-          transparent: true,
-          opacity: 0,
-        }),
-      );
-      genieDock.position.copy(MODEL_TO_WORLD(GENIE_T));
-      // face the fixed demo pose (applyCameraPose's spherical convention)
-      const { azimuth: az, elevation: el, distance: d } = GENIE_POSE;
-      genieDock.lookAt(
-        d * Math.cos(el) * Math.sin(az),
-        d * Math.sin(el),
-        d * Math.cos(el) * Math.cos(az),
-      );
-      genieDock.raycast = () => {};
-      api.scene.addOverlay(genieDock);
-      // channels parked once; genie is the only mechanism drive
-      api.state.zoomTarget = 0;
-      api.state.focusTarget = 0;
-      api.state.apertureTarget = 0;
-      api.scene.setCameraPose(GENIE_POSE);
-    },
-    apply(p, api) {
-      // cream poster ground with the ink caption
-      api.setPageWipe({ p: 1, skewDeg: 0, below: CREAM, above: CREAM });
-      // one scrub: suck → hold docked → springy restore. All pure functions of
-      // p (the spring is a sampled easing, not playback), so the scrub stays
-      // deterministic and bidirectional; Play just sweeps p.
-      let g = smoothstep(0.03, GENIE_SUCK_END, p);
-      let nod = 0;
-      if (p > GENIE_RELEASE) {
-        const u = (p - GENIE_RELEASE) / (1 - GENIE_RELEASE);
-        const sv = genieSpring(u); // 0 → 1 with overshoot past 1
-        g = Math.max(0, 1 - sv);
-        nod = Math.max(0, sv - 1); // the overshoot lands as a little nod
-      }
-      api.state.genieTarget = g;
-      api.scene.setModelOrientation(
-        nod > 1e-4 ? { z: -Math.PI / 2 + nod * 5 } : null,
-      );
-      // dock bar: fades in as the suck begins, swells as the lens lands in it
-      if (genieDock) {
-        const mat = genieDock.material as MeshBasicMaterial;
-        mat.opacity = smoothstep(0.02, 0.1, p);
-        const pulse =
-          smoothstep(GENIE_SUCK_END - 0.12, GENIE_SUCK_END, p) *
-          (1 - smoothstep(GENIE_RELEASE, GENIE_RELEASE + 0.12, p));
-        genieDock.scale.setScalar(1 + 0.18 * pulse);
-      }
-      api.setPageText({
-        front: {
-          text: "",
-          sub: "MINIMIZE — AND BRING IT BACK",
-          color: NEAR_BLACK,
-          y: 0.9,
-          opacity: smoothstep(0.05, 0.2, p),
-        },
-      });
-    },
-    exit(api) {
-      api.scene.setCameraPose(null);
-      api.scene.setTransparentBackground(false);
-      api.scene.setModelOrientation(null);
-      api.setPageWipe(null);
-      api.state.genieTarget = 0;
-      if (genieDock) {
-        api.scene.removeOverlay(genieDock);
-        genieDock.geometry.dispose();
-        (genieDock.material as MeshBasicMaterial).dispose();
-        genieDock = null;
-      }
-      api.scene.setShading(genieSaved);
-      api.scene.swapShading(genieSaved);
     },
   },
 
@@ -1432,26 +1104,25 @@ export const DEMOS: LensDemo[] = [
     label: "Piece by piece",
     hint: "rings, screws, glass and iris each answer alone — a staggered mechanical ballet",
     durationMs: 11000,
-    enter(api) {
+    enter() {
       // ink on the dark stage (the lookbook-validated pairing)
-      clockSaved = api.scene.getShading();
-      api.scene.setShading("ink");
-      api.scene.swapShading("ink");
-      api.scene.setTransparentBackground(true);
+      setShading("ink");
+      scene().swapShading("ink");
+      setTransparentBackground(true);
       clockTl = buildClockTimeline();
       // channels parked once; the timeline drives aperture (the iris wink)
-      api.state.zoomTarget = 0;
-      api.state.focusTarget = 0;
-      api.state.apertureTarget = 0;
-      api.scene.setCameraPose({
+      drive("zoom", 0);
+      drive("focus", 0);
+      drive("aperture", 0);
+      setCameraPose({
         azimuth: 1.05,
         elevation: 0.22,
         distance: BASE_DIST,
       });
     },
-    apply(p, api) {
+    apply(p) {
       if (!clockTl) return;
-      api.setPageWipe({
+      setPageWipe({
         p: 1,
         skewDeg: 0,
         below: NEAR_BLACK,
@@ -1460,7 +1131,7 @@ export const DEMOS: LensDemo[] = [
       // the scrub drives the anime timeline via seek() (scrub-safe, both
       // directions); the resolved values flow into setPartOffset each frame
       clockTl.seek(p * clockTl.duration);
-      applyClockOffsets(api);
+      applyClockOffsets();
       // camera follows the beat groups: front three-quarter for the ring/
       // glass/iris beats, one swing to the mount side for the hardware beats,
       // settling toward a near-frontal mount view for the finale
@@ -1468,12 +1139,12 @@ export const DEMOS: LensDemo[] = [
       const settle = smoothstep(0.8, 1, p);
       const azFront = lerp(1.05, 0.85, smoothstep(0, 0.3, p));
       const azRear = lerp(-0.62, -0.25, settle);
-      api.scene.setCameraPose({
+      setCameraPose({
         azimuth: lerp(azFront, azRear, swing),
         elevation: lerp(0.22, 0.14, p),
         distance: BASE_DIST * lerp(1, 1.08, swing),
       });
-      api.setPageText({
+      setPageText({
         front: {
           text: "",
           sub: "EVERY PART, ON ITS OWN BEAT",
@@ -1483,15 +1154,12 @@ export const DEMOS: LensDemo[] = [
         },
       });
     },
-    exit(api) {
-      api.scene.setCameraPose(null);
-      api.scene.setTransparentBackground(false);
-      api.setPageWipe(null);
-      api.scene.clearPartOffsets();
-      api.state.apertureTarget = 0;
+    exit() {
+      // custom teardown only: clear the part offsets (setPartOffset is NOT
+      // recorded) and drop the timeline. auto-restore handles pose, bg, wipe,
+      // the aperture channel, and the ink look.
+      scene().clearPartOffsets();
       clockTl = null;
-      api.scene.setShading(clockSaved);
-      api.scene.swapShading(clockSaved);
     },
   },
 ];

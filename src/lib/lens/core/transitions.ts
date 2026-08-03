@@ -6,7 +6,7 @@ import type { SceneState } from "./scene";
 // ============================================================================
 // Look-swap transitions: short rAF choreographies that make a shading change
 // feel like ONE sharp gesture. Each entry drives EXISTING objects/channels
-// (model roll, iris, unwrap, camera fov — never new shader graphs) toward a
+// (model roll, iris, a recipe channel, camera fov — never new shader graphs) toward a
 // hidden/peak moment, where the runner (scene.swapShading) fires the instant
 // wholesale material rebuild, then eases home. The cut lands inside the
 // fastest/most-occluded beat, so it reads as part of the motion.
@@ -69,7 +69,7 @@ const peakPulse = (t: number) => smoothstep(0, 1, 1 - Math.abs(2 * t - 1));
 // Drive a channel by writing value AND target together: tick()'s per-frame
 // ease (lerp toward target) then becomes a no-op on that channel regardless of
 // callback order, so the burst is exactly the curve authored here.
-const drive = (s: SceneState, c: "aperture" | "unwrap" | "curl", v: number) => {
+const drive = (s: SceneState, c: "aperture" | "rollout", v: number) => {
   s[c] = v;
   s[`${c}Target`] = v;
 };
@@ -120,35 +120,27 @@ export const TRANSITIONS: Record<TransitionName, TransitionFactory> = {
     };
   },
 
-  // The lens sheds its skin into the new look: a fast unwrap pulse with the
-  // curl pushed to full sticker-curl, swap at the apex while the shells are
-  // mid-peel (the peel IS the reveal), then everything reseats.
+  // The lens sheds its skin into the new look: a fast pulse into rollout's
+  // staggered unroll wave — the shells peel open in rank order, in place — with
+  // the swap at the apex (the peel IS the reveal), then everything re-rolls.
+  // Amplitude 0.4 is a judgment call. assemble was tried and rejected: its unscoped ladder TRANSLATES the whole model, which
+  // breaks the Lookbook demo's fixed framing.
   molt(ctx, opts) {
     const s = ctx.state;
-    const priorU = s.unwrap;
-    const priorUT = s.unwrapTarget;
-    const priorC = s.curl;
-    const priorCT = s.curlTarget;
-    let writtenU = priorU;
-    let writtenC = priorC;
+    const prior = s.rollout;
+    const priorTarget = s.rolloutTarget;
+    let written = prior;
     return {
       duration: opts.durationMs ?? 450,
       swapAt: 0.5,
       update(t) {
-        const k = holdPulse(t);
-        writtenU = lerp(priorU, 0.55, k);
-        writtenC = lerp(priorC, 1, k);
-        drive(s, "unwrap", writtenU);
-        drive(s, "curl", writtenC);
+        written = lerp(prior, 0.4, holdPulse(t));
+        drive(s, "rollout", written);
       },
       finish() {
-        if (s.unwrapTarget === writtenU) {
-          s.unwrap = priorU;
-          s.unwrapTarget = priorUT;
-        }
-        if (s.curlTarget === writtenC) {
-          s.curl = priorC;
-          s.curlTarget = priorCT;
+        if (s.rolloutTarget === written) {
+          s.rollout = prior;
+          s.rolloutTarget = priorTarget;
         }
       },
     };

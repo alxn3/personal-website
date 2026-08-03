@@ -3,4 +3,5 @@ dist
 package-lock.json
 public/models
 .claude
+.superpowers
 .mcp.json

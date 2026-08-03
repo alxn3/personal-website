@@ -14,7 +14,14 @@
 
 import type { SceneHandle } from "../core/scene";
 import { uInkFill } from "../materials/shading";
-import { STORY, RANGES, rangeOf, atFrac, pulse } from "./story";
+import {
+  STORY,
+  RANGES,
+  rangeOf,
+  atFrac,
+  pulse,
+  type StoryWindow,
+} from "./story";
 import { band, clamp01, smoothstep } from "../core/math";
 import { isLightTheme } from "../core/theme";
 
@@ -102,6 +109,12 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
   const fR = rangeOf("focus");
   const exR = rangeOf("explode");
   const rwR = rangeOf("rewrap");
+  const capR = rangeOf("capsOn");
+  // Instrument chrome (HUD + scene rail) fades out over the tail of the FINAL
+  // scene — derived from the capsOn range rather than absolute p, so a duration
+  // change upstream can't leave it fading mid-story: 0.77 through capsOn
+  // reproduces the signed-off absolute p ≈ 0.965 under today's holds.
+  const CHROME_FADE_P0 = atFrac(capR, 0.77);
 
   // background tint, sampled from each scene's `bg`/`bgLight` at its hold-centre
   const bgStopsFor = (light: boolean): [number, [number, number, number]][] =>
@@ -122,6 +135,15 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
     stage.style.background = `rgb(${c[0]},${c[1]},${c[2]})`;
   }
 
+  // The teardown and the reassembly are ONE pair of channels run in opposite
+  // directions over a shared RETURN window: everything is home by 25% into
+  // caps-on — BEFORE the camera's fast equatorial pass gets close (huge
+  // un-seated sheets would otherwise fill the frame mid-spin).
+  const RETURN: StoryWindow = [
+    ["rewrap", 0.05],
+    ["capsOn", 0.25],
+  ];
+
   let lastP = 0; // last p handed to frame() — read by the dev scrub panel
 
   function frame(p: number) {
@@ -140,49 +162,40 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
       rise: ["aperture", 0.2, 0.66],
       fall: ["explode", 0, 0.35],
     });
-    // explode completes EARLY in its scene (well fanned apart by the time the
-    // caption is prominent — not a half-open cage), HOLDS through the light-path
-    // scene, then REASSEMBLES for caps-on (everything comes back together).
+    // EXPLODE (the explode recipe) — the whole model fans off the axis. Completes
+    // EARLY in its scene (well fanned apart by the time the caption is prominent,
+    // not a half-open cage), HOLDS through the light-path scene, then collapses
+    // on its OWN early fall: the solid core comes home behind the light-path
+    // isolate's blackout and is seated, waiting, by the time the shells wrap
+    // back on — the classic "glass column waits" beat. Assemble keeps the shared
+    // RETURN window, so its staggered gate owns the visible layer-by-layer return.
     const explode = pulse(p, {
       rise: ["explode", 0.08, 0.55],
-      fall: ["capsOn", 0, 0.85],
-    });
-    // UNWRAP rides the explode (not a separate token pulse): as the pieces fan
-    // out they progressively peel flat and then LIFT (the two-phase unwrap), so
-    // the teardown ENDS in the flat-sheet state the rewrap scene resumes from —
-    // one continuous story instead of a hidden morph between them. Slightly
-    // delayed so the early explode still reads as solid wedges pulling apart.
-    const unwrap = pulse(p, {
-      rise: ["explode", 0.2, 0.85],
-      fall: ["capsOn", 0, 0.6],
-    });
-    // curl rides the teardown's PEEL phase, then relaxes so the fully-detached
-    // pieces fly as flat sheets (the rewrap derives its own per-shell curl)
-    const curl = 1 - pulse(p, { rise: ["explode", 0.55, 0.85] });
-    // REWRAP: the semantics switch (rewrapOn) ramps during the light-path scene
-    // while the structure is HIDDEN by the isolate — the wedges morph to flat
-    // sheets unseen, and reappear as sheets when the rewrap scene begins. The
-    // scrub then seats every layer across the rewrap scene, inner → outer.
-    const rewrapOn = pulse(p, { rise: ["lightPath", 0.1, 0.6] });
-    // The seating scrub runs PAST the rewrap scene into caps-on: the last
-    // (outer) layers are still wrapping as the spin begins, and every layer is
-    // home by 25% into caps-on — BEFORE the camera's fast equatorial pass gets
-    // close (huge un-seated sheets would otherwise fill the frame mid-spin).
-    const rewrap = pulse(p, {
-      rise: [
-        ["rewrap", 0.05],
-        ["capsOn", 0.25],
+      fall: [
+        ["lightPath", 0.9],
+        ["rewrap", 0.3],
       ],
     });
+    // ASSEMBLE (the assemble recipe) runs BACKWARDS here: 1 is the disassembled
+    // state — shells unrolled to flat sheets and flown off the ladder — and 0 is
+    // seated. So its RISE is the teardown's peel (it rides the explode, slightly
+    // delayed so the early explode still reads as solid wedges pulling apart) and
+    // its FALL, over the same return window, IS the reassembly: each layer flies
+    // home and wraps back on inner → outer, on the recipe's own per-rank gate,
+    // while the glass column sits waiting inside.
+    //
+    // ONE channel does both halves because no morph is needed: the assemble
+    // recipe's channel-1 state IS the flat-sheet one, so the teardown simply
+    // ENDS where the reassembly resumes — one continuous story. Curl is not a
+    // scrub either: the wrap profile derives each shell's curl from its own
+    // stick phase.
+    const assemble = pulse(p, { rise: ["explode", 0.2, 0.85], fall: RETURN });
 
     scene.state.zoomTarget = zoom;
     scene.state.focusTarget = focus;
     scene.state.apertureTarget = aperture;
     scene.state.explodeTarget = explode;
-    scene.state.unwrapTarget = unwrap;
-    scene.state.curlTarget = curl;
-    scene.state.rewrapTarget = rewrap;
-    scene.state.rewrapOnTarget = rewrapOn;
+    scene.state.assembleTarget = assemble;
     scene.state.storyTarget = p;
 
     // ink fill: wireframe → HALF fill through zoom (see the internals extend) →
@@ -228,14 +241,14 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
     }
     const focal = Math.round(18 + zoom * 32);
     const fstop = F_STOPS[Math.round(aperture * (F_STOPS.length - 1))];
-    hud.textContent = `SCN 0${scn} / ${STORY[scn].title} · ${focal}MM · f/${fstop} · EXPL ${Math.round(explode * 100)}%`;
+    hud.textContent = `SCN ${String(scn).padStart(2, "0")} / ${STORY[scn].title} · ${focal}MM · f/${fstop} · EXPL ${Math.round(explode * 100)}%`;
     for (const r of rails) r.el?.classList.toggle("is-on", scn === r.i);
 
     // scroll cue lives only in the hero; the instrument chrome fades at the very end
     scrollCue.style.opacity = String(
       1 - smoothstep(atFrac(heroR, 0.1), atFrac(heroR, 0.9), p),
     );
-    const chrome = 1 - smoothstep(0.965, 1.0, p);
+    const chrome = 1 - smoothstep(CHROME_FADE_P0, capR.p1, p);
     hud.style.opacity = String(chrome);
     sceneRail.style.opacity = String(chrome);
 
@@ -265,16 +278,13 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
   // Dev-only story scrubber: built ONLY when the URL has a `story` query param
   // (`/?story`) — normal visitors get zero extra DOM and zero extra listeners.
   if (new URLSearchParams(location.search).has("story")) {
+    // every channel the story drives, read back LIVE (post-ease) each frame
     const CH = [
       ["zoom", "zoom"],
       ["focus", "focus"],
       ["aperture", "aper"],
       ["explode", "expl"],
-      ["unwrap", "unwr"],
-      ["curl", "curl"],
-      ["shear", "shear"],
-      ["rewrap", "rewr"],
-      ["rewrapOn", "rwOn"],
+      ["assemble", "asm"],
     ] as const;
 
     const style = document.createElement("style");

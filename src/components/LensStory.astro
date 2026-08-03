@@ -4,10 +4,14 @@ import LensSceneContent from "./LensSceneContent.astro";
 import { STORY, TRACK_HEIGHT_CSS } from "../lib/lens";
 
 // The scroll-jacked lens hero. The story TABLE — scene order, durations, camera
-// poses, mechanism windows, stage tints — lives in lib/lens/story/story.ts (the
-// SINGLE SOURCE OF TRUTH; everything derives from it). This component renders
-// the hero around it: the pinned stage, the per-scene overlay content below,
-// the chrome (HUD / rail / scroll cue), and the boot script.
+// poses/waypoints, stage tints, rail flags and titles — lives in
+// lib/lens/story/story.ts (the single source of truth for story STRUCTURE; the
+// track height, scene ranges, camera path and caption bands all derive from
+// it). Mechanism ENVELOPE windows are deliberately not in it: they live with
+// their consumer, the pulse(...) calls in lib/lens/story/hero-driver.ts. This
+// component renders the hero around the table: the pinned stage, the per-scene
+// overlay content below, the chrome (HUD / rail / scroll cue), and the boot
+// script.
 //
 // Scene overlay content is authored BELOW as real markup (<LensSceneContent
 // scene="…">), so any scene can host arbitrary HTML/components — the story table
@@ -524,13 +528,16 @@ import { STORY, TRACK_HEIGHT_CSS } from "../lib/lens";
     if (!canvas) return;
     let scene;
     try {
-      // formations: [] — the hero drives ONLY the classic explode/unwrap/rewrap
-      // channels (hero-driver.ts), so no formation preset need be folded into the
-      // bloom deform: a lighter shader and faster first frame. IMPORTANT: when the
-      // scroll story is ported to the ops `assemble` channel (docs/superpowers/
-      // plans/2026-07-25-ops-formation-port.md Tasks 7-9), this MUST become
-      // ["assemble"] so that preset is folded in.
-      scene = await initScene(canvas, { story: true, formations: [] });
+      // The op recipes the hero's deform folds in — EXACTLY the two channels
+      // story/hero-driver.ts drives (explode = the teardown fan, assemble =
+      // the peel-flat/wrap-back-on pair). Anything else the bench offers
+      // (helix, rollout, bend) is left out on purpose: an unfolded recipe
+      // contributes literally nothing to the graph, so the hero's shader stays
+      // as small as the story needs.
+      scene = await initScene(canvas, {
+        story: true,
+        recipes: ["assemble", "explode"],
+      });
     } catch (err) {
       console.warn("lens hero: init failed, using static fallback", err);
       hero.dataset.static = "true";

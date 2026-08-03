@@ -1,16 +1,9 @@
 import * as THREE from "three/webgpu";
-import { clamp, float, mix, positionLocal } from "three/tsl";
 import { rangeOf, atFrac } from "./story";
 import { clamp01, smoothstep } from "../core/math";
-import { uIsolateHide } from "../materials/bloom";
-import {
-  rawWipeMask,
-  uWipeOn,
-  uWipeBackdrop,
-  uWipeBgBelow,
-  uWipeBgTo,
-} from "../materials/wipe";
-import { isGlassElement, isAccessory } from "../core/parts";
+import { uIsolateHide } from "../materials/shading";
+import { displaceSeatedPoint } from "../ops/cpu";
+import { isGlassElement } from "../core/parts";
 
 // ============================================================================
 // Cinematic extras (inspired by ./example) layered over the mechanism rig:
@@ -33,16 +26,38 @@ const ISOLATE_FEATHER = 0.02; // scroll-p width of the fade at each end of the w
 // table like the isolate window above (so a scene-duration change upstream
 // can't silently break it): 0.54 through the capsOn scene reproduces the
 // signed-off absolute p ≈ 0.93 under today's holds.
+// ...and it finishes WITH that scene rather than at a hardcoded global 1 — the
+// two coincide only for as long as capsOn is the story's last beat.
 const CAP_P0 = atFrac(rangeOf("capsOn"), 0.54);
+const CAP_P1 = rangeOf("capsOn").p1;
+
+/** What the STORY wants hidden this frame. Reported, not applied: this module
+ *  writes no model `.visible` flag of its own — core/scene.ts composes these
+ *  with the page's accessory choice and the demo isolate gate and is the one
+ *  owner of every flag (`applyVisibility` there). */
+export interface StoryVisibility {
+  /** The light-path isolate has FULLY faded in, so every non-glass,
+   *  non-accessory mesh can be culled. The fade itself is `uIsolateHide`; this
+   *  flag is fill-rate only, which is why it trails the feather. */
+  isolate: boolean;
+  /** The aperture beat is engaged — the rear occluders come out of the iris's
+   *  way (`irisOccluders`). */
+  occluders: boolean;
+}
 
 export interface LensCinematics {
-  /** Drive the extras for one frame from the eased mechanism/story values. */
+  /** Drive the extras for one frame from the eased mechanism/story values, and
+   *  report what the story wants hidden (see StoryVisibility). */
   update(
     apertureT: number,
     explodeT: number,
     storyP: number,
     nowMs: number,
-  ): void;
+  ): StoryVisibility;
+  /** The nodes the iris beat clears out of the way — DATA for core/scene's
+   *  visibility owner. Group empties as well as meshes: an empty's glass
+   *  children have to survive the light-path isolate. */
+  readonly irisOccluders: readonly THREE.Object3D[];
   /** Kick off the sketch-in entrance over the given ink edge lines (no-op if an
    *  entrance is already running). */
   startEntrance(lines: THREE.LineSegments[]): void;
@@ -78,19 +93,13 @@ export function createCinematics(
   ]
     .map((n) => node(n))
     .filter((o): o is THREE.Object3D => Boolean(o));
-  let occludersHidden = false;
 
   // Glass elements, sorted along the optical axis — threaded by the refraction rays.
   const glassElements: THREE.Mesh[] = [];
-  // Everything that ISN'T glass — hidden at the deep-explode dwell so the finale
-  // isolates the light path (just the glass elements + rays on the dark stage).
-  const nonGlassMeshes: THREE.Mesh[] = [];
   gltfScene.traverse((o) => {
-    if (!(o instanceof THREE.Mesh)) return;
-    if (isGlassElement(o.name)) glassElements.push(o);
-    else if (!isAccessory(o.name)) nonGlassMeshes.push(o);
+    if (o instanceof THREE.Mesh && isGlassElement(o.name))
+      glassElements.push(o);
   });
-  let isolated = false;
 
   // Front/rear caps: in the story's "caps on" finale they slide down the optical
   // axis and seat onto the reassembled lens. Rest positions captured for the slide.
@@ -116,11 +125,19 @@ export function createCinematics(
 
   // Refraction rays: 3 warm lines tracing the light path through the glass, fading
   // in only when the lens is fully exploded ("only the light path is left").
+  // Each element's SEATED bounding-box centre, resolved ONCE into the element's
+  // own local frame — pose-independent, so the per-frame walk is a displacement
+  // plus a matrix instead of a Box3 sweep. Its node origin sits at its parent's
+  // origin (lens_mechanism.md §4 — geometry is baked in place), so the bbox
+  // centre is what threads the glass; getWorldPosition would thread the GROUP
+  // empties and stop short of it.
+  const raySeated = glassElements.map((m) => {
+    const c = new THREE.Box3().setFromObject(m).getCenter(new THREE.Vector3());
+    return m.worldToLocal(c); // the same matrix both ways ⇒ exact, pose or not
+  });
   // Reused across frames by the rays update below (hoisted so a deep-explode
-  // frame allocates NO Box3/Vector3): one scratch box + one centre vector per
-  // glass element. rayPts is fully overwritten each frame before it is sorted,
-  // so the previous frame's sort order never leaks in.
-  const rayBox = new THREE.Box3();
+  // frame allocates nothing). rayPts is fully overwritten each frame before it
+  // is sorted, so the previous frame's sort order never leaks in.
   const rayPts = glassElements.map(() => new THREE.Vector3());
 
   const rays: THREE.Line[] = [];
@@ -169,49 +186,6 @@ export function createCinematics(
   dust.frustumCulled = false;
   scene.add(dust);
   disposables.push(dustGeo, dustMat);
-
-  // WIPE BACKDROP: a large plane behind the model, split by the SAME feathered
-  // line the wipe mask sweeps through the model (materials/wipe.ts owns every
-  // uniform), so a hero wipe can recolor the stage in lock-step with the
-  // model's state change. A CHILD of the model node, so its vertices live in
-  // the mask's own model frame (mm) by construction — no world→model matrix
-  // plumbing. The transform below spans the plane over model (y, z) facing the
-  // default camera; the mask is evaluated at model x = 0 (the axis plane), so
-  // the backdrop line sits where the model's own front reads mid-depth.
-  // Constructed INERT like the other extras: visible only while BOTH uWipeOn
-  // and uWipeBackdrop are 1 (JS-side, checked each update — animations only
-  // flip uniforms), so the homepage never sees it.
-  const backdropMat = new THREE.MeshBasicNodeMaterial({
-    side: THREE.DoubleSide,
-  });
-  {
-    // geometry x → model z, geometry y → model y (see the mesh transform).
-    // Both swept coordinates are CLAMPED to the model's extent: the plane is
-    // far larger than the model, and the sweep range only covers the model —
-    // unclamped, the extremes (p = 0 / p = 1) would park the line at the
-    // model's edge with the plane's far side still the other color, instead
-    // of saturating the whole backdrop to one color.
-    const p = positionLocal as any;
-    const my = clamp(p.y.add(38.25), 0.0, 76.5);
-    const mz = clamp(p.x, -40.0, 40.0);
-    backdropMat.colorNode = mix(
-      uWipeBgBelow,
-      uWipeBgTo,
-      rawWipeMask(float(0), my, mz),
-    );
-  }
-  // 8000mm ≈ 400 world units — fills the frustum behind the model
-  const backdropGeo = new THREE.PlaneGeometry(8000, 8000);
-  const backdrop = new THREE.Mesh(backdropGeo, backdropMat);
-  // model +x reads world −z (behind the model from the default framing);
-  // rotation.y −90° turns the plane's +z normal onto model −x (toward camera)
-  // and maps geometry (x, y) onto model (z, y). position centers it mid-model.
-  backdrop.position.set(400, 38.25, 0);
-  backdrop.rotation.y = -Math.PI / 2;
-  backdrop.visible = false;
-  backdrop.raycast = () => {};
-  gltfScene.add(backdrop);
-  disposables.push(backdropGeo, backdropMat);
 
   function applyTheme() {
     dustMat.color.setHex(light ? 0x6f695b : 0xcfc7ae); // dark motes on paper, cream on the stage
@@ -269,46 +243,42 @@ export function createCinematics(
     explodeT: number,
     storyP: number,
     nowMs: number,
-  ) {
-    // iris reveal: hide the rear occluders once the aperture beat is engaged.
+  ): StoryVisibility {
+    // iris reveal: clear the rear occluders once the aperture beat is engaged.
     // isolate the glass: dissolve everything non-glass ONLY for the light-path
     // scene (tied to scroll position, not the explode amount — so the teardown
     // scene still shows the fanned-out structure, and caps-on brings it back).
-    // The two overlap on the rear meshes (PCB/baffle/contacts), so ONE recompute
-    // owns every visible flag: either flag changing re-derives both passes, and
-    // an occluder restore can never stomp an active isolate (or vice versa).
+    // Both are REPORTED at the bottom of this function; the two overlap on the
+    // rear meshes (PCB/baffle/contacts) and core/scene composes them there with
+    // the demo isolate, so no gate's restore can stomp another that is still on.
     const wantHidden = apertureT > 0.35;
     // The isolate is a FADE (uIsolateHide multiplies the non-glass ink opacity),
     // feathered at both ends — a hard visibility toggle made every structural
     // piece vanish in a single frame ("pieces just disappear" — owner). The
-    // visibility flags below only cull meshes once FULLY faded (fill-rate).
+    // reported flag only culls meshes once FULLY faded (fill-rate).
     const isolateT =
       smoothstep(ISOLATE_P0, ISOLATE_P0 + ISOLATE_FEATHER, storyP) *
       (1 - smoothstep(ISOLATE_P1 - ISOLATE_FEATHER, ISOLATE_P1, storyP));
     uIsolateHide.value = isolateT;
-    const wantIsolate = isolateT > 0.995;
-    if (wantHidden !== occludersHidden || wantIsolate !== isolated) {
-      occludersHidden = wantHidden;
-      isolated = wantIsolate;
-      for (const m of nonGlassMeshes) m.visible = !wantIsolate;
-      // occluders include GROUP empties (Optics_G4/G5) whose glass children must
-      // survive an isolate — so an empty un-hides fully, a mesh defers to isolate
-      for (const o of irisOccluders)
-        o.visible = !wantHidden && (!(o instanceof THREE.Mesh) || !wantIsolate);
-    }
 
     // refraction rays — thread the optical axis through the (world-space) glass.
-    // Use each element's bounding-box CENTRE: every part's node origin sits at its
-    // parent's origin (lens_mechanism.md §4 — geometry is baked in place), so
-    // getWorldPosition would thread the GROUP empties and stop short of the glass
-    // (visible once the ladder spread the column out). Box3 walks are fine here —
-    // 13 small meshes, and only while the explode is deep enough to show rays.
+    // The explode deform runs IN-SHADER, so the seated centre above is where the
+    // element USED to be: displace it through the same op field the render runs
+    // (ops/cpu.ts, mesh-local like the shader's `positionLocal`), then take it to
+    // world through the element's own live matrix, which carries the mechanism's
+    // object motion exactly once. Skipping that threaded the SEATED column while
+    // the render drew one stretched tens of mm along the axis — in the one beat
+    // where the glass and these rays are all that is on screen. 13 points, NUM
+    // backend, only while the explode is deep enough to show rays.
     const rayOp = smoothstep(0.62, 0.96, explodeT);
     if (rayOp > 0.001 && glassElements.length) {
-      for (let i = 0; i < glassElements.length; i++)
-        rayBox.setFromObject(glassElements[i]).getCenter(rayPts[i]);
+      for (let i = 0; i < glassElements.length; i++) {
+        const m = glassElements[i];
+        m.updateWorldMatrix(false, false); // this frame's mechanism pose, as Box3 took it
+        m.localToWorld(displaceSeatedPoint(m, rayPts[i].copy(raySeated[i])));
+      }
       const pts = rayPts;
-      pts.sort((a, b) => b.x - a.x); // front (+X) → rear
+      pts.sort((a, b) => b.x - a.x); // front (+X) → rear, on the DISPLACED column
       const frontX = pts[0].x;
       const rearX = pts[pts.length - 1].x;
       const n = pts.length;
@@ -341,17 +311,18 @@ export function createCinematics(
     dust.rotation.y = nowMs * 0.00002;
     dust.position.y = Math.sin(nowMs * 0.0003) * 0.25;
 
-    // wipe backdrop: visibility from the two flags
-    backdrop.visible = uWipeOn.value >= 0.5 && uWipeBackdrop.value >= 0.5;
-
     // sketch-in entrance (runs once, kicked off by startEntrance)
     runEntrance(nowMs);
 
-    // caps-on finale: the lens has reassembled — slide the caps down the axis to seat
+    // caps-on finale: the lens has reassembled — slide the caps down the axis to
+    // seat. The ONE `.visible` write left in this module, and it stays here
+    // because it owns its two nodes outright: the caps are ACCESSORIES, which
+    // the visibility owner leaves to their own owners (the page's accessory
+    // choice, and this finale while the story runs).
     if (storyMode || preview) {
       // caps fly in only after the rotate-to-camera has mostly settled (the
       // capsOn transit ends ≈0.95), so the beat reads: face the viewer → cap on
-      const capT = smoothstep(CAP_P0, 1.0, storyP);
+      const capT = smoothstep(CAP_P0, CAP_P1, storyP);
       const capOn = capT > 0.004;
       if (capFront) {
         capFront.visible = capOn;
@@ -362,6 +333,8 @@ export function createCinematics(
         capRear.position.y = capRearBaseY - (1 - capT) * 95;
       }
     }
+
+    return { isolate: isolateT > 0.995, occluders: wantHidden };
   }
 
   // hero-camera preview flag (see LensCinematics.setStoryPreview)
@@ -377,9 +350,15 @@ export function createCinematics(
   function dispose() {
     for (const ray of rays) ray.removeFromParent();
     dust.removeFromParent();
-    backdrop.removeFromParent();
     for (const d of disposables) d.dispose();
   }
 
-  return { update, startEntrance, setTheme, setStoryPreview, dispose };
+  return {
+    update,
+    irisOccluders,
+    startEntrance,
+    setTheme,
+    setStoryPreview,
+    dispose,
+  };
 }

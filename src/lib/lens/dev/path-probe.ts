@@ -1,6 +1,7 @@
 import * as THREE from "three/webgpu";
 import { attribute, uniform, varying, vec4 } from "three/tsl";
-import { bloomLocalPosition } from "../materials/bloom";
+import { opsLocalPosition } from "../ops/host";
+import { FRAME_ATTRS } from "../ops/frames";
 
 // ============================================================================
 // GPU POSITION PROBE — dev only (see dev/paths.ts).
@@ -8,8 +9,8 @@ import { bloomLocalPosition } from "../materials/bloom";
 // Reads back where the REAL deformation shader puts a chosen set of vertices.
 //
 // The one design rule here: this module contains NO deformation math. It runs
-// `bloomLocalPosition()` — the very node graph materials/bloom.ts hands the
-// wedge materials — on a throwaway mesh whose vertices are laid out one per
+// `opsLocalPosition()` — the very node graph ops/host.ts hands the model's
+// materials — on a throwaway mesh whose vertices are laid out one per
 // PIXEL of a float render target, then reads the pixels back. Same graph, same
 // uniforms, same GPU, so a CPU mirror's silent drift is structurally
 // impossible: there is nothing to drift from.
@@ -21,7 +22,7 @@ import { bloomLocalPosition } from "../materials/bloom";
 // top-down) — the row a pixel came from is in the pixel.
 // ============================================================================
 
-/** One probe point: a real vertex of a real bloom-carrying mesh. */
+/** One probe point: a real vertex of a real frame-carrying mesh. */
 export interface ProbeSample {
   mesh: THREE.Mesh;
   /** index into `mesh.geometry`'s position attribute */
@@ -64,22 +65,18 @@ const CORNERS = [
   [0, 1],
 ] as const;
 
-// Every custom attribute the bloom graph reads (name × component count) — the
-// probe geometry must carry them all or the pipeline's attribute layout breaks.
-const BLOOM_ATTRS = [
-  { name: "_bloomr", size: 1 },
-  { name: "_bloomtheta0", size: 1 },
-  { name: "_bloomrate", size: 1 },
-  { name: "_carduv", size: 4 },
-  { name: "_cardc", size: 4 },
-] as const;
-
 /**
  * Build a probe over `samples`, able to hold `rows` timesteps.
  *
- * The probe geometry copies each sample's seated `position` plus the three
- * `_bloom*` attributes the graph reads, so `positionLocal` and every
- * `attribute()` inside the graph resolve exactly as they do on the real mesh.
+ * The probe geometry copies each sample's seated `position` plus every `_op*`
+ * frame attribute the graph reads, so `positionLocal` and every `attribute()`
+ * inside the graph resolve exactly as they do on the real mesh. The attribute
+ * list (name × component count) IS ops/frames.ts's FRAME_ATTRS, sizes included,
+ * so a re-packed or new frame attribute cannot fall out of the probe.
+ *
+ * A sample whose mesh is MISSING a frame attribute throws: uploading zeros
+ * instead would put `R = 0` (a divisor all over the op algebra) into the graph
+ * and hand back plausible-looking garbage rather than an obvious failure.
  */
 export function createPositionProbe(
   renderer: THREE.WebGPURenderer,
@@ -93,13 +90,27 @@ export function createPositionProbe(
   const col = new Float32Array(verts);
   const corner = new Float32Array(verts * 2);
   const extra: Record<string, Float32Array> = Object.fromEntries(
-    BLOOM_ATTRS.map((a) => [a.name, new Float32Array(verts * a.size)]),
+    FRAME_ATTRS.map((a) => [a.name, new Float32Array(verts * a.size)]),
   );
   const seated = new Float32Array(count * 3);
 
   samples.forEach((s, i) => {
     const geo = s.mesh.geometry;
     const p = geo.getAttribute("position");
+    for (const { name, size } of FRAME_ATTRS) {
+      const a = geo.getAttribute(name);
+      if (!a)
+        throw new Error(
+          `probe: mesh "${s.mesh.name || "(unnamed)"}" has no ${name} — ` +
+            `ops/frames.ts did not run over it, and probing it with zeros ` +
+            `would feed the op graph R = 0 (a divisor)`,
+        );
+      if (a.itemSize !== size)
+        throw new Error(
+          `probe: mesh "${s.mesh.name || "(unnamed)"}" has ${name} with ` +
+            `itemSize ${a.itemSize}, expected ${size}`,
+        );
+    }
     const px = p.getX(s.vertex);
     const py = p.getY(s.vertex);
     const pz = p.getZ(s.vertex);
@@ -114,13 +125,10 @@ export function createPositionProbe(
       col[v] = i;
       corner[v * 2] = CORNERS[c][0];
       corner[v * 2 + 1] = CORNERS[c][1];
-      for (const { name, size } of BLOOM_ATTRS) {
+      for (const { name, size } of FRAME_ATTRS) {
         const a = geo.getAttribute(name);
-        for (let k = 0; k < size; k++) {
-          extra[name][v * size + k] = a
-            ? (a.getComponent(s.vertex, k) as number)
-            : 0;
-        }
+        for (let k = 0; k < size; k++)
+          extra[name][v * size + k] = a.getComponent(s.vertex, k) as number;
       }
     }
   });
@@ -129,7 +137,7 @@ export function createPositionProbe(
   geometry.setAttribute("position", new THREE.BufferAttribute(position, 3));
   geometry.setAttribute("_probeCol", new THREE.BufferAttribute(col, 1));
   geometry.setAttribute("_probeCorner", new THREE.BufferAttribute(corner, 2));
-  for (const { name, size } of BLOOM_ATTRS) {
+  for (const { name, size } of FRAME_ATTRS) {
     geometry.setAttribute(name, new THREE.BufferAttribute(extra[name], size));
   }
 
@@ -143,7 +151,7 @@ export function createPositionProbe(
 
   const uRow = uniform(0);
   // TSL attribute()/uniform() nodes carry math methods the .d.ts doesn't
-  // declare — the same `any` escape hatch materials/bloom.ts uses.
+  // declare — the same `any` escape hatch ops/host.ts uses.
   const c = attribute("_probeCol", "float") as any;
   const k = attribute("_probeCorner", "vec2") as any;
   const row = uRow as any;
@@ -161,10 +169,7 @@ export function createPositionProbe(
   // the real material runs it; alpha carries the row (offset by 1, so the
   // cleared value 0 reads as "never written") and makes readback self-
   // describing — no assumption about which way up the backend hands rows back.
-  material.fragmentNode = vec4(
-    varying(bloomLocalPosition()) as any,
-    row.add(1),
-  );
+  material.fragmentNode = vec4(varying(opsLocalPosition()) as any, row.add(1));
 
   const mesh = new THREE.Mesh(geometry, material);
   mesh.frustumCulled = false;

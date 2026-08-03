@@ -5,7 +5,7 @@ import {
   DRACO_GLTF_CONFIG,
 } from "three/examples/jsm/loaders/DRACOLoader.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
-import { keepsAuthoredMaterial } from "./parts";
+import { isOpticalGlass } from "./parts";
 
 // Shared loading + material setup for the Sigma 18-50mm GLB (produced by the
 // lens_work/ pipeline, `lens_web_segmented.glb`: de-branded, Draco-compressed,
@@ -31,13 +31,35 @@ const FRONT_ACCESSORIES = new Set([
 
 // Per-mesh material, tuned to the real Sigma 18-50mm: a near-black matte body,
 // a graphite gunmetal front bezel, chrome mount, brass contacts, white printed
-// text. Element_*/Iris_* keep their Blender-authored glass/metal
-// (KHR_materials_transmission etc.). The DECISION is name → these three params;
-// two names that resolve to the same params yield an identical material, so
-// loadLensModel memoizes on this signature and shares one instance (see there).
-type LensMaterialSpec = { color: number; roughness: number; metalness: number };
+// text, transmissive coated glass, blackened-steel iris blades.
+//
+// EVERY mesh is shaded here. The web GLBs ship bare geometry — zero materials,
+// zero UVs (lens_work MIGRATION §1) — so a mesh left alone would render in
+// three's white `DefaultMaterial`. The glass and the blades used to arrive
+// wearing Blender's own `M_Glass` (KHR_materials_transmission, ior 1.52) and
+// `M_Blade`; those two looks are re-authored below from the same numbers, so
+// the render is unchanged and the model file no longer has an opinion.
+//
+// The DECISION is name → this spec; two names that resolve to the same spec
+// yield an identical material, so loadLensModel memoizes on the signature and
+// shares one instance (see there).
+type LensMaterialSpec = {
+  color: number;
+  roughness: number;
+  metalness: number;
+  /** Optical glass: build a MeshPhysicalMaterial with transmission, IOR and the
+   *  thin-film multicoating instead of a plain MeshStandardMaterial. */
+  glass?: boolean;
+};
 
 function lensMaterialSpec(name: string): LensMaterialSpec {
+  // Optical glass — the 13 elements and the accessory UV filter. FIRST, so the
+  // filter glass never falls through to the matte-black `Acc_` rule below.
+  if (isOpticalGlass(name))
+    return { color: 0xfafdfc, roughness: 0, metalness: 0, glass: true };
+  // Iris blades: blackened spring steel (Blender's M_Blade).
+  if (name.startsWith("Iris_Blade"))
+    return { color: 0x303032, roughness: 0.4, metalness: 1.0 };
   // Zoom/focus grips: matte black rubber.
   if (name.startsWith("Ring_"))
     return { color: 0x101011, roughness: 0.94, metalness: 0.0 };
@@ -76,10 +98,34 @@ function lensMaterialSpec(name: string): LensMaterialSpec {
   return { color: 0x191919, roughness: 0.55, metalness: 0.28 };
 }
 
+/** Build one material from a spec. Glass is the only kind that needs more than
+ *  the three PBR params: transmission + IOR (the crown glass the elements used
+ *  to carry as KHR_materials_transmission) and the iridescent thin-film
+ *  multicoating — the green/amber/purple sheen of real lens coatings — over a
+ *  faint green specular tint. DoubleSide because light crosses both surfaces of
+ *  an element. */
+function buildLensMaterial(spec: LensMaterialSpec): THREE.Material {
+  const { color, roughness, metalness, glass } = spec;
+  if (!glass)
+    return new THREE.MeshStandardMaterial({ color, roughness, metalness });
+  return new THREE.MeshPhysicalMaterial({
+    color,
+    roughness,
+    metalness,
+    transmission: 1,
+    ior: 1.52,
+    side: THREE.DoubleSide,
+    iridescence: 0.55,
+    iridescenceIOR: 1.3,
+    iridescenceThicknessRange: [140, 400],
+    specularColor: new THREE.Color(0xb9e0c6),
+  });
+}
+
 /** A fresh stylized material for a mesh (the name → spec decision above).
  *  loadLensModel shares instances by signature; this stays for standalone use. */
 export function lensMaterialFor(name: string): THREE.Material {
-  return new THREE.MeshStandardMaterial(lensMaterialSpec(name));
+  return buildLensMaterial(lensMaterialSpec(name));
 }
 
 export interface LensModel {
@@ -97,7 +143,7 @@ export interface LensModel {
  * Load the body GLB and return as soon as it is ready; kick the accessories GLB
  * (hood / UV filter / caps) off in the BACKGROUND, merging it into the body
  * scene (front group parented to the zoom barrel so they ride the extension)
- * once decoded. Stylized materials are applied to every non-glass mesh of each.
+ * once decoded. Stylized materials are applied to every mesh of each.
  * The accessories are hidden by default on /lens and unused by the hero until
  * the late caps-on finale, so keeping their fetch+decode+merge off the
  * first-frame critical path costs nothing visible and speeds the model in.
@@ -109,49 +155,30 @@ export async function loadLensModel(): Promise<LensModel> {
   loader.setDRACOLoader(draco);
 
   // Per-LOAD material cache keyed by the name→spec decision signature: meshes that
-  // resolve to identical params share ONE source material, so applyBloom's per-
-  // source WeakMap then yields ONE bloom material per look (~10 instead of ~168).
+  // resolve to identical params share ONE source material, so applyOps's per-
+  // source WeakMap then yields ONE deform material per look (~10 instead of ~168).
   // Scoped to this call (not module-global) so disposeLensModel frees it cleanly.
   // Shared across the body + accessories: the accessory specs don't collide with
   // the body's, so they simply get their own instances (their own ~8 materials).
   const matCache = new Map<string, THREE.Material>();
   const sharedMaterialFor = (name: string): THREE.Material => {
     const s = lensMaterialSpec(name);
-    const key = `${s.color}|${s.roughness}|${s.metalness}`;
+    const key = `${s.color}|${s.roughness}|${s.metalness}|${s.glass ?? false}`;
     let m = matCache.get(key);
     if (!m) {
-      m = new THREE.MeshStandardMaterial(s);
+      m = buildLensMaterial(s);
       matCache.set(key, m);
     }
     return m;
   };
 
-  const coated = new Set<THREE.Material>();
+  // EVERY mesh, no exceptions: the GLBs carry no materials at all, so anything
+  // skipped here would render in three's white default (MIGRATION §1). Runtime
+  // names are node names now (§2), so `child.name` is the classification key.
   const stylize = (root: THREE.Object3D) => {
     root.traverse((child) => {
-      if (!(child instanceof THREE.Mesh)) return;
-      // Meshes that keep their Blender-authored glass (KHR_materials_transmission):
-      // the optical elements, iris blades, and the accessory UV filter glass.
-      if (!keepsAuthoredMaterial(child.name)) {
+      if (child instanceof THREE.Mesh)
         child.material = sharedMaterialFor(child.name);
-        return;
-      }
-      // Glass elements: add a thin-film multicoating (the green/amber/purple
-      // sheen of real lens coatings) via iridescence, plus a faint green specular
-      // tint. Applied to the authored transmission material in place.
-      if (!child.name.startsWith("Element")) return;
-      for (const m of Array.isArray(child.material)
-        ? child.material
-        : [child.material]) {
-        if (m instanceof THREE.MeshPhysicalMaterial && !coated.has(m)) {
-          coated.add(m);
-          m.iridescence = 0.55;
-          m.iridescenceIOR = 1.3;
-          m.iridescenceThicknessRange = [140, 400];
-          m.specularColor = new THREE.Color(0xb9e0c6); // faint green coating reflection
-          m.needsUpdate = true;
-        }
-      }
     });
   };
 
@@ -183,9 +210,9 @@ export async function loadLensModel(): Promise<LensModel> {
 }
 
 /**
- * Give the scene a PMREM'd room environment. Glass only reads as glass
- * (KHR_materials_transmission) with a real environment to refract — against a
- * void it renders milky. Returns the generated texture for disposal.
+ * Give the scene a PMREM'd room environment. Transmissive glass only reads as
+ * glass with a real environment to refract — against a void it renders milky.
+ * Returns the generated texture for disposal.
  */
 export function setLensEnvironment(
   renderer: THREE.WebGPURenderer,
@@ -199,7 +226,7 @@ export function setLensEnvironment(
 }
 
 /** Dispose every geometry/material under a loaded model root. Materials are now
- *  SHARED across meshes (the signature cache above; ink/bloom caches too), so each
+ *  SHARED across meshes (the signature cache above; ink/deform caches too), so each
  *  is disposed exactly once — a Set guards against double-dispose / a leaked skip. */
 export function disposeLensModel(root: THREE.Object3D): void {
   const seenMat = new Set<THREE.Material>();

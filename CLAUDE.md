@@ -48,7 +48,7 @@ Alpine-driven panels (project page) bind a `data-open` attribute that Tailwind `
 
 ## Lens 3D stack (`src/lib/lens/`)
 
-- Organized as `story/` (the STORY table + derived pacing, camera, hero driver + `?story` dev scrubber, cinematics), `materials/` (shading, bloom = the TSL explode/peel deform, depthfade), `core/` (scene orchestrator + channel registry, model, rig, parts, theme, math). Pages/components import ONLY the `index.ts` barrel. The STORY table lives in `story/story.ts`; `LensStory.astro` renders the hero + captions around it. **`src/lib/lens/README.md` has the "change X → touch Y" map — start there.**
+- Organized as `ops/` (THE motion system: scalar algebra + gate + op library + recipes + derived frames + the three-side deform host + the mechanism drives), `story/` (the STORY table + derived pacing, camera, hero driver + `?story` dev scrubber, cinematics), `materials/` (shading, depthfade), `core/` (scene orchestrator + channel registry, model, parts, theme, transitions, math), `explore/` (`/lens`-only demos + exploration animations, lazy-loaded), `dev/` (dev-only instrument). Pages/components import ONLY the `index.ts` barrel. The STORY table lives in `story/story.ts`; `LensStory.astro` renders the hero + captions around it. **`src/lib/lens/README.md` has the "change X → touch Y" map — start there.**
 - Only `lens_web_*.glb` models ship; never add `lens_full.glb` to the repo.
 
 ## Workflow

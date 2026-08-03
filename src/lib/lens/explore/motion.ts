@@ -25,17 +25,3 @@ export const springs = {
   /** a couple of visible bounces — pops and releases */
   bouncy: (): Spring => spring({ stiffness: 230, damping: 9 }),
 };
-
-/**
- * A spring as a PURE scrub easing: t (0..1) → value (0 → 1, overshooting past
- * 1 on the way and settling exactly at 1). For mapping a demo's scrub segment
- * through a springy release without any autonomous playback — deterministic
- * and bidirectional by construction.
- */
-export function springEaseFn(
-  stiffness: number,
-  damping: number,
-): (t: number) => number {
-  const s = spring({ stiffness, damping });
-  return (t) => s.ease(Math.min(1, Math.max(0, t)));
-}

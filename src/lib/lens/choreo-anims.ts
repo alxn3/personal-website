@@ -2,61 +2,57 @@
 // the existing scene channels — no new shader work. Each maps the one progress
 // value to channel targets, and p=0 / p=1 both land every driven channel back
 // on its rest value, so each one starts from and returns to the seated lens.
-// Channels ease toward targets (~0.12/frame), so rapid target moves read as
-// smoothed bounces — the pulses below lean on that.
-import { band, smoothstep } from "../core/math";
+// The page eases the SCRUB (lens.astro makeScrubGlide) and each frame is then a
+// pure function of p, so the pulses below shape their own envelopes.
+import { band, smoothstep } from "./core/math";
 import {
   type LensAnimation,
   type ParamSpec,
+  drive,
   invertMap,
   paramsOf,
   setParamOf,
-} from "../animation-kit";
-import {
-  uAssembleOverlap,
-  uAssembleSnap,
-  uAssembleSplit,
-  uAssembleStagger,
-} from "../materials/formation";
+} from "./animation-kit";
+// the LIVE assemble knobs the deform host folds (ops/host recipeKnob)
+import { recipeKnob } from "./ops/host";
+
+const kStagger = recipeKnob("assemble", "stagger");
+const kOverlap = recipeKnob("assemble", "overlap");
+const kSplit = recipeKnob("assemble", "split");
+const kSnap = recipeKnob("assemble", "snap");
 
 // --- Heartbeat feel knobs (plain numbers, not uniforms — nothing to restore
 // on exit) -------------------------------------------------------------------
 let hbBeats = 3; // pulse count over the scrub, 2..5
 let hbDecay = 2; // amplitude falloff exponent, 1 (lingers) .. 3 (dies fast)
 
-// --- Domino: assemble-formation preset + restore values ---------------------
+// --- Domino: assemble-formation preset --------------------------------------
 // enter() pushes a tiny per-shell window (high stagger, low overlap) so about
-// one shell is in flight at a time; exit() restores the formation defaults,
-// captured here at module load.
+// one shell is in flight at a time. No exit(): the page resets every knob to its
+// recipe default between selections (ops/host resetRecipeKnobs).
 const DOMINO_STAGGER = 0.72;
 const DOMINO_OVERLAP = 0.2;
-const ASSEMBLE_DEFAULTS = {
-  stagger: uAssembleStagger.value,
-  overlap: uAssembleOverlap.value,
-  split: uAssembleSplit.value,
-  snap: uAssembleSnap.value,
-};
 
 const DOMINO_PARAMS: ParamSpec[] = [
   {
     id: "stagger",
     label: "Stagger",
     hint: "together — one by one",
-    u: uAssembleStagger,
+    u: kStagger,
     map: { k: 0.75 },
   },
   {
     id: "wrap",
     label: "Wrap share",
     hint: "flight — roll-on",
-    u: uAssembleSplit,
+    u: kSplit,
     map: { b: 0.95, k: -0.8 },
   },
   {
     id: "snap",
     label: "Snap",
     hint: "glide — snap home",
-    u: uAssembleSnap,
+    u: kSnap,
     map: { k: 1 },
   },
 ];
@@ -83,21 +79,20 @@ export const CHOREO_ANIMS: LensAnimation[] = [
       { id: "decay", label: "Decay", hint: "lingers — dies fast", value: 50 },
     ],
     apply(p, state) {
-      state.zoomTarget = 0;
-      state.focusTarget = 0;
-      state.apertureTarget = 0;
+      drive(state, "zoom", 0);
+      drive(state, "focus", 0);
+      drive(state, "aperture", 0);
       // damped oscillation: n beats under a decaying amplitude; amp(1)=0 seats
       // the last beat even for fractional beat counts
       const beat = Math.abs(Math.sin(Math.PI * hbBeats * p));
       const amp = 0.5 * Math.pow(1 - p, hbDecay);
-      state.explodeTarget = amp * beat;
-      // skin ripple riding each systole — without a little unwrap the curl
-      // flick below is invisible (curl only shapes PEELED material)
-      state.unwrapTarget = 0.7 * amp * beat * beat * beat;
-      // curl sits relaxed between beats and snaps tight (toward its rest, 1)
-      // at each peak; the band envelope pins it to rest at both ends
-      const peak = Math.pow(beat, 8);
-      state.curlTarget = 1 - 0.65 * band(p, 0, 1, 0.1) * (1 - peak);
+      drive(state, "explode", amp * beat);
+      // Skin ripple riding each systole. The classic drove unwrap+curl here;
+      // rollout is the surviving PURE peel (a bend, no ladder and no throw), so
+      // it reproduces the "the skin lifts a little at each beat" read where
+      // assemble would eject a whole rank band. Amplitude is deliberately small
+      // — the ripple is a flick under the explode pulse, not a second gesture.
+      drive(state, "rollout", 0.35 * amp * beat * beat * beat);
     },
     setParam(id, v) {
       if (id === "beats") hbBeats = 2 + 3 * v;
@@ -111,17 +106,21 @@ export const CHOREO_ANIMS: LensAnimation[] = [
     // The lens operating itself: each mechanism runs ALONE, in strict order,
     // then the whole machine snaps back to rest.
     apply(p, state) {
-      state.zoomTarget = band(p, 0, 0.35, 0.175);
-      state.focusTarget = band(p, 0.3, 0.6, 0.15);
+      drive(state, "zoom", band(p, 0, 0.35, 0.175));
+      drive(state, "focus", band(p, 0.3, 0.6, 0.15));
       // stop down and hold, then release sharply in the final stretch
-      state.apertureTarget = Math.min(
-        smoothstep(0.55, 0.8, p),
-        1 - smoothstep(0.82, 0.94, p),
+      drive(
+        state,
+        "aperture",
+        Math.min(smoothstep(0.55, 0.8, p), 1 - smoothstep(0.82, 0.94, p)),
       );
       // tiny structural breath under the whole sequence (≤0.06), released at
       // the end — both factors are 0 at p=1
-      state.helixTarget =
-        0.03 * (1 - Math.cos(4 * Math.PI * p)) * (1 - smoothstep(0.8, 0.96, p));
+      drive(
+        state,
+        "helix",
+        0.03 * (1 - Math.cos(4 * Math.PI * p)) * (1 - smoothstep(0.8, 0.96, p)),
+      );
     },
   },
   {
@@ -129,19 +128,18 @@ export const CHOREO_ANIMS: LensAnimation[] = [
     label: "Slam",
     hint: "lazy drift out — crash home",
     // Inverted teardown pacing: 80% of the scrub is a lazy drift apart, the
-    // last 20% a hard cubic crash back to seated. Drift and crash share the
-    // explode/unwrap channels (rather than routing the return through the
-    // assemble formation) so the SAME arrangement that drifted is the one
-    // that slams — a formation handoff mid-gesture would pop.
+    // last 20% a hard cubic crash back to seated. Drift and crash share BOTH
+    // channels (one envelope, `slam`, multiplies each), so the same arrangement
+    // that drifted is the one that slams — a handoff mid-gesture would pop.
+    // explode + assemble is the story's own teardown pairing (hero-driver): the
+    // solids fan on the ladder while the sheets peel off it.
     apply(p, state) {
-      state.zoomTarget = 0;
-      state.focusTarget = 0;
-      state.apertureTarget = 0;
+      drive(state, "zoom", 0);
+      drive(state, "focus", 0);
+      drive(state, "aperture", 0);
       const slam = p < 0.8 ? 1 : 1 - Math.pow((p - 0.8) / 0.2, 3);
-      state.explodeTarget = 0.85 * smoothstep(0.02, 0.78, p) * slam;
-      state.unwrapTarget = 0.85 * smoothstep(0.16, 0.8, p) * slam;
-      // curl lets go late in the drift; the crash re-tightens it to rest
-      state.curlTarget = 1 - 0.6 * smoothstep(0.45, 0.85, p) * slam;
+      drive(state, "explode", 0.85 * smoothstep(0.02, 0.78, p) * slam);
+      drive(state, "assemble", 0.85 * smoothstep(0.16, 0.8, p) * slam);
     },
   },
   {
@@ -152,35 +150,30 @@ export const CHOREO_ANIMS: LensAnimation[] = [
     // ONE channel: the formation preset (pushed in enter) owns the cascade —
     // per-shell timing comes entirely from the stagger/overlap window.
     apply(p, state) {
-      state.zoomTarget = 0;
-      state.focusTarget = 0;
-      state.apertureTarget = 0;
-      state.assembleTarget = 1 - smoothstep(0, 0.9, p);
+      drive(state, "zoom", 0);
+      drive(state, "focus", 0);
+      drive(state, "aperture", 0);
+      drive(state, "assemble", 1 - smoothstep(0, 0.9, p));
     },
     setParam: setParamOf(DOMINO_PARAMS),
     enter() {
-      uAssembleStagger.value = DOMINO_STAGGER;
-      uAssembleOverlap.value = DOMINO_OVERLAP;
-    },
-    exit() {
-      uAssembleStagger.value = ASSEMBLE_DEFAULTS.stagger;
-      uAssembleOverlap.value = ASSEMBLE_DEFAULTS.overlap;
-      uAssembleSplit.value = ASSEMBLE_DEFAULTS.split;
-      uAssembleSnap.value = ASSEMBLE_DEFAULTS.snap;
+      kStagger.value = DOMINO_STAGGER;
+      kOverlap.value = DOMINO_OVERLAP;
     },
   },
   {
     id: "x-irisbloom",
     label: "Iris bloom",
-    hint: "petals shut → bloom → fold home — toon",
+    hint: "petals shut → bloom → fold home",
     apply(p, state) {
-      state.zoomTarget = 0;
-      state.focusTarget = 0;
+      drive(state, "zoom", 0);
+      drive(state, "focus", 0);
       // the iris closes first and HOLDS as the calm centre of the bloom; it
       // reopens dead last, after everything else has folded home
-      state.apertureTarget = Math.min(
-        smoothstep(0, 0.25, p),
-        1 - smoothstep(0.85, 1, p),
+      drive(
+        state,
+        "aperture",
+        Math.min(smoothstep(0, 0.25, p), 1 - smoothstep(0.85, 1, p)),
       );
       // the bloom: shells fan out while their skins peel gently open like
       // petals, then fold back before the iris releases
@@ -188,11 +181,11 @@ export const CHOREO_ANIMS: LensAnimation[] = [
         smoothstep(0.2, 0.7, p),
         1 - smoothstep(0.7, 0.92, p),
       );
-      state.explodeTarget = bloom;
-      state.unwrapTarget = 0.55 * bloom;
-      // curl rides the bloom as a deviation from its rest (1 = tight roll):
-      // it relaxes toward a flat open petal at full bloom and re-tightens home
-      state.curlTarget = 1 - 0.8 * bloom;
+      drive(state, "explode", bloom);
+      // the petals: rollout is the surviving pure peel, so the skins open flat
+      // in place while the explode does the fanning (the classic ran unwrap +
+      // a curl release for the same read)
+      drive(state, "rollout", 0.55 * bloom);
     },
   },
 ];

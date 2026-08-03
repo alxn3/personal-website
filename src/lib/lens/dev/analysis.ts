@@ -1,6 +1,7 @@
 import * as THREE from "three/webgpu";
 import { ANIMATIONS, type LensAnimation } from "../animations";
 import { isAccessory } from "../core/parts";
+import { frameOf } from "../ops/frames";
 import {
   createPositionProbe,
   type PositionProbe,
@@ -13,18 +14,23 @@ import type { PathVizContext } from "./paths";
 // (dev/paths.ts draws; this module measures and returns JSON).
 //
 // Two sample populations, one walk:
-//   SHELLS — every bloom-carrying mesh (wedges + seated features + decals).
-//            Sampled through the GPU probe (dev/path-probe.ts) running the real
-//            bloomLocalPosition() graph: outer-wall grid + inner-wall grid +
-//            the four (seam/far × front/rear) corners, real vertices only.
-//   SOLIDS — every non-bloom mesh (rig posRiders' meshes, glass, iris, screw,
-//            loose parts). Solids are rigid, so their rest samples (AABB
-//            corners + real extreme vertices) transformed by the SAME per-step
-//            matrixWorld snapshot are exact ground truth — no shader mirror.
+//   SHELLS — every mesh carrying the derived `_op*` frame (ops/frames.ts), i.e.
+//            everything the op deform runs on. Sampled through the GPU probe
+//            (dev/path-probe.ts) running the real opsLocalPosition() graph:
+//            outer-wall grid + inner-wall grid + the four (seam/far × front/rear)
+//            corners, real vertices only.
+//   SOLIDS — every mesh WITHOUT a derived frame. Such a mesh cannot deform in
+//            shader, so its rest samples (AABB corners + real extreme vertices)
+//            transformed by the SAME per-step matrixWorld snapshot are exact
+//            ground truth — no shader mirror.
+//            NOTE: the op host frames EVERY mesh, so this population is normally
+//            EMPTY and the rigid branch is inert. That is the honest reading —
+//            the glass, blades and loose parts deform in shader too, and
+//            measuring them off matrixWorld alone would report a rigid lie.
 //
 // FRAME: every reported position is in the MODEL frame (the GLB root's local
 // frame): optical axis = Y, radial plane = X–Z, units = real millimetres. It is
-// the world-composed pose (bloom local × matrixWorld) re-expressed in the one
+// the world-composed pose (deformed local × matrixWorld) re-expressed in the one
 // frame where cylindrical numbers mean something; distances are identical to
 // world distances up to the constant model scale.
 //
@@ -40,8 +46,8 @@ const SEAT_TOL_MM = 1;
 /** Curl-corner threshold, on the corner's RELATIVE radial lift: its lift off
  *  the seated radius MINUS the smallest lift among the piece's four corners at
  *  the same step. Two rejected metrics first (both measured as four-way ties):
- *  full-3D distance-to-seat, and absolute radial lift — in the classic, the
- *  piece-UNIFORM terms (dilation + slide, ∝ t through lr 0.95) decay LAST, so
+ *  full-3D distance-to-seat, and absolute radial lift — the piece-UNIFORM terms
+ *  (dilation + slide, ∝ t through lr 0.95) decay LAST, so
  *  any absolute threshold crossing lands in that uniform tail after the wrap
  *  has already finished. Subtracting the per-step minimum cancels everything
  *  piece-uniform; what remains is exactly the peel-front/roll geometry — the
@@ -55,10 +61,10 @@ const MOVE_TOL_MM = 0.01;
 /** Grid edges shorter than this at rest are excluded from the stretch metric. */
 const STRETCH_MIN_EDGE_MM = 1.5;
 
-/** Corner naming: seam = the peel/wrap seam edge. WRAP_DIR = −1 in
- *  materials/bloom.ts and ASSEMBLE_WRAP_FROM = −1 in materials/formation.ts, so
- *  BOTH constructions hinge at θ0 + halfSpan — the wedge-local +φ side. front =
- *  +Y (filter end), rear = −Y (mount end). */
+/** Corner naming: seam = the peel/wrap seam edge. The house winding sense is
+ *  −1 (ops/recipes.ts ASSEMBLE_WRAP_FROM / ROLLOUT_FROM), so every construction
+ *  hinges at θ0 + halfSpan — the wedge-local +φ side. front = +Y (filter end),
+ *  rear = −Y (mount end). */
 const CORNER_LABELS = [
   "seam-front",
   "seam-rear",
@@ -81,7 +87,7 @@ const r2 = (x: number) => Math.round(x * 100) / 100;
 const r3 = (x: number) => Math.round(x * 1000) / 1000;
 const pOf = (k: number) => k / (STEPS - 1);
 /** The default full-scrub walk grid. Every walk carries its own `ps` (the p
- *  value of each step row) so windowed walks (breath) reuse the same engine. */
+ *  value of each step row) so a windowed walk can reuse the same engine. */
 const DEFAULT_PS: number[] = Array.from({ length: STEPS }, (_, k) => pOf(k));
 
 // --- result shapes (all plain JSON) -----------------------------------------
@@ -247,113 +253,6 @@ interface WedgeCorners {
   farSkew: { mm: number; atP: number } | null;
 }
 
-// --- breath (windowed fine-grained) results ---------------------------------
-
-export interface BreathEvent {
-  /** p of the trough this outward excursion rises from (breath onset) */
-  onsetP: number;
-  /** p at which the excursion peaks */
-  peakP: number;
-  amplitudeMm: number;
-  /** max roll remainder (mm) anywhere in the rise. > ~1mm means the piece was
-   *  still visibly unwrapped while it moved back outward — the exact defect
-   *  the S(0.75,1,q) breath window exists to prevent. */
-  maxRollDuringRiseMm: number;
-}
-
-export interface BreathPieceReport {
-  name: string;
-  shell: string;
-  rank: number;
-  /** seated reference radii, mm: [minR, maxR, centroidR] */
-  seatedR: [number, number, number];
-  /** outward excursions of the piece's min-radius offset series */
-  breathEvents: BreathEvent[];
-  /** grid-edge length ratio furthest ABOVE 1 over the window (tangential
-   *  stretch), and where; null = no stretch-eligible edges on this piece.
-   *  CAUTION: mid-wrap this is dominated by the sheared peel front (both
-   *  constructions flex the sheet hard while the tail is still down) — for the
-   *  BREATH's own stretch read stuckStretchPeak. */
-  stretchPeak: { ratio: number; atP: number } | null;
-  /** ratio furthest BELOW 1 (crush) — the classic's chord-cutting compresses too */
-  crushPeak: { ratio: number; atP: number } | null;
-  /** stretch extremes over only the steps where the roll remainder is under
-   *  CORNER_TOL_MM (sheet fully stuck): the breath's own tangential stretch,
-   *  uncontaminated by the peel. null = never fully stuck in-window (or no
-   *  eligible edges). */
-  stuckStretchPeak: { ratio: number; atP: number } | null;
-  stuckCrushPeak: { ratio: number; atP: number } | null;
-  /** last p at which the roll remainder exceeds CORNER_TOL_MM (interpolated).
-   *  null = never unwrapped in-window; the window's p1 = still unwrapped at end */
-  rollDoneP: number | null;
-  series?: {
-    /** per step, offsets from the seated values (mm) */
-    minROffMm: number[];
-    maxROffMm: number[];
-    centroidROffMm: number[];
-    /** per step: max / min grid-edge ratio vs seated (null = no eligible edges) */
-    stretchMax: number[] | null;
-    stretchMin: number[] | null;
-    /** per step: ROLL REMAINDER — max corner radial lift minus min corner
-     *  radial lift (lift = |r − r_seated| per corner). Piece-uniform terms
-     *  (the breath dilation itself, the slide) lift all four corners equally
-     *  and cancel; what remains is how far part of the sheet still stands off
-     *  its stuck band — an honest "how unwrapped is it still" scalar. */
-    rollRemainderMm: number[];
-  };
-}
-
-export interface BreathRankReport {
-  rank: number;
-  shells: string[];
-  pieces: number;
-  /** per step: mean over the rank's pieces of centroid-radius offset (mm) —
-   *  the breath curve itself */
-  centroidROffMm: number[];
-  /** per step: min over pieces of the per-piece min-radius offset */
-  minROffMm: number[];
-  maxROffMm: number[];
-  /** per step: worst grid-edge ratio above / below 1 across the rank's pieces */
-  stretchMax: number[];
-  stretchMin: number[];
-  /** per step: max roll remainder across the rank's pieces (mm) */
-  rollRemainderMm: number[];
-  /** outward excursions of the rank's MIN-RADIUS offset series. Min radius,
-   *  not the centroid mean: the stuck band is what rides the breathing barrel,
-   *  while the mean still carries the decaying inward flight of not-yet-stuck
-   *  material, which cancels the rise (measured — the centroid series showed
-   *  0.13mm where the min-radius series showed the 96-step table's 5.2mm). */
-  breathEvents: BreathEvent[];
-  /** the largest event's peak — THE breath, when the window catches it whole */
-  breathPeakP: number | null;
-  breathAmplitudeMm: number | null;
-  stretchPeak: { ratio: number; atP: number } | null;
-  crushPeak: { ratio: number; atP: number } | null;
-  /** see BreathPieceReport.stuckStretchPeak — masked by the RANK's own roll
-   *  remainder (every piece of the rank fully stuck) */
-  stuckStretchPeak: { ratio: number; atP: number } | null;
-  stuckCrushPeak: { ratio: number; atP: number } | null;
-  rollDoneP: number | null;
-  /** breathPeakP − rollDoneP; positive = the curl finished BEFORE the breath
-   *  peaked (the classic's ordering, which ops must reproduce) */
-  curlLeadP: number | null;
-}
-
-export interface BreathResult {
-  anim: string;
-  p0: number;
-  p1: number;
-  steps: number;
-  coverage: Coverage;
-  idleCheck: IdleCheck;
-  /** shell ranks, ascending. Ranks whose breath falls outside [p0, p1] show
-   *  flat curves and empty event lists — absence of events is "not in this
-   *  window", never "no breath". */
-  ranks: BreathRankReport[];
-  /** SHELL pieces only (solids are rigid — they cannot breathe or stretch) */
-  pieces: BreathPieceReport[];
-}
-
 export interface PathAnalysis {
   analyze(
     animId: string,
@@ -362,10 +261,6 @@ export interface PathAnalysis {
   compare(idA: string, idB: string): Promise<CompareResult>;
   interference(animId: string): Promise<InterferenceResult>;
   curlCorners(idA?: string, idB?: string): Promise<CurlCornerResult>;
-  breath(
-    animId: string,
-    opts?: { p0?: number; p1?: number; steps?: number; series?: boolean },
-  ): Promise<BreathResult>;
   dispose(): void;
 }
 
@@ -443,8 +338,8 @@ function gridPick(
 }
 
 /**
- * Sample a bloom mesh. Grids/edges/corners live in the mesh's DOMINANT sector
- * only (features seated on a shell carry per-COMPONENT `_bloomtheta0`; islands
+ * Sample a shell mesh. Grids/edges/corners live in the mesh's DOMINANT sector
+ * only (features seated on a shell carry per-COMPONENT t0; islands
  * follow different wedges, so an edge across sectors would measure the sectors
  * flying apart, not the mesh stretching — the 6× "stretch" false alarms this
  * replaces). Geometry modes:
@@ -454,12 +349,19 @@ function gridPick(
  *   PLATE (radial span dominates — PCB discs, baffle plates): one 3×3 grid
  *     over (φ, r) — the (φ, y) grid degenerates to thickness-length edges
  *     there, and a ~1mm rest edge turns millimetre noise into a fake 4× ratio.
+ *   AXISYMMETRIC (frameOf().axi === 1 — full rings, tubes, discs): NO grid and
+ *     no corners, extreme samples only. Their (φ, y) box spans the whole ±π
+ *     turn, so every grid edge is a CHORD across the ring and any radial
+ *     dilation reads as a ~3× "stretch" — a systematic false alarm, not a
+ *     measurement. They still contribute centroid and radial-band numbers.
  * Non-dominant sectors still contribute edge-less extreme samples so centroid
  * and radial-band numbers cover the whole mesh. Real vertices only.
  */
-function pickShellSamples(mesh: THREE.Mesh): PickedShell {
+function pickShellSamples(mesh: THREE.Mesh, axi: boolean): PickedShell {
   const pos = mesh.geometry.getAttribute("position");
-  const t0Attr = mesh.geometry.getAttribute("_bloomtheta0");
+  // The packed frame lane read directly (not via frameOf): this walks every
+  // vertex of the mesh and wants exactly one field, `_opA.x` = t0.
+  const t0Attr = mesh.geometry.getAttribute("_opA");
   const n = pos.count;
   const phi = new Array<number>(n);
   const yy = new Array<number>(n);
@@ -470,7 +372,9 @@ function pickShellSamples(mesh: THREE.Mesh): PickedShell {
     const x = pos.getX(i);
     const y = pos.getY(i);
     const z = pos.getZ(i);
-    const t0 = t0Attr ? -t0Attr.getX(i) : 0; // stored negated (see bloom.ts)
+    // NOT negated: the classic `_bloomtheta0` was stored negated, the frame's
+    // t0 is the sector meridian as measured (ops/frames.ts).
+    const t0 = t0Attr ? t0Attr.getX(i) : 0;
     phi[i] = wrapPi(Math.atan2(z, x) - t0);
     yy[i] = y;
     rr[i] = Math.hypot(x, z);
@@ -508,6 +412,39 @@ function pickShellSamples(mesh: THREE.Mesh): PickedShell {
     }
     return i;
   };
+
+  /** Edge-less extreme samples over a candidate set (the six radial / axial /
+   *  arc extremes), appended to the sample list. */
+  const addExtremes = (cand: number[]) => {
+    const pick = (score: (i: number) => number) => {
+      let best = cand[0];
+      let bs = -Infinity;
+      for (const i of cand) {
+        const s = score(i);
+        if (s > bs) {
+          bs = s;
+          best = i;
+        }
+      }
+      add(best);
+    };
+    pick((i) => rr[i]);
+    pick((i) => -rr[i]);
+    pick((i) => yy[i]);
+    pick((i) => -yy[i]);
+    pick((i) => phi[i]);
+    pick((i) => -phi[i]);
+  };
+
+  // AXISYMMETRIC pieces take that path for the WHOLE mesh: no edges means no
+  // stretch ratio (peakStretchOf skips an edge-less piece), and
+  // no corners means no roll remainder — the two numbers a ring cannot honestly
+  // produce. Everything else about the piece is measured as before.
+  if (axi) {
+    addExtremes(dom);
+    if (rest.length) addExtremes(rest);
+    return { verts: list, edges: [], corners: {} };
+  }
 
   const edges: [number, number][] = [];
   const gridEdges = (grid: number[], gu: number, gv: number) => {
@@ -569,26 +506,7 @@ function pickShellSamples(mesh: THREE.Mesh): PickedShell {
 
   // other sectors: edge-less extreme samples so bands/centroids see the whole
   // mesh even when islands ride different wedges
-  if (rest.length) {
-    const pick = (score: (i: number) => number) => {
-      let best = rest[0];
-      let bs = -Infinity;
-      for (const i of rest) {
-        const s = score(i);
-        if (s > bs) {
-          bs = s;
-          best = i;
-        }
-      }
-      add(best);
-    };
-    pick((i) => rr[i]);
-    pick((i) => -rr[i]);
-    pick((i) => yy[i]);
-    pick((i) => -yy[i]);
-    pick((i) => phi[i]);
-    pick((i) => -phi[i]);
-  }
+  if (rest.length) addExtremes(rest);
   return { verts: list, edges, corners };
 }
 
@@ -686,7 +604,7 @@ export function createPathAnalysis(ctx: PathVizContext): PathAnalysis {
       }
       if (a === ctx.model) break;
     }
-    if (o.geometry.getAttribute("_bloomr")) shellMeshes.push(o);
+    if (frameOf(o.geometry)) shellMeshes.push(o);
     else solidMeshes.push(o);
   });
 
@@ -700,14 +618,15 @@ export function createPathAnalysis(ctx: PathVizContext): PathAnalysis {
 
   // shells FIRST so unified sample offsets coincide with probe columns
   for (const mesh of shellMeshes) {
-    const picked = pickShellSamples(mesh);
-    const rate = mesh.geometry.getAttribute("_bloomrate");
-    const R = mesh.geometry.getAttribute("_bloomr").getX(0);
+    // Non-null by construction: shellMeshes is exactly the frame-carrying set.
+    const frame = frameOf(mesh.geometry);
+    const picked = pickShellSamples(mesh, frame?.axi === 1);
+    const R = frame?.R ?? 0;
     pieces.push({
       name: uniqueName(mesh.name),
       kind: "shell",
       shell: mesh.name.replace(/_Seg\d+.*$/, "") || mesh.name,
-      rank: rate ? rate.getX(0) : 0.5,
+      rank: frame ? frame.rank : 0.5,
       mesh,
       base: probeSamples.length,
       count: picked.verts.length,
@@ -732,13 +651,12 @@ export function createPathAnalysis(ctx: PathVizContext): PathAnalysis {
       name: uniqueName(mesh.name),
       kind: "solid",
       shell: mesh.name,
-      // Filled in on the first walk (from the seated pose) — NOT bloom's
-      // seatRankOf: its non-bloom branch reads a WORLD-space box (scene units,
-      // model scale applied) into a table keyed in model millimetres, so at
-      // runtime every solid clamps to rank 0 (measured 2026-07-27: all 36
-      // solids). This module must rank solids correctly for interference
-      // adjacency, and it may not touch rig behaviour — so it applies the same
-      // law (0.01mm bucket into the shell-radius span) in the model frame.
+      // Filled in on the first walk (from the seated pose), in the MODEL frame:
+      // a world-space box (scene units, model scale applied) read into a table
+      // keyed in model millimetres clamps every solid to rank 0. This module
+      // must rank solids correctly for interference adjacency, so it applies
+      // the shader's own law (0.01mm bucket into the shell-radius span) in the
+      // model frame.
       rank: NaN,
       mesh,
       base,
@@ -753,12 +671,12 @@ export function createPathAnalysis(ctx: PathVizContext): PathAnalysis {
   }
   const totalSamples = base;
 
-  // Solid seat ranks, on the shader's own law (bloom.ts rankOfKey: 0.01mm
-  // radius buckets normalized across the shell-radius span) but computed in
+  // Solid seat ranks, on the shader's own law (0.01mm radius buckets
+  // normalized across the shell-radius span) but computed in
   // the MODEL frame — see the rank comment above. The radius comes from the
   // first walk's seated pose, so the flag defers it until one exists.
   const shellKeys = shellMeshes.map((m) =>
-    Math.round(m.geometry.getAttribute("_bloomr").getX(0) * 100),
+    Math.round((frameOf(m.geometry)?.R ?? 0) * 100),
   );
   const keyLo = shellKeys.length ? Math.min(...shellKeys) : 0;
   const keyHi = shellKeys.length ? Math.max(...shellKeys) : 1;
@@ -769,10 +687,10 @@ export function createPathAnalysis(ctx: PathVizContext): PathAnalysis {
     );
   let solidsRanked = false;
 
-  // One probe per row count: the default walk needs STEPS+1 rows, a windowed
-  // breath walk needs its own steps+1. All probes share the sample list, so
-  // their CPU-built `seated` arrays are identical — `probe` (the default one,
-  // created eagerly as before) stays the single rest-geometry reference.
+  // One probe per row count: the default walk needs STEPS+1 rows, a walk over
+  // its own `ps` grid needs its own steps+1. All probes share the sample list,
+  // so their CPU-built `seated` arrays are identical — `probe` (the default
+  // one, created eagerly) stays the single rest-geometry reference.
   interface ProbeEntry {
     probe: PositionProbe;
     compiled: boolean;
@@ -810,7 +728,7 @@ export function createPathAnalysis(ctx: PathVizContext): PathAnalysis {
     }
     if (anim && p != null) anim.apply(p, ctx.state);
     for (const c of channels) state[c] = state[`${c}Target`];
-    ctx.driveRig();
+    ctx.driveChannels();
     ctx.model.updateWorldMatrix(true, true);
   }
 
@@ -893,7 +811,7 @@ export function createPathAnalysis(ctx: PathVizContext): PathAnalysis {
         state[c] = snap[c];
         state[`${c}Target`] = snap[`${c}Target`];
       }
-      ctx.driveRig();
+      ctx.driveChannels();
       ctx.invalidate();
     }
 
@@ -1453,8 +1371,11 @@ export function createPathAnalysis(ctx: PathVizContext): PathAnalysis {
   }
 
   async function curlCorners(
-    idA = "reassemble",
-    idB = "reassemble-ops",
+    // The classic rewrap "reassemble" this defaulted against is gone; the two
+    // surviving sheet constructions are the assemble recipe's wrap-on and the
+    // rollout recipe's unroll.
+    idA = "assemble",
+    idB = "rollout",
   ): Promise<CurlCornerResult> {
     const wA = await walk(findAnim(idA));
     const wB = await walk(findAnim(idB));
@@ -1621,316 +1542,11 @@ export function createPathAnalysis(ctx: PathVizContext): PathAnalysis {
     };
   }
 
-  // --- breath — windowed, fine-grained ---------------------------------------
-  // A dedicated dense walk over [p0, p1] (NOT a subsample of the 96-step scrub):
-  // the same engine drives the rig at `steps` p-values inside the window, so
-  // per-step resolution there is (p1−p0)/steps instead of 1/96. Everything is
-  // reported per shell rank and per SHELL piece — solids are rigid by
-  // construction (exact matrixWorld transforms), so they cannot breathe,
-  // stretch, or roll, and are left out of the piece list (the walk itself still
-  // drives and checks every mesh; see coverage).
-  async function breath(
-    animId: string,
-    opts: { p0?: number; p1?: number; steps?: number; series?: boolean } = {},
-  ): Promise<BreathResult> {
-    const p0 = opts.p0 ?? 0.45;
-    const p1 = opts.p1 ?? 0.7;
-    const steps = Math.max(8, Math.min(512, Math.round(opts.steps ?? 128)));
-    const withSeries = opts.series !== false;
-    if (!(p1 > p0)) throw new Error(`breath: need p1 > p0 (got ${p0}..${p1})`);
-    const ps = Array.from(
-      { length: steps },
-      (_, k) => p0 + ((p1 - p0) * k) / (steps - 1),
-    );
-    const w = await walk(findAnim(animId), ps);
-
-    /** Last p at which the roll remainder exceeds CORNER_TOL_MM, interpolated
-     *  between steps (the curlCorners crossing convention). */
-    const rollDonePOf = (roll: number[]): number | null => {
-      for (let k = steps - 1; k >= 0; k--) {
-        if (roll[k] > CORNER_TOL_MM) {
-          if (k === steps - 1) return r3(ps[k]);
-          const f =
-            (roll[k] - CORNER_TOL_MM) / Math.max(1e-9, roll[k] - roll[k + 1]);
-          return r3(ps[k] + f * (ps[k + 1] - ps[k]));
-        }
-      }
-      return null;
-    };
-
-    const eventsOf = (series: number[], roll: number[]): BreathEvent[] =>
-      scanExcursions(series).map((e) => {
-        let maxRoll = 0;
-        for (let k = e.troughIdx; k <= e.peakIdx; k++)
-          if (roll[k] > maxRoll) maxRoll = roll[k];
-        return {
-          onsetP: r3(ps[e.troughIdx]),
-          peakP: r3(ps[e.peakIdx]),
-          amplitudeMm: r2(e.amplitude),
-          maxRollDuringRiseMm: r2(maxRoll),
-        };
-      });
-
-    const maxPeakOf = (
-      series: number[] | null,
-    ): { ratio: number; atP: number } | null => {
-      if (!series) return null;
-      let atK = 0;
-      for (let k = 1; k < steps; k++) if (series[k] > series[atK]) atK = k;
-      return { ratio: r3(series[atK]), atP: r3(ps[atK]) };
-    };
-    const minPeakOf = (
-      series: number[] | null,
-    ): { ratio: number; atP: number } | null => {
-      if (!series) return null;
-      let atK = 0;
-      for (let k = 1; k < steps; k++) if (series[k] < series[atK]) atK = k;
-      return { ratio: r3(series[atK]), atP: r3(ps[atK]) };
-    };
-    /** Peak over only the steps where `roll` is under CORNER_TOL_MM. */
-    const maskedPeakOf = (
-      series: number[] | null,
-      roll: number[],
-      wantMax: boolean,
-    ): { ratio: number; atP: number } | null => {
-      if (!series) return null;
-      let atK = -1;
-      for (let k = 0; k < steps; k++) {
-        if (roll[k] >= CORNER_TOL_MM) continue;
-        if (
-          atK < 0 ||
-          (wantMax ? series[k] > series[atK] : series[k] < series[atK])
-        )
-          atK = k;
-      }
-      return atK < 0 ? null : { ratio: r3(series[atK]), atP: r3(ps[atK]) };
-    };
-
-    interface PieceBreath {
-      piece: Piece;
-      report: BreathPieceReport;
-      centroidOff: number[];
-      minOff: number[];
-      maxOff: number[];
-      stretchMax: number[] | null;
-      stretchMin: number[] | null;
-      roll: number[];
-    }
-
-    const perPiece: PieceBreath[] = [];
-    for (const piece of pieces) {
-      if (piece.kind !== "shell") continue;
-      const s = pieceSeries(w, piece);
-
-      // seated radius references (same sample eligibility as the live series)
-      let sMin = Infinity;
-      let sMax = -Infinity;
-      let cx = 0;
-      let cz = 0;
-      for (let i = 0; i < piece.count; i++) {
-        const o = (piece.base + i) * 3;
-        if (piece.radiusEligible[i]) {
-          const r = Math.hypot(w.seated[o], w.seated[o + 2]);
-          if (r < sMin) sMin = r;
-          if (r > sMax) sMax = r;
-        }
-        cx += w.seated[o];
-        cz += w.seated[o + 2];
-      }
-      const sCen = Math.hypot(cx / piece.count, cz / piece.count);
-      if (sMin === Infinity) {
-        sMin = sCen;
-        sMax = sCen;
-      }
-      const centroidOff = s.cyl.map(([r]) => r - sCen);
-      const minOff = s.minR.map((v) => v - sMin);
-      const maxOff = s.maxR.map((v) => v - sMax);
-
-      // STRETCH TIMELINE: per step, the grid-edge length ratio furthest above /
-      // below 1 (peakStretchOf's metric, resolved per step instead of collapsed
-      // to one walk-wide scalar). Same sub-edge exclusion as peakStretchOf.
-      const eligible: [number, number, number][] = [];
-      for (const [a, b] of piece.edges) {
-        const oa = (piece.base + a) * 3;
-        const ob = (piece.base + b) * 3;
-        const rest = Math.hypot(
-          probe.seated[oa] - probe.seated[ob],
-          probe.seated[oa + 1] - probe.seated[ob + 1],
-          probe.seated[oa + 2] - probe.seated[ob + 2],
-        );
-        if (rest >= STRETCH_MIN_EDGE_MM) eligible.push([a, b, rest]);
-      }
-      let stretchMax: number[] | null = null;
-      let stretchMin: number[] | null = null;
-      if (eligible.length) {
-        stretchMax = [];
-        stretchMin = [];
-        for (let k = 0; k < steps; k++) {
-          let hi = -Infinity;
-          let lo = Infinity;
-          for (const [a, b, rest] of eligible) {
-            const oa = (k * probeCount + piece.base + a) * 3;
-            const ob = (k * probeCount + piece.base + b) * 3;
-            const ratio =
-              Math.hypot(
-                w.local[oa] - w.local[ob],
-                w.local[oa + 1] - w.local[ob + 1],
-                w.local[oa + 2] - w.local[ob + 2],
-              ) / rest;
-            if (ratio > hi) hi = ratio;
-            if (ratio < lo) lo = ratio;
-          }
-          stretchMax.push(hi);
-          stretchMin.push(lo);
-        }
-      }
-
-      // ROLL REMAINDER: corner radial-lift spread (see the series doc comment)
-      const present = CORNER_LABELS.filter(
-        (l) => piece.corners[l] !== undefined,
-      );
-      const roll = new Array<number>(steps).fill(0);
-      if (present.length >= 2) {
-        const seatR = present.map((l) => {
-          const o = (piece.base + piece.corners[l]!) * 3;
-          return Math.hypot(w.seated[o], w.seated[o + 2]);
-        });
-        for (let k = 0; k < steps; k++) {
-          let hi = -Infinity;
-          let lo = Infinity;
-          present.forEach((l, ci) => {
-            const o = (k * totalSamples + piece.base + piece.corners[l]!) * 3;
-            const lift = Math.abs(
-              Math.hypot(w.world[o], w.world[o + 2]) - seatR[ci],
-            );
-            if (lift > hi) hi = lift;
-            if (lift < lo) lo = lift;
-          });
-          roll[k] = hi - lo;
-        }
-      }
-
-      const report: BreathPieceReport = {
-        name: piece.name,
-        shell: piece.shell,
-        rank: r3(piece.rank),
-        seatedR: [r2(sMin), r2(sMax), r2(sCen)],
-        breathEvents: eventsOf(minOff, roll),
-        stretchPeak: maxPeakOf(stretchMax),
-        crushPeak: minPeakOf(stretchMin),
-        stuckStretchPeak: maskedPeakOf(stretchMax, roll, true),
-        stuckCrushPeak: maskedPeakOf(stretchMin, roll, false),
-        rollDoneP: rollDonePOf(roll),
-      };
-      if (withSeries) {
-        report.series = {
-          minROffMm: minOff.map(r2),
-          maxROffMm: maxOff.map(r2),
-          centroidROffMm: centroidOff.map(r2),
-          stretchMax: stretchMax ? stretchMax.map(r3) : null,
-          stretchMin: stretchMin ? stretchMin.map(r3) : null,
-          rollRemainderMm: roll.map(r2),
-        };
-      }
-      perPiece.push({
-        piece,
-        report,
-        centroidOff,
-        minOff,
-        maxOff,
-        stretchMax,
-        stretchMin,
-        roll,
-      });
-    }
-
-    // rank aggregation
-    const groups = new Map<string, PieceBreath[]>();
-    for (const pb of perPiece) {
-      const key = rankKey(pb.piece.rank);
-      (groups.get(key) ?? groups.set(key, []).get(key)!).push(pb);
-    }
-    const ranks: BreathRankReport[] = [...groups.values()]
-      .sort((a, b) => a[0].piece.rank - b[0].piece.rank)
-      .map((list) => {
-        const cen: number[] = [];
-        const mn: number[] = [];
-        const mx: number[] = [];
-        const sHi: number[] = [];
-        const sLo: number[] = [];
-        const roll: number[] = [];
-        for (let k = 0; k < steps; k++) {
-          let cSum = 0;
-          let lo = Infinity;
-          let hi = -Infinity;
-          let shi = -Infinity;
-          let slo = Infinity;
-          let anyStretch = false;
-          let rl = 0;
-          for (const pb of list) {
-            cSum += pb.centroidOff[k];
-            if (pb.minOff[k] < lo) lo = pb.minOff[k];
-            if (pb.maxOff[k] > hi) hi = pb.maxOff[k];
-            if (pb.stretchMax && pb.stretchMin) {
-              anyStretch = true;
-              if (pb.stretchMax[k] > shi) shi = pb.stretchMax[k];
-              if (pb.stretchMin[k] < slo) slo = pb.stretchMin[k];
-            }
-            if (pb.roll[k] > rl) rl = pb.roll[k];
-          }
-          cen.push(cSum / list.length);
-          mn.push(lo);
-          mx.push(hi);
-          sHi.push(anyStretch ? shi : 1);
-          sLo.push(anyStretch ? slo : 1);
-          roll.push(rl);
-        }
-        const events = eventsOf(mn, roll);
-        let main: BreathEvent | null = null;
-        for (const e of events)
-          if (!main || e.amplitudeMm > main.amplitudeMm) main = e;
-        const rollDoneP = rollDonePOf(roll);
-        return {
-          rank: r3(list[0].piece.rank),
-          shells: [...new Set(list.map((pb) => pb.piece.shell))],
-          pieces: list.length,
-          centroidROffMm: cen.map(r2),
-          minROffMm: mn.map(r2),
-          maxROffMm: mx.map(r2),
-          stretchMax: sHi.map(r3),
-          stretchMin: sLo.map(r3),
-          rollRemainderMm: roll.map(r2),
-          breathEvents: events,
-          breathPeakP: main ? main.peakP : null,
-          breathAmplitudeMm: main ? main.amplitudeMm : null,
-          stretchPeak: maxPeakOf(sHi),
-          crushPeak: minPeakOf(sLo),
-          stuckStretchPeak: maskedPeakOf(sHi, roll, true),
-          stuckCrushPeak: maskedPeakOf(sLo, roll, false),
-          rollDoneP,
-          curlLeadP:
-            main && rollDoneP != null ? r3(main.peakP - rollDoneP) : null,
-        };
-      });
-
-    return {
-      anim: animId,
-      p0,
-      p1,
-      steps,
-      coverage: coverageOf(w),
-      idleCheck: w.idle,
-      ranks,
-      pieces: perPiece.map((pb) => pb.report),
-    };
-  }
-
   return {
     analyze,
     compare,
     interference,
     curlCorners,
-    breath,
     dispose() {
       for (const e of probes.values()) e.probe.dispose();
     },

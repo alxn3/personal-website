@@ -6,13 +6,17 @@ import {
   setLensEnvironment,
 } from "./model";
 import { createShading, type ShadingMode } from "../materials/shading";
+import { deriveFrames } from "../ops/frames";
 import {
-  applyBloom,
-  assignShellRates,
-  assignCardAttributes,
-} from "../materials/bloom";
-import { setActiveFormations } from "../materials/formation";
-import { attachGenieToModel } from "../materials/genie";
+  applyOps,
+  recipeChannel,
+  recipeChannels,
+  recipeKnobs,
+  reportOpsFrames,
+  setActiveRecipes,
+  RECIPE_NAMES,
+  type RecipeName,
+} from "../ops/host";
 import {
   uFadeNear0,
   uFadeNear1,
@@ -20,9 +24,14 @@ import {
   uFadeFar1,
 } from "../materials/depthfade";
 import { sampleStory, applyStoryFraming } from "../story/camera";
-import { seatShellFeatures, createRig } from "./rig";
-import { createCinematics } from "../story/cinematics";
-import { isAccessory, isGlassElement, keepsAuthoredMaterial } from "./parts";
+import { createMechanism, tagMechanismSpins } from "../ops/mechanism";
+import { createCinematics, type StoryVisibility } from "../story/cinematics";
+import {
+  isAccessory,
+  isGlassElement,
+  isOpticsIsolate,
+  isSilhouetteGreeble,
+} from "./parts";
 import { clamp01, smoothstep, lerp } from "./math";
 import {
   TRANSITIONS,
@@ -30,9 +39,10 @@ import {
   type TransitionName,
   type TransitionRun,
 } from "./transitions";
-// Type-only: erased at build, so the dev visualizer stays out of every bundle
-// until enablePathViz() dynamically imports it.
+// Type-only: erased at build, so the dev instruments stay out of every bundle
+// until enablePathViz() / enableInspect() dynamically import them.
 import type { PathViz } from "../dev/paths";
+import type { Inspector } from "../dev/inspect";
 
 export type { ShadingMode } from "../materials/shading";
 export type { PathViz } from "../dev/paths";
@@ -60,61 +70,101 @@ export interface SwapShadingOptions {
 // them unused) — ONE assembly path beats injecting story pieces per caller.
 // ============================================================================
 
+/** One channel's registry entry: its rest/default value plus the per-channel
+ *  flags every derived list keys off. Add a channel = ONE row in
+ *  CHANNEL_REGISTRY; the lists below (and the sites that import them) follow. */
+interface ChannelSpec {
+  /** rest value AND markup default (also the ease target at boot) */
+  default: number;
+  /** ANIMATION-owned: /lens hand-rests this channel's target on animation
+   *  switch/None (lens.astro resetAnimChannels, via ANIM_RESET_CHANNELS) so no
+   *  stale pose survives. Slider channels (lens.astro sliderChannels) are
+   *  restored by applyManualSliders instead and are NOT flagged — EXCEPT
+   *  explode, which is both (the slider default re-wins right after the reset). */
+  animReset?: boolean;
+  /** recipe channel that must read 0 for the instrument's idle-identity
+   *  contract (dev/paths.ts idle check, via IDLE_ZERO_CHANNELS): at 0 the
+   *  deform graph is an exact identity (ops/host's hard idle gate). A missing
+   *  entry false-alarms (historically 43mm on a mid-scrub bend). */
+  idleZero?: boolean;
+}
+
 /**
- * The eased scene channels — the ONE list every per-channel site (SceneState,
- * the state initializer, tick()'s ease loop) derives from. Each channel's
- * default is also its rest value; curl/shear rest away from 0 on purpose —
- * they match where the /lens sliders start.
+ * The scene channel REGISTRY — the ONE list every per-channel site derives
+ * from. `default` is also each channel's rest value (0 everywhere: a recipe
+ * channel at 0 is a bit-exact identity by construction, ops/host's hard idle
+ * gate). SceneState typing, the state initializer, and tick()'s ease loop all
+ * read the derived CHANNEL_DEFAULTS; the two boolean flags derive
+ * ANIM_RESET_CHANNELS (page) and IDLE_ZERO_CHANNELS (instrument idle check).
+ * Adding a channel is one row here plus, where the flags apply, nothing else —
+ * the old four-list trap (defaults + rig + resetAnimChannels + idle-zero, each
+ * hand-kept) is gone except for the mechanism, which stays bespoke mechanical
+ * code (zoom/focus/iris curves are not a per-channel copy). See README.md's
+ * "change X → touch Y" map.
+ *
+ * Every motion channel below the mechanism trio is an OP RECIPE channel
+ * (ops/recipes.ts) driven straight through ops/host's `recipeChannel` — one
+ * row here, one recipe there, nothing in between.
  */
-const CHANNEL_DEFAULTS = {
+const CHANNEL_REGISTRY = {
   /** 0 (18mm, retracted) .. 1 (50mm, extended) */
-  zoom: 0,
+  zoom: { default: 0 },
   /** 0 (infinity) .. 1 (min focus, ~0.12m) */
-  focus: 0,
+  focus: { default: 0 },
   /** 0 (f/2.8, wide open) .. 1 (f/22, closed down) */
-  aperture: 0,
-  /** 0 (assembled) .. 1 (parts spread along the axis) */
-  explode: 0,
-  /** 0 (stuck on) .. 1 (fully peeled off the shell) */
-  unwrap: 0,
-  /** what PEELED material does: 1 (tight sticker curl) .. 0 (flat sheet);
-   *  sticker curl by default — the /lens slider starts here too */
-  curl: 1,
-  /** peel-front tilt: 0 (straight edge peel) .. 1 (diagonal corner peel);
-   *  gentle corner-peel by default — matches the /lens slider */
-  shear: 0.5,
-  /** layer-by-layer reassembly scrub: 0 (exploded sheets) .. 1 (seated) */
-  rewrap: 0,
-  /** 0..1 blend engaging rewrap semantics (ramped while hidden) */
-  rewrapOn: 0,
-  /** helix-assemble formation spread: 0 (seated, bit-exact default) .. 1 (fully
-   *  spread). Independent of the explode/unwrap channels — composes at 0. */
-  helix: 0,
-  /** ops-built reassembly formation spread: 0 (seated, bit-exact default) .. 1
-   *  (fully disassembled). Independent formation preset; composes at 0. */
-  assemble: 0,
-  /** rolling-contact unroll formation: 0 (seated, bit-exact default) .. 1 (the
+  aperture: { default: 0 },
+  /** explode ladder recipe: 0 (assembled) .. 1 (parts spread along the axis).
+   *  Both a slider AND animReset — see ChannelSpec.animReset. */
+  explode: { default: 0, animReset: true, idleZero: true },
+  /** reassembly recipe spread: 0 (seated, bit-exact default) .. 1 (fully
+   *  disassembled — sheets unwrapped and flown off the ladder). */
+  assemble: { default: 0, animReset: true, idleZero: true },
+  /** helix formation recipe: 0 (seated, bit-exact default) .. 1 (fully
+   *  spread). Independent of the explode/assemble channels — composes at 0. */
+  helix: { default: 0, animReset: true, idleZero: true },
+  /** rolling-contact unroll recipe: 0 (seated, bit-exact default) .. 1 (the
    *  shell rolled out flat). Independent formation preset; composes at 0. */
-  rollout: 0,
-  /** cardify morph: 0 (bit-exact default) .. 1 (unwrapped sheets squared into
-   *  uniform photo cards, picture faces developed). Composes AFTER the other
-   *  deforms — the card wins at 1; rank-band soloed via uCardifyRankLo/Hi. */
-  cardify: 0,
-  /** genie minimize (materials/genie.ts): 0 (rest, bit-exact default) .. 1
-   *  (the whole model funneled into the uGenieTarget dock point). Composes
-   *  LAST in the deform chain — after cardify. */
-  genie: 0,
+  rollout: { default: 0, animReset: true, idleZero: true },
+  /** bendProfile lab recipe (EXPERIMENT): 0 (seated, bit-exact default) .. 1
+   *  (full fold/accordion — its knobs shape the curvature profile). */
+  bend: { default: 0, animReset: true, idleZero: true },
+  /** the SCRATCH bench recipe (ops/recipes.ts — the owner edits its pipeline in
+   *  TypeScript): 0 (seated, bit-exact default) .. 1 (fully played). */
+  scratch: { default: 0, animReset: true, idleZero: true },
   /** 0..1 scroll-story progress; drives the scripted camera (hero) */
-  story: 0,
-} as const;
-type Channel = keyof typeof CHANNEL_DEFAULTS;
-const CHANNELS = Object.keys(CHANNEL_DEFAULTS) as Channel[];
+  story: { default: 0 },
+} satisfies Record<string, ChannelSpec>;
+type Channel = keyof typeof CHANNEL_REGISTRY;
+const CHANNELS = Object.keys(CHANNEL_REGISTRY) as Channel[];
+// `satisfies` above keeps each entry's LITERAL type (so the keys stay a precise
+// union for `Channel`), which means the optional flags aren't visible on
+// entries that omit them — read specs back through this widening view.
+const specOf = (c: Channel): ChannelSpec => CHANNEL_REGISTRY[c];
+
+/** Rest/default value per channel — the numeric view of the registry, kept for
+ *  SceneState init, tick()'s ease targets, and the analysis-walk neutral base
+ *  handed to dev/paths.ts. */
+export const CHANNEL_DEFAULTS = Object.fromEntries(
+  CHANNELS.map((c) => [c, CHANNEL_REGISTRY[c].default]),
+) as Record<Channel, number>;
+
+/** Channels an animation may drive that /lens rests to their registry default
+ *  on animation switch/None (see ChannelSpec.animReset). Derived, so a new
+ *  animReset channel needs no edit in lens.astro. */
+export const ANIM_RESET_CHANNELS = CHANNELS.filter((c) => specOf(c).animReset);
+
+/** Every deform channel the instrument's idle-identity check zeroes
+ *  before probing the seated geometry (see ChannelSpec.idleZero). Derived, so a
+ *  new deform channel can't silently fall out of the idle contract. */
+export const IDLE_ZERO_CHANNELS = CHANNELS.filter((c) => specOf(c).idleZero);
+
+export type { Channel };
 
 /**
  * Scene state, driven by the sliders in lens.astro. Each *Target is set
  * instantly on input; tick() eases the live value toward it every frame so
  * dragging a slider feels smooth instead of snapping. Channel semantics are
- * documented on CHANNEL_DEFAULTS above.
+ * documented on CHANNEL_REGISTRY above.
  */
 export type SceneState = { [K in Channel]: number } & {
   [K in Channel as `${K}Target`]: number;
@@ -182,10 +232,10 @@ export interface SceneHandle {
    *  maps a model NODE NAME to its current screen position (CSS px, or null if
    *  the node doesn't exist / is behind the camera). This is how DOM annotations
    *  point at and TRACK parts of the 3D model through every scene — the centre
-   *  follows the node's live object transform (zoom slides, explode rungs, the
-   *  screw pivot…). Wedges that deform purely IN-SHADER keep their object
-   *  transform, so their anchor is the un-bloomed position — anchor labels to
-   *  solid parts (elements, rings, screws) for exact tracking. */
+   *  follows the node's live object transform (zoom slides, ring turns, the
+   *  screw pivot…). The op deform runs purely IN-SHADER and leaves object
+   *  transforms alone, so an exploded piece's anchor is its SEATED position —
+   *  anchor labels to parts the mechanism moves for exact tracking. */
   onFrame: (
     cb: (project: (name: string) => TrackedPoint | null) => void,
   ) => void;
@@ -196,6 +246,11 @@ export interface SceneHandle {
   enablePathViz: (
     onStatus: (text: string, ok: boolean) => void,
   ) => Promise<PathViz | null>;
+  /** DEV: piece-name inspector behind the /lens "Inspect" toggle — hover a mesh
+   *  to read its GLB node name (object names are the API), click to copy it.
+   *  Dynamically imported on the first tick like the path viz, so the homepage
+   *  never fetches it. Resolves false if it couldn't start. */
+  enableInspect: (on: boolean) => Promise<boolean>;
   /** DEV (/lens "Hero camera" toggle): drive the camera from the hero's
    *  scripted story path — `state.story` through the SAME sampleStory /
    *  applyStoryFraming code path the hero runs — instead of OrbitControls, so
@@ -223,30 +278,34 @@ export interface SceneHandle {
     euler: { x?: number; y?: number; z?: number } | null,
   ) => void;
   /** DEV (/lens Demos): visibility gate — "glass" shows only the optical
-   *  elements, "optics" adds the iris blades (+ filter glass); everything else
-   *  is hidden. Per-mesh visibility is snapshotted at engage and restored
-   *  exactly on null (accessories keep their hidden-by-default state; meshes
-   *  that stream in mid-isolate are folded in). Callers keep the aperture
-   *  channel parked while isolated — the iris-occluder reveal (cinematics)
-   *  rewrites the same visible flags past apertureT 0.35. */
-  setIsolate: (group: "glass" | "optics" | null) => void;
+   *  elements, "optics" adds the iris blades (+ filter glass); "silhouette" is
+   *  the geometry-LOD level — it KEEPS the big drawn-lens shapes (barrel/cam
+   *  shell wedges, the major rings, the iris housing shell, the glass) and
+   *  hides the greeble detail (screws, contacts, decals, iris mechanism, PCB,
+   *  baffles, shims, focus motor/screw, optics cells — parts.isSilhouetteGreeble,
+   *  matched up each mesh's ancestor chain). Everything not kept is hidden.
+   *  Per-mesh visibility is snapshotted at engage and restored exactly on null
+   *  (accessories keep their hidden-by-default state; meshes that stream in
+   *  mid-isolate are folded in). The gate COMPOSES with the story's own
+   *  isolate/occluder passes (applyVisibility): whatever else is engaged, a
+   *  piece this group excludes stays hidden. */
+  setIsolate: (group: "glass" | "optics" | "silhouette" | null) => void;
   /** DEV (/lens Demos): ADDITIVE transform offset on one named part — any
-   *  entry of partNames(): the rig's group empties (Ring_Zoom, Optics_G2…,
+   *  entry of partNames(): the mechanism's group empties (Ring_Zoom, Optics_G2…,
    *  Barrel_Inner, Iris_Housing…) or individual meshes (Element_01, screws,
-   *  wedge sub-meshes). The offset composes ON TOP of whatever the rig wrote
-   *  this frame: each rendered frame the part's post-rig transform is
-   *  snapshotted as the base, base⊕offset is written for the render, and the
-   *  base is restored afterwards — so repeated calls never accumulate, rig
-   *  motion (zoom slide, explode rungs, ring turns) stays underneath, and
-   *  parts the rig doesn't touch offset from their rest transform. Wedge
-   *  shells deform in-shader (materials/bloom) but their mesh transforms are
-   *  real, so an offset still moves them as rigid bodies — the shader
-   *  deformation composes on top. null clears the one part; demos MUST
-   *  clearPartOffsets() in exit(). */
+   *  wedge sub-meshes). The offset composes ON TOP of whatever the mechanism
+   *  wrote this frame: each rendered frame the part's post-mechanism transform
+   *  is snapshotted as the base, base⊕offset is written for the render, and the
+   *  base is restored afterwards — so repeated calls never accumulate, mechanism
+   *  motion (zoom slide, ring turns) stays underneath, and parts the mechanism
+   *  doesn't touch offset from their rest transform. Shell pieces deform
+   *  in-shader (ops/host) but their mesh transforms are real, so an offset still
+   *  moves them as rigid bodies — the shader deformation composes on top. null
+   *  clears the one part; demos MUST clearPartOffsets() in exit(). */
   setPartOffset: (name: string, offset: PartOffset | null) => void;
   /** The addressable part registry for setPartOffset: every NAMED node of the
-   *  model — the rig's driven group empties AND every mesh (including `_SegN`
-   *  wedges and the rig-created Focus_LeadScrew_Pivot). Sorted, deduped. */
+   *  model — the mechanism's driven group empties AND every mesh (including
+   *  `_SegN` wedges and the Focus_LeadScrew_Pivot it creates). Sorted, deduped. */
   partNames: () => string[];
   /** Drop every part offset at once (the demo-exit reset). */
   clearPartOffsets: () => void;
@@ -287,45 +346,47 @@ export interface SceneOptions {
    *  via `state.story` (0..1) and bypasses OrbitControls. Omit for the free-orbit
    *  /lens viewer. */
   story?: boolean;
-  /** Which formation presets (materials/formation PRESETS) the bloom deform folds
-   *  in — baked at material build. Omit = all presets (today's /lens behavior). The
-   *  hero passes [] (folds none — it drives only the classic channels). */
-  formations?: string[];
+  /** Which OP RECIPES (ops/recipes.ts) the deform folds in — baked at material
+   *  build. Omit = all recipes (the /lens bench, which can scrub any of them).
+   *  The hero passes the two its scroll story actually plays
+   *  (`["assemble", "explode"]`, LensStory.astro): a recipe left out is not
+   *  folded at all, so the homepage's graphs carry only the motion it uses. */
+  recipes?: RecipeName[];
 }
 
 /**
  * Load-time model prep. The ORDER here is a real dependency chain — each step's
  * comment says why it must run before the next; do not reorder.
  */
-function prepareModelMaterials(
-  gltfScene: THREE.Object3D,
-  formations?: string[],
-) {
-  // Seat the shell-mounted hardware (screws → bayonet, motor → chassis) BEFORE
-  // applyBloom so those meshes pick up the bloom node material too.
-  seatShellFeatures(gltfScene);
-  // Rank every shell by radius → `_bloomrate`, the order-preserving explode
-  // stagger (after seating, so the features inherit their shell's rank).
-  assignShellRates(gltfScene);
-  // Card material coordinates (`_card*`) for the cardify morph — after seating
-  // (features need their `_bloom*`), before any material build reads them.
-  assignCardAttributes(gltfScene);
-  // Choose which formation presets the bloom deform folds in (per scene) BEFORE
-  // applyBloom bakes them into the material graphs. Undefined = all presets.
-  setActiveFormations(formations ?? null);
-  // Swap the bloom-carrying wedges/decals to the TSL bloom node material BEFORE
-  // the shading swapper captures materials, so "realistic" keeps the bloom.
-  const disposeBloom = applyBloom(gltfScene);
-  // Genie warp on every NON-bloom material (authored glass/iris, stylized
-  // solids) — the bloom graph composes it itself for the wedges. AFTER
-  // applyBloom (so the wedge skip sees the bloom attributes), BEFORE
-  // createShading captures the originals.
-  attachGenieToModel(gltfScene);
+function prepareModelMaterials(gltfScene: THREE.Object3D, recipes?: string[]) {
+  // MEASURE every piece's frame (`_op*` attributes) + the derived ladder/layer
+  // tables: nothing about a piece is authored upstream any more.
+  // Must run BEFORE any material build — the deform graph reads the attributes.
+  const frames = deriveFrames(gltfScene);
+  // Choose which recipes the deform folds in (per scene) BEFORE applyOps bakes
+  // them into the material graphs. Undefined = all recipes.
+  setActiveRecipes(recipes ?? null);
+  // TAG the meshes that ride an off-axis mechanism spin pivot (the focus lead
+  // screw) BEFORE any material is built: the counter-rotation their op delta
+  // needs is a baked node, not a runtime branch, so a tag arriving later would
+  // do nothing. `createMechanism`, which owns the pivot itself, has to wait for
+  // the recentre and runs far below — hence the split.
+  tagMechanismSpins(gltfScene);
+  // Swap every frame-carrying mesh to the op node material BEFORE the shading
+  // swapper captures materials, so "realistic" keeps the deform.
+  const disposeOps = applyOps(gltfScene);
   // Render-style swapper (captures the freshly-applied materials).
   const shading = createShading(gltfScene);
-  return { disposeBloom, shading };
+  return { disposeOps, shading, frames };
 }
 
+/**
+ * Boot the lens viewer onto `canvas`. ONE SCENE PER DOCUMENT: the deform
+ * channels, the recipe knobs, the active-recipe selection (ops/host.ts) and the
+ * shading uniforms are all MODULE state, so a second live scene would scrub the
+ * same numbers as the first and the two would fight. Destroy one before booting
+ * another.
+ */
 export async function initScene(
   canvas: HTMLCanvasElement,
   opts: SceneOptions = {},
@@ -341,7 +402,7 @@ export async function initScene(
   // added latency before the lens could appear. The BODY GLB alone gates the
   // first frame now; accessories stream in behind it (model.ts accessoriesReady).
   const modelPromise = loadLensModel();
-  // WebGPU (auto-falls back to WebGL2) — required for the TSL bloom node graph.
+  // WebGPU (auto-falls back to WebGL2) — required for the TSL deform node graph.
   // high-performance: prefer the discrete GPU on dual-GPU machines — this is a
   // full-viewport 3D hero, not a widget worth throttling to the integrated chip.
   const renderer = new THREE.WebGPURenderer({
@@ -398,15 +459,33 @@ export async function initScene(
   // Roll the lens upright about its own optical axis (gltf-local +Y). The model
   // loads with the gear train off to one side; this rotates it to the intended
   // "up". Rolling about the optical axis is rig-safe: every mechanism (zoom/focus
-  // ring turns, iris, the bloom/unwrap theta) is defined along/about this axis,
+  // ring turns, iris, every recipe's theta) is defined along/about this axis,
   // so a roll about it just re-phases the start angle without breaking anything.
   gltfScene.rotation.y = Math.PI / 2;
 
-  const { disposeBloom, shading } = prepareModelMaterials(
+  const { disposeOps, shading, frames } = prepareModelMaterials(
     gltfScene,
-    opts.formations,
+    opts.recipes,
   );
+  // Every applyOps pass's disposer (the body's, plus one per accessory root).
+  const opsDisposers: (() => void)[] = [disposeOps];
   performance.mark("lens:materials-ready");
+  if (import.meta.env.DEV) {
+    reportOpsFrames(gltfScene, frames);
+    // Model-contract tripwire: a lens_work re-export that drifts from the
+    // code's structural assumptions (part names, glass count) — or a derivation
+    // that leaves a mesh unframed — fails loudly HERE, not weeks later as a
+    // silent no-op or a NaN. Runs AFTER deriveFrames on purpose: half the
+    // contract is about the frames it stamps.
+    void import("../dev/model-contract").then(({ reportModelContract }) =>
+      reportModelContract({ scene: gltfScene, accessoriesReady }, frames),
+    );
+    (window as unknown as Record<string, unknown>).__lensOps = {
+      frames,
+      channels: recipeChannels(),
+      knobs: recipeKnobs(),
+    };
+  }
 
   const node = (name: string) => gltfScene.getObjectByName(name);
 
@@ -459,9 +538,9 @@ export async function initScene(
   const bootPosition = modelGroup.position.clone();
   const bootQuatInv = modelGroup.quaternion.clone().invert();
 
-  // Mechanism rig + cinematic extras (both resolve nodes AFTER the recentre —
-  // the rig's lead-screw pivot math reads world positions).
-  const rig = createRig(gltfScene);
+  // Mechanism (zoom/focus/aperture) + cinematic extras — both resolve nodes
+  // AFTER the recentre, since the lead-screw pivot math reads world positions.
+  const mechanism = createMechanism(gltfScene);
   const cinematics = createCinematics(
     scene,
     gltfScene,
@@ -486,18 +565,79 @@ export async function initScene(
 
   // Demo isolate gate (setIsolate). The snapshot is keyed per mesh so null
   // restores EXACTLY what each mesh showed at engage (a hidden accessory stays
-  // hidden); applyIsolate is re-runnable — meshes it hasn't seen yet (the
-  // background accessories merging mid-isolate) are snapshotted on first touch.
-  let isolateOn: "glass" | "optics" | null = null;
+  // hidden); meshes it hasn't seen yet (the background accessories merging
+  // mid-isolate) are snapshotted on first touch.
+  let isolateOn: "glass" | "optics" | "silhouette" | null = null;
   const isolateSnapshot = new Map<THREE.Mesh, boolean>();
-  function applyIsolate() {
-    if (!isolateOn) return;
-    const keep = isolateOn === "glass" ? isGlassElement : keepsAuthoredMaterial;
+  // Which meshes STAY shown for the active group (at their snapshot value);
+  // everything else is hidden. glass/optics test the mesh's own name; the
+  // geometry-LOD "silhouette" hides greeble detail anywhere up the ancestor
+  // chain (a greeble's `_SegN` wedges classify through the part they belong
+  // to, not on their own name).
+  function isolateKeeps(o: THREE.Mesh): boolean {
+    if (isolateOn === "glass") return isGlassElement(o.name);
+    if (isolateOn === "optics") return isOpticsIsolate(o.name);
+    for (let a: THREE.Object3D | null = o; a; a = a.parent)
+      if (isSilhouetteGreeble(a.name)) return false;
+    return true;
+  }
+  /** Accessory-ness by ANCESTRY: the accessories merge into the body's graph and
+   *  their sub-meshes carry generic names, so only the walk up to the `Acc_*`
+   *  root tells them apart. */
+  function underAccessory(o: THREE.Object3D): boolean {
+    for (let a: THREE.Object3D | null = o; a; a = a.parent)
+      if (isAccessory(a.name)) return true;
+    return false;
+  }
+
+  /** Does the DEMO isolate gate allow this mesh? */
+  function isolateAllows(o: THREE.Mesh): boolean {
+    if (!isolateOn) return true;
+    if (!isolateSnapshot.has(o)) isolateSnapshot.set(o, o.visible);
+    return isolateKeeps(o) ? (isolateSnapshot.get(o) ?? true) : false;
+  }
+
+  // The story's visibility INTENT, as cinematics.update last reported it.
+  let storyVis: StoryVisibility = { isolate: false, occluders: false };
+  // The iris beat's occluders that are MESHES; the empties in that list gate
+  // their whole branch instead and are written at the end of applyVisibility.
+  const occluderMeshes = new Set<THREE.Object3D>(
+    cinematics.irisOccluders.filter((o) => o instanceof THREE.Mesh),
+  );
+
+  /**
+   * THE ONE OWNER of the model's `.visible` flags. Three gates can hide a
+   * piece — the demo isolate (setIsolate), the story's light-path glass isolate
+   * and its iris-occluder reveal (story/cinematics REPORTS both as intent and
+   * writes no flag itself) — and they overlap on the rear meshes. Composed in
+   * ONE pass: a piece is visible iff EVERY active gate allows it, so no gate's
+   * restore can stomp another that is still engaged.
+   *
+   * ACCESSORIES have their own owners — `setAccessory` drives their group ROOT,
+   * the caps-on finale drives the two caps — so the story isolate skips their
+   * whole branch and the sweep writes them only while a demo isolate is engaged
+   * (which `setIsolate(null)` undoes from the snapshot).
+   */
+  function applyVisibility() {
     gltfScene.traverse((o) => {
       if (!(o instanceof THREE.Mesh)) return;
-      if (!isolateSnapshot.has(o)) isolateSnapshot.set(o, o.visible);
-      o.visible = keep(o.name) ? (isolateSnapshot.get(o) ?? true) : false;
+      // materials/shading parents its inverted-hull pass UNDER the mesh it
+      // outlines — not a piece of the lens, and it rides its host's flag.
+      if (o.parent instanceof THREE.Mesh) return;
+      const allowed = isolateAllows(o);
+      if (underAccessory(o)) {
+        if (isolateOn) o.visible = allowed;
+        return;
+      }
+      o.visible =
+        allowed &&
+        !(storyVis.isolate && !isGlassElement(o.name)) &&
+        !(storyVis.occluders && occluderMeshes.has(o));
     });
+    // The occluder list also carries GROUP empties (Optics_G4/G5), whose glass
+    // children must survive the isolate — so an empty un-hides fully.
+    for (const o of cinematics.irisOccluders)
+      if (!occluderMeshes.has(o)) o.visible = !storyVis.occluders;
   }
 
   // Fold the accessories into the live scene once they finish loading: resolve
@@ -519,9 +659,20 @@ export async function initScene(
     );
     for (const group of Object.keys(accessories) as AccessoryGroup[])
       for (const obj of accessories[group]) obj.visible = accessoryOn[group];
-    attachGenieToModel(gltfScene); // genie the late accessory materials too
+    // The accessories arrive AFTER the body's frame pass, so each accessory root
+    // gets its OWN scoped deriveFrames + applyOps. Deliberate limitation: an
+    // accessory is measured against itself alone — it joins neither the body's
+    // rank pool nor its ladder (it has no group under its own root, so its rung
+    // is 0). Folding them into the body pass instead would drag the hood/caps
+    // into Barrel_Inner's group centroid and shift the body ladder; selections
+    // (class `accessory`) are how a recipe addresses them.
+    for (const group of Object.keys(accessories) as AccessoryGroup[])
+      for (const obj of accessories[group]) {
+        deriveFrames(obj);
+        opsDisposers.push(applyOps(obj));
+      }
     shading.integrate(gltfScene); // capture + style the new accessory meshes
-    if (isolateOn) applyIsolate(); // gate the just-arrived meshes too
+    applyVisibility(); // fold the just-arrived meshes into every active gate
     dirty = true;
   });
   // Horizontal lens-parking is only sensible on landscape screens; on portrait /
@@ -598,6 +749,9 @@ export async function initScene(
     controls.minDistance = 2;
     controls.maxDistance = 20;
     controls.target.set(0, 0, 0);
+    // Middle-drag orbits like left-drag (owner request) — the wheel already
+    // owns dolly, so MIDDLE's default DOLLY was redundant.
+    controls.mouseButtons.MIDDLE = THREE.MOUSE.ROTATE;
     controls.addEventListener("change", () => {
       dirty = true;
     });
@@ -647,13 +801,12 @@ export async function initScene(
   let savedBg: THREE.Scene["background"] = scene.background ?? null;
 
   // --- per-part additive offsets (SceneHandle.setPartOffset) -----------------
-  // Applied around each RENDERED frame: after rig.update has written this
-  // frame's mechanism transforms, every offset part's CURRENT transform is
-  // snapshotted as the base and base⊕offset is written; after the frame's
-  // callbacks the base is restored. Between frames every part therefore holds
-  // its un-offset transform — rig-driven parts get a fresh base from the rig
-  // each frame, untouched parts keep their rest transform, and repeated
-  // setPartOffset calls can never accumulate.
+  // Applied around each RENDERED frame: after mechanism.update has written this
+  // frame's transforms, every offset part's CURRENT transform is snapshotted as
+  // the base and base⊕offset is written; after the frame's callbacks the base is
+  // restored. Between frames every part therefore holds its un-offset transform
+  // — mechanism-driven parts get a fresh base each frame, untouched parts keep
+  // their rest transform, and repeated setPartOffset calls can never accumulate.
   const partOffsets = new Map<
     string,
     {
@@ -784,13 +937,13 @@ export async function initScene(
   }
 
   /**
-   * Push the CURRENT channel values into the mechanism rig and the shader
-   * uniforms (rig.update owns both). Split out of tick() so the dev path
-   * visualizer can re-drive the whole rig at arbitrary channel values while it
-   * walks an animation — one drive path, so a walked pose is built exactly the
-   * way a rendered frame is. Returns the derived values tick() also needs.
+   * Push the CURRENT channel values into the mechanism and the shader channels.
+   * Split out of tick() so the dev path visualizer can re-drive everything at
+   * arbitrary channel values while it walks an animation — one drive path, so a
+   * walked pose is built exactly the way a rendered frame is. Returns the
+   * derived values tick() also needs.
    */
-  function driveRig(): { apertureT: number; explodeT: number } {
+  function driveChannels(): { apertureT: number; explodeT: number } {
     // Real cams are non-linear; apply one shared ease across every zoom
     // channel (never per-channel, or the guts visibly desynchronize).
     const zoomT = smoothstep(0, 1, clamp01(state.zoom));
@@ -798,22 +951,25 @@ export async function initScene(
     const apertureT = clamp01(state.aperture);
     const explodeT = clamp01(state.explode);
 
-    rig.update({
+    // The MEASURED motions only (ops/mechanism.ts): ring throws, the element
+    // slides they drive, the lead screw's spin, the iris sweep. Everything
+    // else — the explode ladder, the reassembly formations, the peel — is a
+    // recipe and runs in-shader off the channels below.
+    mechanism.update({
       zoom: zoomT, // the shared-smoothstep value, NOT the raw eased channel
       focus: focusT,
       aperture: apertureT,
-      explode: explodeT,
-      unwrap: clamp01(state.unwrap),
-      rewrap: clamp01(state.rewrap),
-      rewrapOn: clamp01(state.rewrapOn),
-      curl: clamp01(state.curl),
-      shear: clamp01(state.shear),
-      helix: clamp01(state.helix),
-      assemble: clamp01(state.assemble),
-      rollout: clamp01(state.rollout),
-      cardify: clamp01(state.cardify),
-      genie: clamp01(state.genie),
     });
+
+    // The op recipe channels: these ARE the deform. Each registry motion
+    // channel is its recipe's channel uniform, one-for-one — no shim, and no
+    // object-space ladder underneath to double-drive explode. DERIVED from the
+    // recipe list, so a new recipe + its registry row is the whole edit; the
+    // mechanism trio above stays hand-written because its three reads share one
+    // ease, which a loop would hide.
+    for (const name of RECIPE_NAMES)
+      recipeChannel(name).value = clamp01(state[name]);
+
     return { apertureT, explodeT };
   }
 
@@ -878,16 +1034,19 @@ export async function initScene(
       uFadeFar1.value = camDist + modelRadius * 2.6;
     }
 
-    const { apertureT, explodeT } = driveRig();
-    // Per-part offsets compose ON TOP of what the rig just wrote (and are
+    const { apertureT, explodeT } = driveChannels();
+    // Per-part offsets compose ON TOP of what the mechanism just wrote (and are
     // reverted after the frame's callbacks — see the block above tick()).
     applyPartOffsets();
-    cinematics.update(
+    storyVis = cinematics.update(
       apertureT,
       explodeT,
       clamp01(state.story),
       performance.now(),
     );
+    // ONE owner writes every `.visible` flag, composing the story's intent with
+    // the demo isolate and the accessory choice (see applyVisibility).
+    applyVisibility();
 
     renderer.render(scene, camera);
     // screen-space overlay pass (demos) — composites over the finished frame
@@ -904,6 +1063,7 @@ export async function initScene(
   renderer.setAnimationLoop(tick);
   let paused = false;
   let pathViz: PathViz | null = null;
+  let inspector: Inspector | null = null;
 
   // Dev-only perf probe: renderer.info (draw calls/triangles) + live scene
   // internals for measurement scripts. Never present in prod builds.
@@ -912,6 +1072,7 @@ export async function initScene(
       renderer,
       scene,
       camera,
+      state,
       model: gltfScene,
       invalidate: () => {
         dirty = true;
@@ -941,14 +1102,13 @@ export async function initScene(
         for (const obj of accessories[group]) obj.visible = accessoryOn[group];
         // a toggle mid-isolate updates the RESTORE state; the gate stays in
         // force (applyIsolate re-hides whatever the isolate excludes)
-        if (isolateOn) {
+        if (isolateOn)
           for (const obj of accessories[group])
             obj.traverse((o) => {
               if (o instanceof THREE.Mesh)
                 isolateSnapshot.set(o, accessoryOn[group]);
             });
-          applyIsolate();
-        }
+        applyVisibility();
         dirty = true;
       });
       dirty = true;
@@ -1039,12 +1199,13 @@ export async function initScene(
     setIsolate(group) {
       if (group === isolateOn) return;
       isolateOn = group;
-      if (group) {
-        applyIsolate();
-      } else {
+      if (!group) {
+        // restore what each mesh showed at engage, then recompose: the story's
+        // own gates may have moved on while the demo held the flags
         for (const [m, v] of isolateSnapshot) m.visible = v;
         isolateSnapshot.clear();
       }
+      applyVisibility();
       dirty = true;
     },
     setPartOffset(name, offset) {
@@ -1114,7 +1275,7 @@ export async function initScene(
             scene,
             model: gltfScene,
             state,
-            driveRig,
+            driveChannels,
             invalidate: () => {
               dirty = true;
             },
@@ -1130,6 +1291,28 @@ export async function initScene(
         return null;
       }
       return pathViz;
+    },
+    async enableInspect(on) {
+      if (!inspector) {
+        if (!on) return true; // never started, nothing to turn off
+        try {
+          const { createInspector } = await import("../dev/inspect");
+          inspector = createInspector({
+            model: gltfScene,
+            camera,
+            canvas,
+            scene,
+            invalidate: () => {
+              dirty = true;
+            },
+          });
+        } catch (err) {
+          console.warn("lens inspect: inspector failed to start", err);
+          return false;
+        }
+      }
+      inspector.setEnabled(on);
+      return true;
     },
     setShading(mode) {
       applyShading(mode);
@@ -1154,13 +1337,14 @@ export async function initScene(
       }
       renderer.setAnimationLoop(null);
       pathViz?.dispose();
+      inspector?.dispose();
       ro.disconnect();
       controls?.dispose();
       cinematics.dispose();
       renderer.dispose();
       environment.dispose();
       shading.dispose();
-      disposeBloom();
+      for (const d of opsDisposers) d();
       disposeLensModel(gltfScene);
       // The accessories may still be in flight — dispose again once (if) they
       // merge, so their deferred geometries/materials are freed too. disposeLensModel

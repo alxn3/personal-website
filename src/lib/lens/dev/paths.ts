@@ -1,12 +1,13 @@
 import * as THREE from "three/webgpu";
 import type { LensAnimation } from "../animations";
+import { IDLE_ZERO_CHANNELS } from "../core/scene";
 import type { SceneState } from "../core/scene";
 import { isSegWedge } from "../core/parts";
+import { frameOf } from "../ops/frames";
 import { createPositionProbe, type ProbeSample } from "./path-probe";
 import {
   createPathAnalysis,
   type AnalysisResult,
-  type BreathResult,
   type CompareResult,
   type CurlCornerResult,
   type InterferenceResult,
@@ -59,7 +60,7 @@ const TICK_LEN = 0.012; // world units (the lens is ~4 world units long)
 const IDLE_TOL_MM = 0.01;
 // Live is a RESAMPLING budget, measured: park the scrub on a walked sample and
 // it reads 0.000mm for every animation; park it mid-segment and the worst case
-// (the classic rewrap's violent mid-scrub) reads ~0.8mm. Real drift — a stale
+// (a violent mid-scrub) reads ~0.8mm. Real drift — a stale
 // path after a knob change, a walk driven with different uniforms — moves
 // pieces by tens of millimetres, so 1mm separates the two cleanly.
 const LIVE_TOL_MM = 1;
@@ -71,10 +72,11 @@ export interface PathVizContext {
   /** Loaded GLB root — probe meshes are found under here. */
   model: THREE.Object3D;
   state: SceneState;
-  /** Push `state`'s CURRENT channel values into the rig + shader uniforms.
-   *  The walk re-drives this per timestep, so paths include the object-level
-   *  ladder motion, not just the in-shader deform. */
-  driveRig: () => void;
+  /** Push `state`'s CURRENT channel values into the mechanism + the recipe
+   *  channel uniforms (core/scene driveChannels). The walk re-drives this per
+   *  timestep, so paths include the object-level mechanism motion (ring throws,
+   *  element slides), not just the in-shader deform. */
+  driveChannels: () => void;
   invalidate: () => void;
   /** Registry defaults for every plain channel (core/scene CHANNEL_DEFAULTS) —
    *  the analysis walks start each step from this neutral base so a walk is a
@@ -103,15 +105,8 @@ export interface PathViz {
   /** Adjacent-seat-rank radial band overlaps while both pieces are in flight. */
   interference(animId: string): Promise<InterferenceResult>;
   /** Which wedge corner departs the seated surface last (leads the stick), per
-   *  shell, in each of two animations (defaults: reassemble vs reassemble-ops). */
+   *  shell, in each of two animations (defaults: assemble vs rollout). */
   curlCorners(idA?: string, idB?: string): Promise<CurlCornerResult>;
-  /** Windowed fine-grained walk (default p ∈ [0.45, 0.70], 128 steps): per-rank
-   *  and per-shell-piece radius/stretch/roll-remainder timelines and the
-   *  curl-vs-breath timing. Pass `{ series: false }` to drop per-piece arrays. */
-  breath(
-    animId: string,
-    opts?: { p0?: number; p1?: number; steps?: number; series?: boolean },
-  ): Promise<BreathResult>;
   dispose(): void;
 }
 
@@ -143,8 +138,9 @@ interface Sheet {
  */
 function pickSheetVertices(mesh: THREE.Mesh): number[] {
   const pos = mesh.geometry.getAttribute("position");
-  const t0Attr = mesh.geometry.getAttribute("_bloomtheta0");
-  const t0 = t0Attr ? -t0Attr.getX(0) : 0; // stored negated (see bloom.ts)
+  // NOT negated: the classic `_bloomtheta0` was stored negated, the frame's t0
+  // is the sector meridian as measured (ops/frames.ts).
+  const t0 = frameOf(mesh.geometry)?.t0 ?? 0;
   const n = pos.count;
   const phi: number[] = [];
   const yy: number[] = [];
@@ -199,9 +195,9 @@ function pickSheetMeshes(model: THREE.Object3D): THREE.Mesh[] {
   const wedges: { mesh: THREE.Mesh; rank: number }[] = [];
   model.traverse((o) => {
     if (!(o instanceof THREE.Mesh) || !isSegWedge(o.name)) return;
-    const rate = o.geometry.getAttribute("_bloomrate");
-    if (!rate || !o.geometry.getAttribute("_bloomr")) return;
-    wedges.push({ mesh: o, rank: rate.getX(0) });
+    const frame = frameOf(o.geometry);
+    if (!frame) return;
+    wedges.push({ mesh: o, rank: frame.rank });
   });
   const picked: THREE.Mesh[] = [];
   for (const target of SHEET_RANKS) {
@@ -323,7 +319,7 @@ export function createPathViz(
   const snapshot = () => ({ ...ctx.state }) as SceneState;
   const restore = (snap: SceneState) => {
     for (const c of channels) ctx.state[c] = snap[c];
-    ctx.driveRig();
+    ctx.driveChannels();
   };
 
   function report() {
@@ -379,25 +375,22 @@ export function createPathViz(
         const scratch = snapshot();
         anim.apply(k / (STEPS - 1), scratch);
         for (const c of channels) ctx.state[c] = scratch[`${c}Target`];
-        ctx.driveRig();
+        ctx.driveChannels();
         ctx.model.updateWorldMatrix(true, true);
         matrices.push(sheets.map((s) => s.mesh.matrixWorld.clone()));
         walkProbe.renderRow(k);
       }
       // IDLE CHECK: every deformation channel at 0 ⇒ the shader is an exact
-      // identity, so this row must come back as the seated geometry.
+      // identity, so this row must come back as the seated geometry. The zero
+      // list is DERIVED from the one channel registry (core/scene
+      // IDLE_ZERO_CHANNELS) — it must name EVERY recipe channel, and a missing
+      // one inherits the LIVE page value (the page restores animation +
+      // progress from storage), turning this contractual check into a false
+      // alarm (measured 43mm on a mid-scrub bend back when the list was
+      // hand-kept). Deriving it means a new deform channel can't silently fall out.
       for (const c of channels) ctx.state[c] = snap[c];
-      for (const c of [
-        "explode",
-        "unwrap",
-        "rewrap",
-        "rewrapOn",
-        "helix",
-        "assemble",
-      ] as const) {
-        ctx.state[c] = 0;
-      }
-      ctx.driveRig();
+      for (const c of IDLE_ZERO_CHANNELS) ctx.state[c] = 0;
+      ctx.driveChannels();
       walkProbe.renderRow(IDLE_ROW);
       walkProbe.end();
 
@@ -543,7 +536,7 @@ export function createPathViz(
       nowGeo.getAttribute("position").needsUpdate = true;
       nowGeo.computeBoundingSphere();
 
-      // Strict: the classic rewrap's per-shell windows are narrow enough that a
+      // Strict: the per-shell assemble windows are narrow enough that a
       // 1e-3 channel residual is worth a visible fraction of a millimetre, and
       // that would be charged to the path instead of to the easing.
       liveSettled = channels.every(
@@ -640,8 +633,6 @@ export function createPathViz(
       exclusive(() => getAnalysis().interference(animId)),
     curlCorners: (idA, idB) =>
       exclusive(() => getAnalysis().curlCorners(idA, idB)),
-    breath: (animId, opts) =>
-      exclusive(() => getAnalysis().breath(animId, opts)),
     dispose() {
       window.clearInterval(timer);
       const w = window as unknown as { __lensPaths?: PathViz };

@@ -1,6 +1,13 @@
 // The animation-authoring kit: the LensAnimation contract plus the slider↔uniform
 // param table shared by every animation file (animations.ts and explore/*).
-import type { SceneState } from "./core/scene";
+import type { Channel, SceneState } from "./core/scene";
+
+/** Write a channel's value AND target so a scrubbed frame is a pure function
+ *  of p (the page already eases p — see lens.astro makeScrubGlide). */
+export const drive = (st: SceneState, ch: Channel, v: number) => {
+  st[ch] = v;
+  st[`${ch}Target`] = v;
+};
 
 export interface LensAnimation {
   id: string;
@@ -9,8 +16,8 @@ export interface LensAnimation {
   /** Live-tweakable shader knobs for this animation. `value` is the default
    *  slider position (0..100); `setParam` receives it normalized (0..1). */
   params?: { id: string; label: string; hint?: string; value: number }[];
-  /** Set `state.<channel>Target` values from progress `p` (0..1). May also push
-   *  uniforms directly (the page invalidates after every apply). */
+  /** Drive channels from progress `p` (0..1) through `drive(state, …)`. May
+   *  also push uniforms directly (the page invalidates after every apply). */
   apply(p: number, state: SceneState): void;
   /** Push a `params` slider (v normalized 0..1) into its backing uniform. */
   setParam?(id: string, v: number): void;

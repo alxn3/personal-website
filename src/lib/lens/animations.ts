@@ -5,40 +5,20 @@ import { smoothstep } from "./core/math";
 import {
   type LensAnimation,
   type ParamSpec,
+  drive,
   paramsOf,
   setParamOf,
 } from "./animation-kit";
-import { WIPE_ANIMS } from "./explore/wipe-anims";
-import { CHOREO_ANIMS } from "./explore/choreo-anims";
-import { FORMATION_ANIMS } from "./explore/formation-anims";
+import { CHOREO_ANIMS } from "./choreo-anims";
+import { FORMATION_ANIMS } from "./formation-anims";
+import { BEND_ANIMS } from "./bend-anims";
 
 export type { LensAnimation } from "./animation-kit";
-import {
-  uHelixTurns,
-  uHelixSpread,
-  uHelixApproach,
-  uHelixCoil,
-  uHelixSnap,
-  uHelixHover,
-  uAssembleSpread,
-  uAssembleFlatten,
-  uAssembleDepth,
-  uAssembleCurl,
-  uAssembleSnap,
-  uAssembleStagger,
-  uAssembleSplit,
-  uAssembleOverlap,
-  uAssembleSep,
-  uAssembleSwirl,
-  uAssembleRewind,
-  uAssembleMaskCenter,
-  uAssembleMaskWidth,
-  uRolloutStagger,
-  uRolloutMaskCenter,
-  uRolloutMaskWidth,
-  uRolloutRankLo,
-  uRolloutRankHi,
-} from "./materials/formation";
+// Sliders write the LIVE recipe knobs (ops/host recipeKnob), which are the
+// uniforms the deform host folds. recipeKnob hands back a CLAMPING view where
+// KNOB_LIMITS applies, so a map below that would leave the limit is clamped to
+// it here as well (a slider must not have a dead zone).
+import { recipeKnob } from "./ops/host";
 
 const TAU = Math.PI * 2;
 
@@ -47,28 +27,28 @@ const ASSEMBLE_PARAMS: ParamSpec[] = [
     id: "spread",
     label: "Throw",
     hint: "hug — thrown clear",
-    u: uAssembleSpread,
+    u: recipeKnob("assemble", "spreadThrow"),
     map: { k: 4 },
   },
   {
     id: "sep",
     label: "Slide",
     hint: "none — drifted wide",
-    u: uAssembleSep,
+    u: recipeKnob("assemble", "sep"),
     map: { k: 1 },
   },
   {
     id: "swirl",
     label: "Swirl",
     hint: "straight in — orbits in",
-    u: uAssembleSwirl,
+    u: recipeKnob("assemble", "swirl"),
     map: { k: 2 },
   },
   {
     id: "rewind",
     label: "Rewind",
     hint: "settles dead — breathes out",
-    u: uAssembleRewind,
+    u: recipeKnob("assemble", "rewind"),
     map: { k: 1.9 },
   },
   // exponential: the top of the slider must be GENUINELY flat (~30R — a linear
@@ -77,52 +57,59 @@ const ASSEMBLE_PARAMS: ParamSpec[] = [
     id: "flatten",
     label: "Flatten",
     hint: "on the barrel — flat arc",
-    u: uAssembleFlatten,
+    u: recipeKnob("assemble", "flatten"),
     map: { pow: 30 },
   },
   {
     id: "depth",
     label: "Depth",
     hint: "flat — deep stack",
-    u: uAssembleDepth,
+    u: recipeKnob("assemble", "depth"),
     map: { k: 2 },
   },
+  // 0..1 — KNOB_LIMITS caps curl at 1 (past 5/3 the roll radius zeroes and the
+  // gate divides by it), which the slider top already sits on.
   {
     id: "curl",
     label: "Curl",
     hint: "unrolled — tight roll",
-    u: uAssembleCurl,
+    u: recipeKnob("assemble", "curl"),
     map: { k: 1 },
   },
-  // 0..0.75 — the gate derives its window as 1 − stagger, which must stay
-  // positive (see formation.ts)
+  // 0..0.75 — the gate derives its window as 1 − stagger − partStagger, which
+  // must stay positive (ops/host JOINT_SUMS caps the PAIR at 0.9; this stays
+  // under it whatever partStagger a formation preset left behind)
   {
     id: "stagger",
     label: "Stagger",
     hint: "together — layered",
-    u: uAssembleStagger,
+    u: recipeKnob("assemble", "stagger"),
     map: { k: 0.75 },
   },
-  // more roll-on = LOWER split (the aH boundary): 0.95 .. 0.15
+  // more roll-on = LOWER split (the aH boundary): 0.95 .. 0.15 — exactly the
+  // KNOB_LIMITS split range
   {
     id: "wrap",
     label: "Wrap share",
     hint: "flight — roll-on",
-    u: uAssembleSplit,
+    u: recipeKnob("assemble", "split"),
     map: { b: 0.95, k: -0.8 },
   },
+  // 0.1..1, NOT 0..1: KNOB_LIMITS floors overlap at 0.1 (the stick ramp's
+  // width, rollEnd 0.9 − split 0.95 + overlap), so the slider bottom is moved
+  // onto the floor rather than clamping the bottom tenth into a dead zone.
   {
     id: "overlap",
     label: "Reel-in",
     hint: "rigid — bends home",
-    u: uAssembleOverlap,
-    map: { k: 1 },
+    u: recipeKnob("assemble", "overlap"),
+    map: { b: 0.1, k: 0.9 },
   },
   {
     id: "snap",
     label: "Snap",
     hint: "glide — snap home",
-    u: uAssembleSnap,
+    u: recipeKnob("assemble", "snap"),
     map: { k: 1 },
   },
   // Sector SOLO — width at the top (TAU) is fully open (bit-exact identity);
@@ -131,14 +118,14 @@ const ASSEMBLE_PARAMS: ParamSpec[] = [
     id: "maskWidth",
     label: "Sector width",
     hint: "one sector — all",
-    u: uAssembleMaskWidth,
+    u: recipeKnob("assemble", "maskWidth"),
     map: { k: TAU },
   },
   {
     id: "maskCenter",
     label: "Sector centre",
     hint: "−π — +π",
-    u: uAssembleMaskCenter,
+    u: recipeKnob("assemble", "maskCenter"),
     map: { b: -Math.PI, k: TAU },
   },
 ];
@@ -148,14 +135,14 @@ const HELIX_PARAMS: ParamSpec[] = [
     id: "turns",
     label: "Turns",
     hint: "½ — 1¼ turns",
-    u: uHelixTurns,
+    u: recipeKnob("helix", "turns"),
     map: { k: 1.5 },
   },
   {
     id: "spread",
     label: "Spread",
     hint: "tight — wide",
-    u: uHelixSpread,
+    u: recipeKnob("helix", "spread"),
     map: { k: 1 },
   },
   // magnitude slider → the NEGATIVE rearward value (v=0.45 ⇒ −45mm)
@@ -163,7 +150,7 @@ const HELIX_PARAMS: ParamSpec[] = [
     id: "approach",
     label: "Approach",
     hint: "flush — deep rear",
-    u: uHelixApproach,
+    u: recipeKnob("helix", "approach"),
     map: { k: -100 },
   },
   // more bend = tighter coil, 1..0.3
@@ -171,14 +158,14 @@ const HELIX_PARAMS: ParamSpec[] = [
     id: "bend",
     label: "Bend",
     hint: "gentle — tight coil",
-    u: uHelixCoil,
+    u: recipeKnob("helix", "coil"),
     map: { b: 1, k: -0.7 },
   },
   {
     id: "snap",
     label: "Snap",
     hint: "glide — snap home",
-    u: uHelixSnap,
+    u: recipeKnob("helix", "snap"),
     map: { k: 1 },
   },
   // slider 0..1 → 0..12mm
@@ -186,7 +173,7 @@ const HELIX_PARAMS: ParamSpec[] = [
     id: "hover",
     label: "Hover",
     hint: "flush — floating",
-    u: uHelixHover,
+    u: recipeKnob("helix", "hover"),
     map: { k: 12 },
   },
 ];
@@ -196,7 +183,7 @@ const ROLLOUT_PARAMS: ParamSpec[] = [
     id: "stagger",
     label: "Stagger",
     hint: "together — layered",
-    u: uRolloutStagger,
+    u: recipeKnob("rollout", "stagger"),
     map: { k: 0.75 },
   },
   // Sector solo — top (TAU) fully open (bit-exact identity), pull down to unroll
@@ -205,14 +192,14 @@ const ROLLOUT_PARAMS: ParamSpec[] = [
     id: "sectorWidth",
     label: "Sector width",
     hint: "one sector — all",
-    u: uRolloutMaskWidth,
+    u: recipeKnob("rollout", "maskWidth"),
     map: { k: TAU },
   },
   {
     id: "sectorCenter",
     label: "Sector centre",
     hint: "−π — +π",
-    u: uRolloutMaskCenter,
+    u: recipeKnob("rollout", "maskCenter"),
     map: { b: -Math.PI, k: TAU },
   },
   // Rank band — lo 0 / hi 1 fully open; narrow it to roll out a subset of shells.
@@ -220,71 +207,61 @@ const ROLLOUT_PARAMS: ParamSpec[] = [
     id: "rankLo",
     label: "Rank low",
     hint: "inner — outer",
-    u: uRolloutRankLo,
+    u: recipeKnob("rollout", "rankLo"),
     map: { k: 1 },
   },
   {
     id: "rankHi",
     label: "Rank high",
     hint: "inner — outer",
-    u: uRolloutRankHi,
+    u: recipeKnob("rollout", "rankHi"),
     map: { k: 1 },
+  },
+];
+
+// The SCRATCH bench (ops/recipes.ts `scratch`): the owner's directly-editable
+// pipeline, with a slider on each of its three knobs. Rename or re-purpose a
+// knob in the recipe and this table follows — that pair of edits IS the bench.
+const SCRATCH_PARAMS: ParamSpec[] = [
+  {
+    id: "spread",
+    label: "Spread",
+    hint: "hug — thrown clear",
+    u: recipeKnob("scratch", "spread"),
+    map: { k: 2 },
+  },
+  {
+    id: "turn",
+    label: "Turn",
+    hint: "−π — +π",
+    u: recipeKnob("scratch", "turn"),
+    map: { b: -Math.PI, k: TAU },
+  },
+  {
+    id: "depth",
+    label: "Depth",
+    hint: "flat — deep stack",
+    u: recipeKnob("scratch", "depth"),
+    map: { k: 2 },
   },
 ];
 
 const CORE_ANIMS: LensAnimation[] = [
   {
-    id: "teardown",
-    label: "Teardown",
-    hint: "explode → peel → relax",
-    apply(p, state) {
-      state.zoomTarget = 0;
-      state.focusTarget = 0;
-      state.apertureTarget = 0;
-      // heavily OVERLAPPED, like the homepage teardown (unwrap rides the
-      // explode): pieces peel WHILE they fan out — one continuous gesture, not
-      // staged phases (owner: staged read as "sequential instead of together")
-      state.explodeTarget = smoothstep(0.02, 0.55, p);
-      state.unwrapTarget = smoothstep(0.18, 0.8, p);
-      state.curlTarget = 1 - 0.65 * smoothstep(0.55, 0.95, p);
-    },
-  },
-  {
-    id: "reassemble",
+    id: "assemble",
     label: "Reassemble",
-    hint: "sheets fly home — layer by layer",
-    // The homepage's scene 5→7 machinery under one scrub: start as the story's
-    // post-teardown state (fully exploded, peeled to flat sheets), then the
-    // staggered rewrap seats every layer inner→outer while explode/unwrap
-    // release late, settling fully assembled — same channels, no camera.
-    apply(p, state) {
-      state.zoomTarget = 0;
-      state.focusTarget = 0;
-      state.apertureTarget = 0;
-      state.curlTarget = 0; // flat sheets; the rewrap derives per-shell curl
-      state.rewrapOnTarget = 1;
-      state.rewrapTarget = smoothstep(0, 0.75, p);
-      state.explodeTarget = 1 - smoothstep(0.7, 1, p);
-      state.unwrapTarget = 1 - smoothstep(0.65, 0.95, p);
-    },
-  },
-  {
-    id: "reassemble-ops",
-    label: "Reassemble · ops",
     hint: "flies home — sheets wrap on",
-    // The ops-built A/B alternative to the rewrap "Reassemble" above. ONE channel:
-    // the wedges start fully disassembled (p=0 ⇒ assemble 1) and seat home by p=1.
-    // The formation preset (materials/formation uAssemble) owns every per-wedge
-    // stagger, flatten and wrap roll-on — nothing else is driven here. Live
-    // knobs come from the ASSEMBLE_PARAMS table.
+    // ONE channel: the wedges start fully disassembled (p=0 ⇒ assemble 1) and
+    // seat home by p=1. The assemble RECIPE (ops/recipes.ts) owns every
+    // per-wedge stagger, flatten and wrap roll-on — nothing else is driven
+    // here. Live knobs come from the ASSEMBLE_PARAMS table.
     params: paramsOf(ASSEMBLE_PARAMS),
     apply(p, state) {
-      state.zoomTarget = 0;
-      state.focusTarget = 0;
-      state.apertureTarget = 0;
-      // same pacing curve as the classic Reassemble's rewrapTarget, so the two
-      // animations hit each per-shell window at the same p — 1-1 matching
-      state.assembleTarget = 1 - smoothstep(0, 0.75, p);
+      drive(state, "zoom", 0);
+      drive(state, "focus", 0);
+      drive(state, "aperture", 0);
+      // 0..0.75 smoothstep — the house bench shape
+      drive(state, "assemble", 1 - smoothstep(0, 0.75, p));
     },
     setParam: setParamOf(ASSEMBLE_PARAMS),
   },
@@ -296,9 +273,9 @@ const CORE_ANIMS: LensAnimation[] = [
     params: paramsOf(HELIX_PARAMS),
     apply(p, state) {
       // ONE channel: the wedges start fully spread (p=0 ⇒ helix 1) and assemble
-      // home by p=1. The shader (materials/formation uHelix) owns every per-wedge
+      // home by p=1. The helix RECIPE (ops/recipes.ts) owns every per-wedge
       // stagger, snap and over-coil — nothing else is driven here.
-      state.helixTarget = 1 - p;
+      drive(state, "helix", 1 - p);
     },
     setParam: setParamOf(HELIX_PARAMS),
   },
@@ -307,17 +284,34 @@ const CORE_ANIMS: LensAnimation[] = [
     label: "Roll-out",
     hint: "unrolls flat — a carpet",
     // ONE channel: the wedges start rolled out flat (p=0 ⇒ rollout 1) and roll
-    // back home by p=1. The shader (materials/formation uRollout) owns the
+    // back home by p=1. The rollout RECIPE (ops/recipes.ts) owns the
     // per-wedge stagger and the rolling-contact geometry; live knobs (stagger,
     // sector/rank masks) come from ROLLOUT_PARAMS.
     params: paramsOf(ROLLOUT_PARAMS),
     apply(p, state) {
-      state.zoomTarget = 0;
-      state.focusTarget = 0;
-      state.apertureTarget = 0;
-      state.rolloutTarget = 1 - p;
+      drive(state, "zoom", 0);
+      drive(state, "focus", 0);
+      drive(state, "aperture", 0);
+      drive(state, "rollout", 1 - p);
     },
     setParam: setParamOf(ROLLOUT_PARAMS),
+  },
+];
+
+const SCRATCH_ANIMS: LensAnimation[] = [
+  {
+    id: "x-scratch",
+    label: "Scratch",
+    hint: "the editable bench — ops/recipes.ts `scratch`",
+    params: paramsOf(SCRATCH_PARAMS),
+    setParam: setParamOf(SCRATCH_PARAMS),
+    apply(p, state) {
+      drive(state, "zoom", 0);
+      drive(state, "focus", 0);
+      drive(state, "aperture", 0);
+      // Straight progress, no shaping: a bench shows the recipe's own law.
+      drive(state, "scratch", p);
+    },
   },
 ];
 
@@ -325,7 +319,8 @@ const CORE_ANIMS: LensAnimation[] = [
  *  (each family owns its file under explore/). */
 export const ANIMATIONS: LensAnimation[] = [
   ...CORE_ANIMS,
-  ...WIPE_ANIMS,
   ...CHOREO_ANIMS,
   ...FORMATION_ANIMS,
+  ...BEND_ANIMS,
+  ...SCRATCH_ANIMS,
 ];

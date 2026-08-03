@@ -20,6 +20,13 @@
 
 import { smoothstep } from "../core/math";
 
+/** The subset of a Pose that a `via` waypoint actually contributes: camera.ts
+ *  splines only these four along a waypoint chain. `ortho`, `ys` and `target`
+ *  are endpoint-only — the flatten and the orbit-centre/lift slides are driven
+ *  from the move's first and last poses, so authoring them on a via is silently
+ *  dead. Hence the narrower type rather than `Pose[]`. */
+export type Waypoint = Pick<Pose, "pos" | "fov" | "up" | "xs">;
+
 export interface Pose {
   pos: [number, number, number]; // camera direction (scaled by the scene radius)
   fov: number;
@@ -49,7 +56,7 @@ export interface StoryScene {
   hold: number; // duration weight, ≈ screenfuls of scroll
   transit: number; // 0..1 of the scene spent easing the camera IN from the previous pose
   cam: Pose; // settle pose (the parked "hold")
-  via?: Pose[]; // optional waypoints during the transit (multi-step orbits / up-vector routing)
+  via?: Waypoint[]; // optional waypoints during the transit (multi-step orbits / up-vector routing)
   bg: [number, number, number]; // stage tint on the hold (dark theme)
   bgLight: [number, number, number]; // stage tint on the hold (light theme — warm paper family)
   linkNext?: boolean; // fuse this scene's camera move with the NEXT scene's into ONE
@@ -129,14 +136,12 @@ export const STORY: StoryScene[] = [
         pos: [-1.2, 0.35, -0.7],
         fov: 34,
         up: [-0.3, 0.95, 0],
-        ortho: 0,
         xs: 0,
       },
       {
         pos: [-0.7, 0.18, -1.15],
         fov: 30,
         up: [-0.9, 0.2, 0],
-        ortho: 0,
         xs: 0,
       },
     ],
@@ -176,11 +181,10 @@ export const STORY: StoryScene[] = [
         pos: [-1.1, 0.35, -0.7],
         fov: 30,
         up: [-0.55, 0.8, 0],
-        ortho: 0,
         xs: 0,
       },
-      { pos: [-1.3, 0.5, 0.35], fov: 30, up: [0.4, 0.9, 0], ortho: 0, xs: 0 },
-      { pos: [-0.6, 0.3, 1.1], fov: 30, up: [1, 0.15, 0], ortho: 0, xs: 0 },
+      { pos: [-1.3, 0.5, 0.35], fov: 30, up: [0.4, 0.9, 0], xs: 0 },
+      { pos: [-0.6, 0.3, 1.1], fov: 30, up: [1, 0.15, 0], xs: 0 },
     ],
   },
   {
@@ -214,21 +218,18 @@ export const STORY: StoryScene[] = [
         pos: [0.11, -1.3, -0.75],
         fov: 30,
         up: [0.94, 0.22, 0],
-        ortho: 0,
         xs: 0,
       }, // wide, fast spin
       {
         pos: [0.45, 1.1, -0.62],
         fov: 30,
         up: [0.97, -0.12, 0],
-        ortho: 0,
         xs: 0,
       }, // tilts to camera — front element
       {
         pos: [0.28, 0.76, 0.76],
         fov: 30,
         up: [0.99, 0.06, 0],
-        ortho: 0,
         xs: 0,
       }, // swell — cap meets the front
     ],
@@ -240,6 +241,22 @@ export const STORY: StoryScene[] = [
 // loudly at boot instead of surfacing as subtly wrong motion. (Pulse-window
 // fractions are NOT checked here — they don't live in this table; pulse()
 // validates its own windows at call time.)
+
+// Scene ids consumers resolve BY NAME: camera.ts's hero-end portrait lift, the
+// hero-driver's pulse windows and return window, and cinematics.ts's isolate /
+// caps-on constants. The cinematics ones are MODULE-SCOPE behind a static
+// import, so a renamed id takes down /lens too — a page with no story at all.
+const REQUIRED_IDS = [
+  "hero",
+  "zoom",
+  "focus",
+  "aperture",
+  "explode",
+  "lightPath",
+  "rewrap",
+  "capsOn",
+];
+
 export function validateStory(story: StoryScene[]): void {
   if (story.length === 0) throw new Error("lens story: STORY is empty");
   const ids = new Set<string>();
@@ -268,6 +285,17 @@ export function validateStory(story: StoryScene[]): void {
         `lens story: scenes "${sc.id}" and "${story[i + 1].id}" are consecutive linkNext scenes — camera.ts only looks back one scene, so chains longer than two never fuse`,
       );
   }
+  const missing = REQUIRED_IDS.filter((id) => !ids.has(id));
+  if (missing.length)
+    throw new Error(
+      `lens story: missing required scene id(s) ${missing.map((id) => `"${id}"`).join(", ")} — consumers resolve these by name (see REQUIRED_IDS); rename the scene there too, or keep the id`,
+    );
+  // hero-driver.ts takes RANGES[0] positionally for the intro/scroll-cue fades,
+  // so a prepended beat would silently retarget them instead of failing.
+  if (story[0].id !== "hero")
+    throw new Error(
+      `lens story: the first scene must be "hero" (got "${story[0].id}") — hero-driver.ts reads RANGES[0] positionally`,
+    );
 }
 validateStory(STORY);
 

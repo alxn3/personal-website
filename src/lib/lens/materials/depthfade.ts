@@ -18,10 +18,10 @@ export const uFadeFar0 = uniform(20); // full opacity (far edge of the body)
 export const uFadeFar1 = uniform(28); // fully faded (farthest from camera)
 
 // A fresh fade-factor node (0..1) for the given DEFORMED local position. Pass the
-// bloom position graph for shell wedges (their explode motion is in-shader, so the
-// built-in positionView node misses it); default positionLocal is correct for
-// everything moved only by its object matrix (glass, solids, loose parts). A node
-// can't be shared across materials, so build one per material.
+// op position graph (ops/host.ts attachOps / opsLocalPosition) for deformed
+// pieces — their motion is in-shader, so the built-in positionView node misses
+// it; default positionLocal is correct for everything moved only by its object
+// matrix. A node can't be shared across materials, so build one per material.
 export function depthFadeFactor(localPos: any = positionLocal): any {
   const viewZ = modelViewMatrix.mul(vec4(localPos, 1.0)).z.negate(); // distance in front of camera
   const near = smoothstep(uFadeNear0, uFadeNear1, viewZ);
