@@ -1,15 +1,21 @@
 // Scroll driver for the homepage lens hero: maps the pinned track's scroll
-// progress onto the story — mechanism pulse envelopes, caption fade bands +
-// per-block --beat-* progress vars (content-specific effects like the focus
-// blur-rack live in CSS with the content, not here), HUD / scene-rail /
+// progress onto the story — mechanism pulse envelopes, per-block --beat-*
+// progress vars (content-specific effects like the focus blur-rack and the
+// pins' own fade live in CSS with the content, not here), HUD / scene-rail /
 // scroll-cue chrome, background tint, and tracked-part pin projection. The
 // element ids and data-* attributes queried below are the contract with
 // LensStory.astro's hero markup.
 //
+// CAPTIONS ARE NOT HERE. Their visibility is layout — a band per scene plus
+// position: sticky, derived from the same table at build time (story.ts
+// CAPTION_BANDS) — so they survive a driver that is slow, broken or never
+// started. Everything this module does is pure enhancement with an acceptable
+// CSS default when it is absent.
+//
 // The component (LensStory.astro) keeps everything that must run WITHOUT a
 // driver: initScene + fallback handling, the theme watcher (it forwards flips
 // here via HeroDriver.onThemeChange), the pause IntersectionObserver, and the
-// reduced-motion static variant — this module only ever runs with a live,
+// reduced-motion parked pose — this module only ever runs with a live,
 // animated scene.
 
 import type { SceneHandle } from "../core/scene";
@@ -18,11 +24,12 @@ import {
   STORY,
   RANGES,
   rangeOf,
+  bandOf,
   atFrac,
   pulse,
   type StoryWindow,
 } from "./story";
-import { band, clamp01, smoothstep } from "../core/math";
+import { band, BAND_FEATHER, clamp01, smoothstep } from "../core/math";
 import { isLightTheme } from "../core/theme";
 
 const F_STOPS = ["2.8", "4", "5.6", "8", "11", "16", "22"];
@@ -35,42 +42,52 @@ export interface HeroDriver {
 export function startHeroStory(scene: SceneHandle): HeroDriver {
   const track = document.getElementById("lens-track")!;
   const stage = document.getElementById("lens-stage")!;
-  const heroIntro = document.getElementById("hero-intro")!;
   const hud = document.getElementById("hud")!;
   const sceneRail = document.getElementById("scene-rail")!;
   const scrollCue = document.getElementById("scroll-cue")!;
-  // Scene content blocks: ANY element with data-scene-content (see
-  // LensSceneContent.astro) gets a fade band derived from its scene's range —
-  // several blocks may target one scene. A typo'd id in the authored markup
-  // must not take the page down (rangeOf throws on unknown ids): warn and SKIP
-  // the block — it simply stays at its initial opacity 0.
-  const caps = [
-    ...stage.querySelectorAll<HTMLElement>("[data-scene-content]"),
-  ].flatMap((el) => {
-    const id = el.dataset.sceneContent!;
-    let r;
-    try {
-      r = rangeOf(id);
-    } catch {
-      console.warn(`lens hero: no story scene named "${id}"`, el);
-      return [];
-    }
-    return [
-      {
-        el,
-        p0: r.p0,
-        p1: r.p1,
-        // slight overlap for a crossfade; the FINAL scene stays visible to the end
-        a: Math.max(0, r.p0 - 0.02),
-        b: r.p1 >= 0.999 ? 1.08 : r.p1 + 0.02,
-        // --beat-progress window in scene-local 0..1 (data-progress-from/-to,
-        // authored via LensSceneContent's progressFrom/progressTo props) —
-        // parsed once here, not per frame
-        f0: Number(el.dataset.progressFrom ?? 0),
-        f1: Number(el.dataset.progressTo ?? 1),
-      },
-    ];
-  });
+  // Per-block progress: ANY element with data-beat (LensSceneContent's caption
+  // wrapper, LensPin) gets its scene's progress written as custom properties
+  // every frame, so content-specific CSS can react to the story — the focus
+  // blur-rack, a pin's own fade. VISIBILITY is not among them: captions are
+  // placed and faded by layout + CSS (see the header), and a pin simply reads
+  // --beat-visibility, defaulting to hidden when no driver ever runs. A typo'd
+  // id must not take the page down: warn and SKIP (caption bands are validated
+  // at BUILD time — bandOf throws in the Astro frontmatter — so this only
+  // covers hand-written markup like a pin's scene).
+  const beats = [...track.querySelectorAll<HTMLElement>("[data-beat]")].flatMap(
+    (el) => {
+      const id = el.dataset.beat!;
+      let r, bnd;
+      try {
+        r = rangeOf(id);
+        bnd = bandOf(id);
+      } catch {
+        console.warn(`lens hero: no story scene named "${id}"`, el);
+        return [];
+      }
+      return [
+        {
+          el,
+          p0: r.p0,
+          p1: r.p1,
+          // the block's band, straight off the story table — the same numbers
+          // the markup laid out with. One exception: the FINAL band ends AT the
+          // track end (b = 1), and CSS holds that caption lit there (its band
+          // is the last one, so its fade-out window sits a viewport past maximum
+          // scroll and is never reached). Pushing the far edge one feather past
+          // the end holds --beat-visibility at 1 there too, rather than dimming
+          // over the last 4% of the scroll.
+          a: bnd.a,
+          b: bnd.final ? bnd.b + BAND_FEATHER : bnd.b,
+          // --beat-progress window in scene-local 0..1 (data-progress-from/-to,
+          // authored via LensSceneContent's progressFrom/progressTo props) —
+          // parsed once here, not per frame
+          f0: Number(el.dataset.progressFrom ?? 0),
+          f1: Number(el.dataset.progressTo ?? 1),
+        },
+      ];
+    },
+  );
 
   // Tracked-part pins: every [data-track] element follows its model node's
   // projected screen position each frame (see LensPin.astro / SceneHandle.onFrame).
@@ -207,28 +224,22 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
       0.84 * smoothstep(atFrac(exR, 0.1), atFrac(exR, 0.6), p) +
       0.84 * smoothstep(atFrac(rwR, 0.1), atFrac(rwR, 0.8), p); // fills return as layers wrap on
 
-    // hero intro (display type) fades out over the hero scene
-    heroIntro.style.opacity = String(
-      1 - smoothstep(atFrac(heroR, 0.15), atFrac(heroR, 0.95), p),
-    );
-
-    // per-scene captions: opacity fade band + generic progress custom
-    // properties, so content-specific effects (e.g. the focus blur-rack) live
-    // in CSS with the content instead of being special-cased here —
+    // per-block progress custom properties, so content-specific effects (the
+    // focus blur-rack, a pin's fade) live in CSS with the content instead of
+    // being special-cased here —
     //   --beat-local      raw scene-local progress, clamp01 0..1
     //   --beat-progress   smoothstep of local over the block's authored
     //                     progressFrom..progressTo window
-    //   --beat-visibility the same band value driving the opacity
-    for (const c of caps) {
-      const vis = band(p, c.a, c.b);
-      c.el.style.opacity = String(vis);
+    //   --beat-visibility the story table's fade band for the block (what the
+    //                     CSS caption fade approximates; the pins ride it)
+    for (const c of beats) {
       const local = clamp01((p - c.p0) / (c.p1 - c.p0));
       c.el.style.setProperty("--beat-local", String(local));
       c.el.style.setProperty(
         "--beat-progress",
         String(smoothstep(c.f0, c.f1, local)),
       );
-      c.el.style.setProperty("--beat-visibility", String(vis));
+      c.el.style.setProperty("--beat-visibility", String(band(p, c.a, c.b)));
     }
 
     // HUD + scene rail — current scene from the ranges

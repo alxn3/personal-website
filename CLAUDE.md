@@ -5,7 +5,7 @@ Astro 7 personal site: Tailwind v4, Alpine.js, three.js (WebGPU/TSL) lens viewer
 ## Commands
 
 - Dev server: `npx astro dev --port 4321` (daemonized; stop with `astro dev stop`). Not `npm run dev`.
-- Restart the dev server after refactors that move/rename/delete files: the long-lived daemon's Vite/HMR graph goes stale and serves a MIX of old and new modules — presents as broken styling or a boot falling into the static fallback while builds stay clean.
+- Restart the dev server after refactors that move/rename/delete files: the long-lived daemon's Vite/HMR graph goes stale and serves a MIX of old and new modules — presents as broken styling, a stale component, or a module that throws on an import that exists on disk, while builds stay clean.
 - Before committing: `npm run format`; then `npm run format:check`, `npm run lint`, and `npx astro check --minimumSeverity hint` must all pass clean.
 - Build: `npm run build`.
 
@@ -45,6 +45,7 @@ Alpine-driven panels (project page) bind a `data-open` attribute that Tailwind `
 ## Homepage hero captions
 
 - The hero (captions + pins + boot) is colocated in `src/components/LensStory.astro` (the story table itself lives in `src/lib/lens/story/story.ts`); `index.astro` just renders `<LensStory />`. `.cap-*` classes in LensStory's `<style>` are the house caption typography for scene-slotted content; the wrapper's placement/responsive rules live in `LensSceneContent.astro`. Slotted blocks are arbitrary markup — the house classes are optional.
+- Caption VISIBILITY is layout, not animation: each captioned scene renders a band — its slice of the scroll track, sized from `CAPTION_BANDS` in `story/story.ts` — with a `position: sticky` caption inside, faded by a CSS scroll timeline (`animation-timeline: view()`, with `src/lib/cap-fades.ts` as the IntersectionObserver fallback). So captions appear, pin and leave on scroll whether or not the 3D scene boots, and the driver never writes their opacity. There is no `data-static` fallback layout.
 
 ## Lens 3D stack (`src/lib/lens/`)
 

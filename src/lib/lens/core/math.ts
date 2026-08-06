@@ -8,8 +8,11 @@ export const smoothstep = (a: number, b: number, x: number) => {
   return t * t * (3 - 2 * t);
 };
 
+/** Default width of a fade band's rise/fall ramps, in the same units as p. */
+export const BAND_FEATHER = 0.04;
+
 // one-sided fade band: rises in [a,a+f], holds, falls in [b-f,b]
-export const band = (p: number, a: number, b: number, f = 0.04) =>
+export const band = (p: number, a: number, b: number, f = BAND_FEATHER) =>
   Math.min(smoothstep(a, a + f, p), 1 - smoothstep(b - f, b, p));
 
 export const lerp = (a: number, b: number, t: number) => a + (b - a) * t;

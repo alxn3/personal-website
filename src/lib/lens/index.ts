@@ -24,6 +24,16 @@ export { watchTheme } from "./core/theme";
 export { startHeroStory } from "./story/hero-driver";
 export type { HeroDriver } from "./story/hero-driver";
 export { STORY, TRACK_HEIGHT_CSS, rangeOf } from "./story/story";
+// Caption bands: the hero's caption LAYOUT, derived from the same table the
+// canvas reads. LensStory/LensSceneContent place their band elements from
+// these at build time — see story/story.ts.
+export {
+  CAPTION_BANDS,
+  CAPTION_PAD,
+  CAPTION_FADE_CSS,
+  bandOf,
+} from "./story/story";
+export type { CaptionBand } from "./story/story";
 export { MODEL_URL, ACCESSORIES_URL } from "./core/model";
 export { ANIMATIONS, type LensAnimation } from "./animations";
 // Demo compositions (camera choreo + model animation + page wipe + palette).

@@ -1,7 +1,7 @@
 ---
 import LensPin from "./LensPin.astro";
 import LensSceneContent from "./LensSceneContent.astro";
-import { STORY, TRACK_HEIGHT_CSS } from "../lib/lens";
+import { STORY, TRACK_HEIGHT_CSS, CAPTION_FADE_CSS, bandOf } from "../lib/lens";
 
 // The scroll-jacked lens hero. The story TABLE — scene order, durations, camera
 // poses/waypoints, stage tints, rail flags and titles — lives in
@@ -9,21 +9,61 @@ import { STORY, TRACK_HEIGHT_CSS } from "../lib/lens";
 // track height, scene ranges, camera path and caption bands all derive from
 // it). Mechanism ENVELOPE windows are deliberately not in it: they live with
 // their consumer, the pulse(...) calls in lib/lens/story/hero-driver.ts. This
-// component renders the hero around the table: the pinned stage, the per-scene
-// overlay content below, the chrome (HUD / rail / scroll cue), and the boot
+// component renders the hero around the table: the caption BANDS, the pinned
+// stage they sit over, the chrome (HUD / rail / scroll cue), and the boot
 // script.
 //
 // Scene overlay content is authored BELOW as real markup (<LensSceneContent
 // scene="…">), so any scene can host arbitrary HTML/components — the story table
-// only carries the engine data (durations, camera, tint). The scroll
-// driver fades each block over its scene's derived range.
+// only carries the engine data (durations, camera, tint). Each block sits in its
+// scene's band and is sticky inside it, so it appears, pins and leaves on layout
+// alone — no driver, no JS.
+
+// Band 0 is the intro's: the hero scene's slice of the track. Same derivation
+// as every <LensSceneContent> band — one table, one reader.
+const heroBand = bandOf("hero");
 ---
 
 {
   /* ========================= SCROLL-JACKED LENS HERO ========================= */
 }
 <section id="lens-hero" class="relative" aria-label="Intro">
-  <div id="lens-track" class="relative" style={`height:${TRACK_HEIGHT_CSS}`}>
+  <div
+    id="lens-track"
+    class="relative"
+    style={`height:${TRACK_HEIGHT_CSS};--cap-fade:${CAPTION_FADE_CSS}`}
+  >
+    {
+      /* ---- Caption band 0: the hero intro ----
+           FIRST in the track so the <h1> opens the document outline and the a11y
+           tree, ahead of the stage's decorative chrome. Paint order is unchanged:
+           every band is absolute at z-3 over the z-auto sticky stage, so the
+           bands win on z-index, not on document order. */
+    }
+    <div
+      class="cap-band"
+      data-band="hero"
+      data-final={heroBand.finalAttr}
+      style={`top:${heroBand.top};height:${heroBand.height}`}
+    >
+      {/* big display type, fades out into the zoom caption */}
+      <div id="hero-intro" data-cap-fade>
+        <div class="hero-intro-inner">
+          <div class="hero-eyebrow">
+            <span>PORTFOLIO — 2026</span>
+            <span>SYSTEMS · WEB · GRAPHICS</span>
+          </div>
+          <h1 class="hero-title">Wide angle,<br /><em>sharp</em> focus.</h1>
+          <div class="hero-sub">
+            <p>
+              Backend systems by trade, graphics by obsession. Scroll — the lens
+              zooms, pulls focus, stops down, and comes apart.
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+
     {/* Pinned stage */}
     <div
       id="lens-stage"
@@ -40,120 +80,15 @@ import { STORY, TRACK_HEIGHT_CSS } from "../lib/lens";
       >
       </div>
 
-      {/* ---- HERO intro (scene 00): big display type, fades out first ---- */}
-      <div
-        id="hero-intro"
-        class="cap-frame pointer-events-none absolute inset-0"
-      >
-        <div class="hero-intro-inner">
-          <div class="hero-eyebrow">
-            <span>PORTFOLIO — 2026</span>
-            <span>SYSTEMS · WEB · GRAPHICS</span>
-          </div>
-          <h1 class="hero-title">Wide angle,<br /><em>sharp</em> focus.</h1>
-          <div class="hero-sub">
-            <p>
-              Backend systems by trade, graphics by obsession. Scroll — the lens
-              zooms, pulls focus, stops down, and comes apart.
-            </p>
-          </div>
-        </div>
-      </div>
-
-      {
-        /* ---- Per-scene stage content ----
-             Each block is ARBITRARY markup tied to a scene id — swap any of these
-             for custom components (charts, images, demos…). `pos` places it where
-             that scene parks the lens; the classes below are the house caption
-             style, not a requirement. */
-      }
-      <div class="cap-frame pointer-events-none absolute inset-0">
-        <LensSceneContent scene="zoom" pos="left">
-          <span class="cap-ghost" aria-hidden="true">01</span>
-          <span class="cap-tag">ZOOM — BREADTH</span>
-          <h2 class="cap-title">18mm to 50mm, and everything between.</h2>
-          <p class="cap-body">
-            I range wide — infrastructure, the web, graphics — and rack in close
-            when a problem earns it.
-          </p>
-        </LensSceneContent>
-
-        <LensSceneContent
-          scene="focus"
-          pos="right"
-          progressFrom={0.25}
-          progressTo={0.75}
-        >
-          <span class="cap-ghost" aria-hidden="true">02</span>
-          <span class="cap-tag">FOCUS — PERSPECTIVE</span>
-          <h2 class="cap-title">Same scene, different planes.</h2>
-          <div class="cap-rack">
-            <p class="rack-near">
-              Near plane: the systems underneath — queues, storage, schedulers.
-            </p>
-            <p class="rack-far">
-              Far plane: the surfaces people touch — the web, rendered fast.
-            </p>
-          </div>
-        </LensSceneContent>
-
-        <LensSceneContent scene="aperture" pos="bottom">
-          <span class="cap-ghost" aria-hidden="true">03</span>
-          <span class="cap-tag">APERTURE — DEPTH</span>
-          <h2 class="cap-title">Seven blades, wide open to a star.</h2>
-          <p class="cap-body">
-            Stopping down f/2.8 → f/22: less light in, more of the frame held
-            sharp.
-          </p>
-        </LensSceneContent>
-
-        <LensSceneContent scene="explode" pos="top">
-          <span class="cap-ghost" aria-hidden="true">04</span>
-          <span class="cap-tag">EXPLODE — TEARDOWN</span>
-          <h2 class="cap-title">Take it apart, piece by piece.</h2>
-          <p class="cap-body">
-            Housing, rings, contacts, motor — every part fans away from the
-            axis.
-          </p>
-        </LensSceneContent>
-
-        <LensSceneContent scene="lightPath" pos="left">
-          <span class="cap-ghost" aria-hidden="true">05</span>
-          <span class="cap-tag">LIGHT PATH</span>
-          <h2 class="cap-title">Only the light path is left.</h2>
-          <p class="cap-body">
-            Thirteen elements on a single axis — the reason the whole thing
-            works.
-          </p>
-        </LensSceneContent>
-
-        <LensSceneContent scene="rewrap" pos="right">
-          <span class="cap-ghost" aria-hidden="true">06</span>
-          <span class="cap-tag">REWRAP — ASSEMBLY</span>
-          <h2 class="cap-title">And it all wraps back on.</h2>
-          <p class="cap-body">
-            Layer by layer — each shell flies home flat and curls around the
-            glass until the lens is whole again.
-          </p>
-        </LensSceneContent>
-
-        <LensSceneContent scene="capsOn" pos="right">
-          <span class="cap-ghost" aria-hidden="true">07</span>
-          <span class="cap-tag">CAPS ON</span>
-          <h2 class="cap-title">That's the tour. The rest is the work.</h2>
-          <p class="cap-body">
-            Caps on. Demos and writing below — keep scrolling.
-          </p>
-        </LensSceneContent>
-      </div>
-
       {
         /* ---- Tracked part annotations ----
              Full-stage overlay (coordinates line up with the canvas, unlike the
-             centred .cap-frame column). Each pin follows its model node's live
-             screen position every frame — add more by naming any solid node. */
+             centred caption-band column). Each pin follows its model node's live
+             screen position every frame — add more by naming any solid node.
+             aria-hidden: the labels annotate the 3D render and mean nothing
+             without it — decoration, not content. */
       }
-      <div class="pointer-events-none absolute inset-0 z-4">
+      <div class="pointer-events-none absolute inset-0 z-4" aria-hidden="true">
         <LensPin
           scene="focus"
           track="Focus_LeadScrew"
@@ -199,6 +134,90 @@ import { STORY, TRACK_HEIGHT_CSS } from "../lib/lens";
         }
       </div>
     </div>
+
+    {
+      /* ---- Per-scene overlay content (caption bands 1..n) ----
+           Each block is ARBITRARY markup tied to a scene id — swap any of these for
+           custom components (charts, images, demos…). `pos` places it where that
+           scene parks the lens and picks the slot it pins into; the classes below
+           are the house caption style, not a requirement. Each renders its own
+           band: its slice of the scroll track, with the caption sticky inside, so
+           it appears, pins and leaves purely because of where it sits in the
+           document — no runtime system raises it, and none can lose it. Geometry
+           comes from CAPTION_BANDS (story.ts), the same ranges the canvas reads. */
+    }
+    <LensSceneContent scene="zoom" pos="left">
+      <span class="cap-ghost" aria-hidden="true">01</span>
+      <span class="cap-tag">ZOOM — BREADTH</span>
+      <h2 class="cap-title">18mm to 50mm, and everything between.</h2>
+      <p class="cap-body">
+        I range wide — infrastructure, the web, graphics — and rack in close
+        when a problem earns it.
+      </p>
+    </LensSceneContent>
+
+    <LensSceneContent
+      scene="focus"
+      pos="right"
+      progressFrom={0.25}
+      progressTo={0.75}
+    >
+      <span class="cap-ghost" aria-hidden="true">02</span>
+      <span class="cap-tag">FOCUS — PERSPECTIVE</span>
+      <h2 class="cap-title">Same scene, different planes.</h2>
+      <div class="cap-rack">
+        <p class="rack-near">
+          Near plane: the systems underneath — queues, storage, schedulers.
+        </p>
+        <p class="rack-far">
+          Far plane: the surfaces people touch — the web, rendered fast.
+        </p>
+      </div>
+    </LensSceneContent>
+
+    <LensSceneContent scene="aperture" pos="bottom">
+      <span class="cap-ghost" aria-hidden="true">03</span>
+      <span class="cap-tag">APERTURE — DEPTH</span>
+      <h2 class="cap-title">Seven blades, wide open to a star.</h2>
+      <p class="cap-body">
+        Stopping down f/2.8 → f/22: less light in, more of the frame held sharp.
+      </p>
+    </LensSceneContent>
+
+    <LensSceneContent scene="explode" pos="top">
+      <span class="cap-ghost" aria-hidden="true">04</span>
+      <span class="cap-tag">EXPLODE — TEARDOWN</span>
+      <h2 class="cap-title">Take it apart, piece by piece.</h2>
+      <p class="cap-body">
+        Housing, rings, contacts, motor — every part fans away from the axis.
+      </p>
+    </LensSceneContent>
+
+    <LensSceneContent scene="lightPath" pos="left">
+      <span class="cap-ghost" aria-hidden="true">05</span>
+      <span class="cap-tag">LIGHT PATH</span>
+      <h2 class="cap-title">Only the light path is left.</h2>
+      <p class="cap-body">
+        Thirteen elements on a single axis — the reason the whole thing works.
+      </p>
+    </LensSceneContent>
+
+    <LensSceneContent scene="rewrap" pos="right">
+      <span class="cap-ghost" aria-hidden="true">06</span>
+      <span class="cap-tag">REWRAP — ASSEMBLY</span>
+      <h2 class="cap-title">And it all wraps back on.</h2>
+      <p class="cap-body">
+        Layer by layer — each shell flies home flat and curls around the glass
+        until the lens is whole again.
+      </p>
+    </LensSceneContent>
+
+    <LensSceneContent scene="capsOn" pos="right">
+      <span class="cap-ghost" aria-hidden="true">07</span>
+      <span class="cap-tag">CAPS ON</span>
+      <h2 class="cap-title">That's the tour. The rest is the work.</h2>
+      <p class="cap-body">Caps on. Demos and writing below — keep scrolling.</p>
+    </LensSceneContent>
   </div>
 </section>
 
@@ -243,23 +262,147 @@ import { STORY, TRACK_HEIGHT_CSS } from "../lib/lens";
     z-index: 2;
   }
 
-  /* caption frame: a centred max-width column so edge captions align to the grid */
-  .cap-frame {
-    left: 50%;
-    right: auto;
+  /* caption bands: each captioned scene's slice of the scroll track. Absolute in
+     #lens-track, sized in PERCENT of the track from CAPTION_BANDS (story.ts) —
+     the same ranges the canvas reads at runtime, so the HTML and the choreography
+     cannot drift. The box is the centred max-width column the captions used to
+     sit in (the old .cap-frame), so the edge placements in LensSceneContent land
+     on the same grid; no padding, because those placements are margins off the
+     column edge exactly as they were offsets off the old frame's padding box.
+     :global — the scene bands are rendered by LensSceneContent, outside this
+     component's scope. */
+  :global(#lens-track .cap-band) {
+    position: absolute;
+    left: 0;
+    right: 0;
+    margin-inline: auto;
     width: 100%;
     max-width: var(--container-layout);
-    transform: translateX(-50%);
-    padding: 0 1.5rem;
     z-index: 3;
+    pointer-events: none;
   }
-  @media (min-width: 1024px) {
-    .cap-frame {
-      padding: 0 2rem;
+  /* The bands sit outside the stage now, so the stage's overflow-hidden no
+     longer trims what hangs off them. The case that still needs trimming is a
+     narrow DESKTOP window (761–780px, just above the mobile breakpoint): a
+     bottom-slot caption's scrim reaches 110px past each edge of a 560px block,
+     so it runs ~10px past the viewport and would widen the PAGE. `clip`, not
+     `hidden`: hidden would make the track a scroll container and kill every
+     sticky box inside it. */
+  #lens-track {
+    overflow-x: clip;
+  }
+
+  /* ---- caption fades: no story driver involved ----------------------------
+     Layout decides WHERE a caption is; this decides WHEN it is lit. Each band is
+     a view-timeline, and both windows are anchored to a band EDGE crossing the
+     matching viewport edge — which, with the scroll-space geometry above, are
+     exactly the band's own p range (story.ts): `cover 100dvh` is p = a and
+     `cover (100% − 100dvh)` is p = b. Since a/b are the scene's range padded by
+     CAPTION_PAD, a window one --cap-fade long (two pads) at each end lights the
+     caption over precisely its scene and cross-dissolves with its neighbour over
+     the shared pad — the schedule the old driver's band() ran, now in layout.
+     Neither window's timing depends on the band's HEIGHT, so scenes of different
+     durations still hand over identically.
+     That also gives spec §6 for free: the fade starts a full viewport after the
+     band's top edge appeared, by which time the caption has finished travelling
+     into its slot (see the slot law in LensSceneContent.astro), and ends a full
+     viewport before the bottom edge arrives, before the band drags it back out.
+     Two elements share the work because one element cannot host two FILLING
+     animations on the same property: the band fades OUT, the caption fades IN,
+     and what you see is the product. */
+  :global(#lens-track .cap-band) {
+    animation: lens-cap-out linear both;
+    animation-timeline: view(block);
+    animation-range: cover calc(100% - 100dvh - var(--cap-fade)) cover
+      calc(100% - 100dvh);
+    view-timeline-name: --cap-band;
+    view-timeline-axis: block;
+  }
+  :global(#lens-track [data-cap-fade]) {
+    animation: lens-cap-in linear both;
+    animation-timeline: --cap-band;
+    animation-range: cover 100dvh cover calc(100dvh + var(--cap-fade));
+  }
+  /* The two ENDS of the track are structural, not tuned: the first band starts
+     at p = 0, so there is no room to fade in and the intro is simply on at
+     scroll 0; the last band ends at p = 1, so there is no next caption to hand
+     over to and it must still read 1.0 at maximum scroll. (Two ids on the intro
+     rule so it outranks the [data-cap-fade] rule above.) */
+  #lens-track #hero-intro,
+  :global(#lens-track .cap-band[data-final]) {
+    animation: none;
+  }
+  @keyframes lens-cap-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  @keyframes lens-cap-out {
+    from {
+      opacity: 1;
+    }
+    to {
+      opacity: 0;
     }
   }
 
-  /* ---- hero intro ---- */
+  /* Fallback (Firefox et al): a standalone IntersectionObserver marks the ONE
+     BAND whose scene the reader is in (lib/cap-fades.ts) and the caption inside
+     it lights up — the band is the scene, whereas the sticky caption box outlives
+     it by a viewport. These rules are gated on .cap-io, which that module sets as
+     it applies its first batch of toggles — so if the module 404s or JS is off,
+     the captions stay plainly VISIBLE rather than stuck at opacity 0.
+     .cap-io-armed follows a frame later and is the ONLY thing that carries the
+     transition: the state applied on load has to be instant, or every caption on
+     screen at scroll 0 paints and then fades out under the reader. */
+  @supports not (animation-timeline: view()) {
+    :global(#lens-track .cap-band),
+    :global(#lens-track [data-cap-fade]) {
+      animation: none;
+    }
+    #lens-hero.cap-io :global([data-cap-fade]) {
+      opacity: 0;
+    }
+    #lens-hero.cap-io :global(.cap-band.is-in [data-cap-fade]) {
+      opacity: 1;
+    }
+    #lens-hero.cap-io.cap-io-armed :global([data-cap-fade]) {
+      transition: opacity 0.45s ease;
+    }
+  }
+
+  /* Reduced motion: the placement is untouched, the fades collapse to instant —
+     the caption switches on at the end of its fade-in window (i.e. once it is in
+     its slot) and off when its band leaves. */
+  @media (prefers-reduced-motion: reduce) {
+    :global(#lens-track .cap-band),
+    :global(#lens-track [data-cap-fade]) {
+      animation-timing-function: steps(1, jump-end);
+    }
+    /* two classes to outrank the armed-transition rule above, not for gating */
+    #lens-hero.cap-io.cap-io-armed :global([data-cap-fade]) {
+      transition: none;
+    }
+  }
+
+  /* ---- hero intro (band 0) ----
+     The intro is a full-bleed layer rather than a column block: a viewport-sized
+     sticky SLOT, exactly what the pinned stage used to give it, with
+     .hero-intro-inner keeping its placement unchanged.
+     STICKY LAW: a sticky box stays pinned for (band height − its own height). A
+     100dvh caption therefore needs a band one whole viewport TALLER than its
+     scene's scroll span, which is precisely the pin room the scroll-space band
+     geometry adds (story.ts). Sized as a percentage of the track instead, this
+     band cleared 100dvh by only ~87px and the title drifted up under the navbar
+     a fifth of the way into the hero scene. */
+  #hero-intro {
+    position: sticky;
+    top: 0;
+    height: 100dvh;
+  }
   .hero-intro-inner {
     position: absolute;
     top: 50%;
@@ -418,6 +561,19 @@ import { STORY, TRACK_HEIGHT_CSS } from "../lib/lens";
     letter-spacing: 0.1em;
     color: var(--ink-faint);
   }
+  /* The two LIVE readouts default to hidden and the driver reveals them:
+     hero-driver's frame() writes an inline opacity to both every frame, and
+     startHeroStory schedules frame() on its first rAF. Their markup text
+     ("SCN 00 / HERO", the unlit rail) is a placeholder the driver overwrites, so
+     without a driver (reduced motion, or a scene that failed to boot) there is
+     nothing true to show — the alternative is a frozen readout asserting scene
+     00 forever. #scroll-cue is deliberately NOT in this list: "SCROLL ↓" is
+     wayfinding that holds in every state, and the hero is a tall pinned track
+     either way. */
+  #hud,
+  #scene-rail {
+    opacity: 0;
+  }
   #scene-rail {
     display: flex;
     gap: 16px;
@@ -459,46 +615,6 @@ import { STORY, TRACK_HEIGHT_CSS } from "../lib/lens";
     }
   }
 
-  /* ---- reduced motion / fallback: un-pin, stack captions ---- */
-  #lens-hero[data-static] #lens-track {
-    height: auto;
-  }
-  #lens-hero[data-static] #lens-stage {
-    position: static;
-    height: auto;
-    display: block;
-    padding: 7rem 0 5rem;
-  }
-  #lens-hero[data-static] .cap-frame {
-    position: static;
-    transform: none;
-    margin: 0 auto;
-  }
-  #lens-hero[data-static] #hero-intro {
-    position: relative;
-    min-height: 60vh;
-  }
-  /* :global — the wrapper is rendered by LensSceneContent, outside this
-     component's scope */
-  #lens-hero[data-static] :global(.lens-cap) {
-    position: static;
-    transform: none !important;
-    opacity: 1 !important;
-    max-width: 640px;
-    margin: 4rem auto 0;
-    text-align: left;
-    align-items: flex-start;
-  }
-  #lens-hero[data-static] #hud,
-  #lens-hero[data-static] #scene-rail {
-    display: none;
-  }
-  #lens-hero[data-static] #hero-lens {
-    position: fixed;
-    inset: 0;
-    opacity: 0.16;
-  }
-
   /* drop the instrument chrome on phones — too cramped; the scroll cue is
      enough. MUST come after the base #hud/#scene-rail rules: same specificity,
      so only source order lets the hide win. */
@@ -518,7 +634,6 @@ import { STORY, TRACK_HEIGHT_CSS } from "../lib/lens";
     type HeroDriver,
   } from "../lib/lens";
 
-  const hero = document.getElementById("lens-hero")!;
   const canvas = document.getElementById(
     "hero-lens",
   ) as HTMLCanvasElement | null;
@@ -539,16 +654,20 @@ import { STORY, TRACK_HEIGHT_CSS } from "../lib/lens";
         recipes: ["assemble", "explode"],
       });
     } catch (err) {
-      console.warn("lens hero: init failed, using static fallback", err);
-      hero.dataset.static = "true";
+      // Captions are layout + CSS, so a dead scene costs nothing but the lens:
+      // tidy the stage (an empty canvas would sit over the bg) and leave. The
+      // driver-owned chrome — HUD, rail, scroll cue, pins — stays at its hidden
+      // CSS defaults.
+      console.warn("lens hero: scene init failed, hero runs without it", err);
+      canvas.style.display = "none";
       return;
     }
     scene.setShading("ink");
 
     // Follow the site theme (navbar toggle / OS change flips `.dark` on <html>):
     // re-palette the 3D scene and re-tint the stage bg (the scroll driver is
-    // assigned below once it exists — the reduced-motion static variant has no
-    // driver but still re-palettes). The fixed nav just uses its normal themed
+    // assigned below once it exists — the reduced-motion path has no driver but
+    // still re-palettes). The fixed nav just uses its normal themed
     // styling (translucent blurred bar) over the stage on both themes.
     let driver: HeroDriver | null = null;
     watchTheme((light) => {
@@ -564,7 +683,7 @@ import { STORY, TRACK_HEIGHT_CSS } from "../lib/lens";
     // isIntersecting never goes false at max scroll. Shrinking the root by 15%
     // counts a <15%-visible stage as gone — safe, because the stage only starts
     // exiting after the scroll track ends, i.e. the story is already complete.
-    // Wired BEFORE the reduced-motion return so the static variant stops
+    // Wired BEFORE the reduced-motion return so the parked scene stops
     // rendering below the fold too.
     const stage = document.getElementById("lens-stage")!;
     new IntersectionObserver(
@@ -573,17 +692,30 @@ import { STORY, TRACK_HEIGHT_CSS } from "../lib/lens";
     ).observe(stage);
 
     if (reduce) {
-      hero.dataset.static = "true";
+      // Park the scene at a fixed pose and never start the driver. The captions
+      // are unaffected — they band-scroll like everyone else's, with their fades
+      // collapsed to instant by the media query. Known accepted trade: the parked
+      // lens is ONE pose, so the per-scene cam.xs framing does not apply here and
+      // a caption may pass over it.
       scene.state.explodeTarget = 0.35;
       scene.state.zoomTarget = 0.3;
       scene.state.storyTarget = 0.82;
       return;
     }
 
-    // Everything scroll-driven lives in the driver module (envelopes, captions,
-    // HUD/rail, bg tint, pins) — see story/hero-driver.ts.
+    // Everything scroll-driven lives in the driver module (envelopes, HUD/rail,
+    // bg tint, pins) — see story/hero-driver.ts.
     driver = startHeroStory(scene);
   }
 
   boot();
+</script>
+
+<script>
+  // Caption fades. Its OWN script block, importing nothing from lib/lens, so a
+  // broken or missing 3D chunk cannot take the captions with it — and a no-op
+  // wherever the browser drives the fades in CSS. See lib/cap-fades.ts.
+  import { startCapFades } from "../lib/cap-fades";
+
+  startCapFades();
 </script>

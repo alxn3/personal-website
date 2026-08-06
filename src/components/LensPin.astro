@@ -6,14 +6,15 @@
  *
  *   <LensPin scene="focus" track="Focus_LeadScrew" label="STM LEAD SCREW" />
  *
- * `scene` ties the pin's fade band to a story scene (same mechanism as
- * LensSceneContent); `track` names a node in the model (object names are the
+ * `scene` ties the pin's fade to a story scene — the driver writes that scene's
+ * band into `--beat-visibility` on every `[data-beat]` element, and the opacity
+ * below reads it. `track` names a node in the model (object names are the
  * API — see core/parts.ts). The scroll driver positions every `[data-track]`
  * element from SceneHandle.onFrame's projector each frame. Place pins in a
- * full-stage overlay (NOT the .cap-frame column) so their coordinates line up
- * with the canvas. Anchor to solid parts (elements, rings, screws) — shader-
- * deformed shell wedges keep their object transform, so their anchor would sit
- * at the un-exploded position.
+ * full-stage overlay (NOT the centred caption-band column) so their coordinates
+ * line up with the canvas. Anchor to solid parts (elements, rings, screws) —
+ * shader-deformed shell wedges keep their object transform, so their anchor
+ * would sit at the un-exploded position.
  */
 interface Props {
   /** StoryScene id — when the pin is visible (fade band). */
@@ -31,7 +32,7 @@ const { scene, track, label, side = "right", class: className } = Astro.props;
 
 <div
   class:list={["lens-pin", className]}
-  data-scene-content={scene}
+  data-beat={scene}
   data-track={track}
   data-side={side}
 >
@@ -48,7 +49,9 @@ const { scene, track, label, side = "right", class: className } = Astro.props;
     left: 0;
     width: 0;
     height: 0;
-    opacity: 0; /* driven by the scroll band, like all scene content */
+    /* the scroll driver writes this scene's band into --beat-visibility every
+       frame; with no driver the pin simply stays hidden */
+    opacity: var(--beat-visibility, 0);
     pointer-events: none;
     will-change: opacity, transform;
   }

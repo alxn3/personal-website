@@ -336,6 +336,94 @@ export const rangeOf = (id: string): SceneRange => {
   return r;
 };
 
+// --- caption bands ----------------------------------------------------------
+// The HTML LAYOUT of the hero's captions, derived from the same ranges the
+// canvas reads at runtime. Each captioned scene gets a band element in the
+// scroll track (components/LensSceneContent.astro) positioned by `top`/`height`
+// below. The caption is sticky inside its band, so it appears, pins and leaves
+// because of WHERE IT SITS IN THE DOCUMENT: no runtime system raises it, and a
+// slow, broken or absent scene changes nothing. `a`/`b` are the same band in
+// normalized story p, for the driver's --beat-visibility (the pins' fade rides
+// it).
+//
+// The geometry is SCROLL space, not track space. Scroll progress is
+// p = scrollY / (track height − 100dvh): the stage is pinned for one viewport,
+// so the LAST viewport of track buys no progress. A band for [a, b] therefore
+// starts a·(100% − 100dvh) down the track and is (b − a)·(100% − 100dvh) tall
+// PLUS one viewport. That extra viewport is the sticky caption's PIN ROOM — a
+// sticky box can only stay stuck for (band height − its own height) — and it is
+// what puts the band's top edge at the viewport top exactly at p = a and its
+// bottom edge at the viewport bottom exactly at p = b, which is what the fade
+// windows in LensStory.astro key off. Sizing a band as a plain percentage of
+// the track instead places it p·100dvh too late (a whole viewport of drift
+// across the track) and leaves the 100dvh hero intro almost no pin room.
+
+/** Overlap pad on each side of a scene's range, in normalized story p — the
+ *  slight lead-in/lead-out that makes neighbouring captions cross-fade. */
+export const CAPTION_PAD = 0.02;
+
+/** The track's SCROLLABLE length, as CSS: everything but the viewport the stage
+ *  is pinned to. p = scrollY / this, so it is the unit the bands are laid out
+ *  in and the unit the fades are timed in. */
+export const TRACK_SCROLL_CSS = `calc(${TRACK_HEIGHT_CSS} - 100dvh)`;
+
+/** How long a caption crossfade runs, in scroll pixels: neighbouring bands
+ *  overlap by a pad on each side of the scene boundary they share, and that
+ *  overlap IS the handover. LensStory.astro publishes it as --cap-fade on
+ *  #lens-track and both fade windows are exactly this long. */
+export const CAPTION_FADE_CSS = `calc(${2 * CAPTION_PAD} * ${TRACK_SCROLL_CSS})`;
+
+export interface CaptionBand {
+  id: string;
+  /** band edges in normalized story p (the scene's range, padded) */
+  a: number;
+  b: number;
+  /** the band as a CSS box on the track — see the scroll-space note above */
+  top: string;
+  height: string;
+  /** this band ends AT the track end: nothing follows it to hand over to */
+  final: boolean;
+  /** `final` as an Astro attribute value. Astro STRINGIFIES a `false` on a
+   *  data-* attribute rather than dropping it, so `data-final={band.final}`
+   *  would mark every band final; the guard lives here so both call sites
+   *  (LensSceneContent, LensStory's hero band) cannot get it wrong separately. */
+  finalAttr: true | undefined;
+}
+
+/** `f` of the track's scrollable length, as a CSS length. 100% is the track's
+ *  own height (a band is absolutely positioned in it) and 100dvh the pinned
+ *  stage, so this is the same quantity TRACK_SCROLL_CSS spells out. */
+const scroll = (f: number) => `${f.toFixed(6)} * (100% - 100dvh)`;
+
+export const CAPTION_BANDS: CaptionBand[] = RANGES.map(({ scene, p0, p1 }) => {
+  const a = Math.max(0, p0 - CAPTION_PAD);
+  // the FINAL scene's band runs to the END of the track — there is no next
+  // caption to hand over to, and the page scrolls up over the parked lens
+  const final = p1 >= 0.999;
+  const b = final ? 1 : p1 + CAPTION_PAD;
+  return {
+    id: scene.id,
+    a,
+    b,
+    top: `calc(${scroll(a)})`,
+    height: `calc(${scroll(b - a)} + 100dvh)`,
+    final,
+    finalAttr: final || undefined,
+  };
+});
+
+/** The band a scene id owns. Throws — an overlay block naming a scene that
+ *  does not exist is a BUILD error (the Astro template calls this in its
+ *  frontmatter), not a caption that silently never shows. */
+export const bandOf = (id: string): CaptionBand => {
+  const b = CAPTION_BANDS.find((band) => band.id === id);
+  if (!b)
+    throw new Error(
+      `lens story: no scene named "${id}" — a caption band must name a scene in STORY`,
+    );
+  return b;
+};
+
 /** Absolute p at fraction `f` through a scene's range. */
 export const atFrac = (r: SceneRange, f: number): number => {
   if (!Number.isFinite(f) || f < 0 || f > 1)
