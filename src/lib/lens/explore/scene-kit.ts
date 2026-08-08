@@ -49,6 +49,9 @@ interface Pose {
   az?: number;
   el?: number;
   fov?: number;
+  /** slides the look-at point (and with it the whole rig) along world X — a
+   *  TRANSLATION the spherical rig has no other way to express. */
+  targetX?: number;
   targetY?: number;
   /** on-screen framing size — dist = frame/tan(fov/2), recomputed from the
    *  interpolated fov each frame (holds the subject size as fov drifts). */
@@ -103,6 +106,7 @@ export function posePath(
       elevation: lerp(a.pose.el ?? 0, b.pose.el ?? 0, e),
       distance: lerp(distOf(a.pose, fov), distOf(b.pose, fov), e),
       fov,
+      targetX: lerp(a.pose.targetX ?? 0, b.pose.targetX ?? 0, e),
       targetY: lerp(a.pose.targetY ?? 0, b.pose.targetY ?? 0, e),
     };
   };

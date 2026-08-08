@@ -29,6 +29,7 @@ import { createCinematics, type StoryVisibility } from "../story/cinematics";
 import {
   isAccessory,
   isGlassElement,
+  isOpticalGlass,
   isOpticsIsolate,
   isSilhouetteGreeble,
 } from "./parts";
@@ -173,14 +174,21 @@ export type SceneState = { [K in Channel]: number } & {
 export type AccessoryGroup = "hood" | "filter" | "caps";
 
 /** A spherical camera pose for the /lens demo compositions (SceneHandle.setCameraPose):
- *  the camera sits `distance` from (0, targetY ?? 0, 0) at `azimuth`/`elevation`
- *  (radians — azimuth measured from +z toward +x) and looks at that target,
- *  bypassing OrbitControls. `fov` defaults to the camera's boot fov. */
+ *  the camera sits `distance` from (targetX ?? 0, targetY ?? 0, 0) at
+ *  `azimuth`/`elevation` (radians — azimuth measured from +z toward +x) and
+ *  looks at that target, bypassing OrbitControls. `fov` defaults to the
+ *  camera's boot fov.
+ *
+ *  The TARGET is what travels. Holding az/el and sliding `targetX` flies the
+ *  camera in a straight line along world X with a FIXED heading (the
+ *  fly-through's dive) — the rig cannot otherwise translate, since position is
+ *  purely spherical about the target. */
 export interface CameraPose {
   azimuth: number;
   elevation: number;
   distance: number;
   fov?: number;
+  targetX?: number;
   targetY?: number;
 }
 
@@ -198,6 +206,74 @@ export interface PartOffset {
   rotation?: [number, number, number];
   scale?: number;
 }
+
+/** One optical element's axial span in the GLTF frame, in millimetres — the
+ *  front and rear surface vertices, i.e. exactly `front.yMm` / `rear.yMm` of an
+ *  optics/prescription.ts entry, keyed by the element's node name.
+ *
+ *  The CALLER derives this table and passes it to setGlassTransmissive, which
+ *  uses each span's LENGTH as that element's refraction thickness; this
+ *  module deliberately does NOT import optics/prescription.js, which would drag
+ *  the 13-entry table (and the optics tree it heads) into the shared homepage
+ *  chunk for the sake of one /lens demo. */
+export interface GlassSpanMm {
+  frontYmm: number;
+  rearYmm: number;
+}
+
+/** Roughness written onto the transmissive clones. three drives the refraction
+ *  blur from roughness (a mip level over the viewport copy), so a touch of it
+ *  softens the internals seen through the glass instead of resolving every
+ *  barrel screw razor-sharp through a perfect window. */
+const GLASS_TRANSMISSIVE_ROUGHNESS = 0.05;
+
+/** THE KNOB THAT MAKES THE FEATURE VISIBLE AT ALL. The shipped glass sits at
+ *  the default specularIntensity 1, and at roughness ~0 that turns each element
+ *  into a MIRROR of `scene.environment` (core/model.ts's RoomEnvironment): the
+ *  reflected room is so much brighter than the transmitted view that the glass
+ *  reads as chrome and nothing behind it can be seen. MEASURED on the bench —
+ *  with the specular at 1 the dome is invisibly indifferent to what is behind
+ *  it (blanking the sky with `__lensOptics.set({skyMix:0})` does not change one
+ *  pixel of it); dropped to this, the barrel rings, the iris and the far
+ *  elements come through. Low, not zero, so an element still catches a highlight
+ *  and reads as GLASS rather than as a hole — the iridescent multicoat (which
+ *  the clone inherits) carries the coloured coating sheen on top.
+ *
+ *  NOTE for anyone tempted by `envMapIntensity` instead: it is inert on a node
+ *  material lit by a SCENE environment in three r185 — verified live at 0 and
+ *  at 12, both indistinguishable from 1. */
+const GLASS_TRANSMISSIVE_SPECULAR = 0.15;
+
+/** THE DETINT — every slot that can put a COLOUR on the transmissive clones,
+ *  set to neutral. Optical glass is colourless; the shipped elements are not,
+ *  and the tint comes from core/model.ts's `buildLensMaterial`, which is what
+ *  these clones are cloned from ("realistic" restores exactly those materials):
+ *
+ *    • `color: 0xfafdfc`      — a cool near-white base, i.e. a faint cyan cast
+ *    • `specularColor: 0xb9e0c6` — the "faint green specular tint" its own
+ *      comment names; this is what greened the reflections
+ *    • `iridescence: 0.55` (iridescenceIOR 1.3, thickness 140–400nm) — the
+ *      thin-film multicoat, the strongest colour of the three: it paints the
+ *      Fresnel reflection green/amber/purple across the angle of incidence
+ *
+ *  `attenuationColor` / `attenuationDistance` are never authored, so they sit at
+ *  three's defaults (white, Infinity) — written anyway so the whole tint story
+ *  is in ONE table and a future GLB material with a volume tint cannot leak in.
+ *
+ *  WHAT IS NOT TOUCHED: reflectivity. The Fresnel is IOR-driven (1.52) and has
+ *  nothing to do with surface colour — zeroing it would make the elements read
+ *  as holes rather than as glass. `GLASS_TRANSMISSIVE_SPECULAR` above stays the
+ *  look knob for how strong those reflections are; this table only says they are
+ *  WHITE. */
+const GLASS_DETINT = {
+  color: 0xffffff,
+  specularColor: 0xffffff,
+  attenuationColor: 0xffffff,
+  attenuationDistance: Infinity,
+  /** 0 = colourless coating. The multicoat sheen is a look knob, not physics —
+   *  raise it to bring the coloured coating back. */
+  iridescence: 0,
+};
 
 export interface SceneHandle {
   state: SceneState;
@@ -251,6 +327,42 @@ export interface SceneHandle {
    *  Dynamically imported on the first tick like the path viz, so the homepage
    *  never fetches it. Resolves false if it couldn't start. */
   enableInspect: (on: boolean) => Promise<boolean>;
+  /** DEV (/lens Demos): mount the fly-through starfield warp on
+   *  `scene.backgroundNode` (optics/warp.ts — currently the ONLY user of that
+   *  slot). Dynamically imported on first enable like the path viz and the
+   *  inspector, so the homepage never fetches it. `false` unmounts and
+   *  restores the transparent clear; resolves false if it couldn't start.
+   *
+   *  `reverse` picks the DIRECTION OF TRAVEL the warp's trace is built for —
+   *  true for a rear→front dive (the fly-through), false for the light path.
+   *  It only takes effect when the warp is BUILT: the TSL graph unrolls one
+   *  surface table, so asking for the other order while a warp is mounted
+   *  disposes and rebuilds it (a fresh sky bake and a pipeline compile), which
+   *  is fine for a demo that chooses once at enter(). */
+  enableLensWarp: (on: boolean, reverse?: boolean) => Promise<boolean>;
+  /** DEV (/lens Demos): the fly-through's DEFAULT sky — the same authored
+   *  starfield drawn as real billboarded quads (optics/starfield.ts) instead of
+   *  traced per pixel out of a baked equirect. Mounting it costs two draw calls
+   *  and leaves `scene.backgroundNode` NULL, so none of enableLensWarp's 21
+   *  surface refractions per pixel run at all; that saving is the reason the
+   *  mode exists. The stars are drawn into the OPAQUE pass on purpose so three's
+   *  transmission copy picks them up and the glass refracts them — see the glass
+   *  contract in optics/starfield.ts before touching those materials.
+   *
+   *  While mounted this also owns `scene.background`, holding the sky palette's
+   *  flat backdrop behind the stars (near-black on the dark stage) and putting
+   *  back whatever was there on `false`. Dynamically imported on first enable,
+   *  like the warp; resolves false if it couldn't start. */
+  enableStarfield: (on: boolean) => Promise<boolean>;
+  /** DEV (/lens Demos): route the frame through the SCREEN-SPACE wormhole
+   *  (optics/wormhole-post.ts) instead of rendering it straight to the canvas.
+   *  While mounted, every rendered frame goes scene → render target → radial
+   *  pinch about the exit axis → canvas, so the barrel, the internals, the
+   *  glass and the sky all bend into the same funnel. `false` unmounts and
+   *  restores the direct `renderer.render` the whole site ships with; resolves
+   *  false if it couldn't start (the demo then runs undistorted, not broken).
+   *  Dynamically imported on first enable, like the warp. */
+  enableWormholePost: (on: boolean) => Promise<boolean>;
   /** DEV (/lens "Hero camera" toggle): drive the camera from the hero's
    *  scripted story path — `state.story` through the SAME sampleStory /
    *  applyStoryFraming code path the hero runs — instead of OrbitControls, so
@@ -268,6 +380,158 @@ export interface SceneHandle {
    *  shows through the (alpha) canvas; false restores the theme background. The
    *  drop survives a setTheme flip while on. */
   setTransparentBackground: (on: boolean) => void;
+  /** DEV (/lens Demos): show/hide the ambient cinematics dust. The fly-through
+   *  clears it so the starfield reads; everything else leaves it on. */
+  setDust: (visible: boolean) => void;
+  /** DEV (/lens Demos): hide the OPTICAL GLASS (parts.isOpticalGlass — the
+   *  `Element_*` stack) so the ray-traced background warp is what the viewer
+   *  sees through the barrel. The warp IS the glass: the traced (non-bypass)
+   *  ray cone coincides with the front element's silhouette, so the drawn glass
+   *  occludes exactly the pixels the trace bends. Barrel/blades/rings/mount keep
+   *  drawing — their occlusion is correct. A GATE, not a one-shot write: the
+   *  per-frame applyVisibility pass owns every `.visible` flag, so this composes
+   *  with the demo isolate and the story's passes and restores on false.
+   *  SCOPE FOOTNOTE: the predicate also names `Acc_Filter_Glass`, but accessory
+   *  subtrees early-return out of applyVisibility before this gate is reached,
+   *  so in practice only the `Element_*` stack hides — a mounted UV filter keeps
+   *  drawing. No demo mounts one, so nothing depends on it today. */
+  setGlassHidden: (hidden: boolean) => void;
+  /** DEV (/lens Demos): the fly-through's alternative to hiding the glass
+   *  outright — leave every element DRAWN and TRANSMISSIVE so three's
+   *  transmission path refracts the blades, the barrel internals and the warped
+   *  starfield through it.
+   *
+   *  `spans` is the per-element axial table the per-element THICKNESS is derived
+   *  from — see GlassSpanMm for why the caller owns it. Keyed by node name; ids
+   *  the model doesn't have are skipped. Only read on the enabling call (a
+   *  re-enable with a different table is a no-op). `false` restores the
+   *  materials captured at enable and resets the fade.
+   *
+   *  THE CAMERA FLIES THROUGH THIS GLASS, and getting it out of the way is the
+   *  two fades' job, not this one's — setGlassFade for the whole stack at once,
+   *  setGlassElementFade for the passage. */
+  setGlassTransmissive: (
+    on: boolean,
+    spans?: Record<string, GlassSpanMm>,
+  ) => void;
+  /** DEV (/lens Demos): the WORLD-X extent of each named node, from the meshes
+   *  it actually carries — `{ x0, x1 }` with x0 ≤ x1, and ids the model does not
+   *  have (or that carry no mesh) simply absent from the result.
+   *
+   *  THE FLY-THROUGH'S RULER. The dive needs to know where each element sits on
+   *  the axis it is flying down, and the prescription's millimetres are in the
+   *  GLTF frame: turning them into world X means knowing MODEL_SCALE *and* the
+   *  recentring offset, both of which are this module's private business. So the
+   *  measurement is taken here, where the matrices are, rather than reproduced
+   *  from a constant on the far side of the barrel.
+   *
+   *  REST POSE, and a snapshot: the bounds come off the CPU-side geometry, so
+   *  ops/host's vertex-shader deform is not in them, and nothing re-measures
+   *  when a channel moves. Call it once with every channel at rest (which is
+   *  what a demo's enter() is) and keep the numbers. */
+  worldAxialSpans: (
+    ids: string[],
+  ) => Record<string, { x0: number; x1: number }>;
+  /** DEV (/lens Demos): fade the transmissive clones out together — 1 = the
+   *  glass as setGlassTransmissive left it, 0 = gone. Drives `opacity` on every
+   *  clone (they are cloned from the shipped physical glass and are marked
+   *  `transparent` at enable, so alpha reaches the framebuffer), and at exactly
+   *  0 also drops the meshes out of the one-owner applyVisibility pass so no
+   *  highlight or transmission ghost survives.
+   *
+   *  A no-op unless setGlassTransmissive is on, and reset to 1 when it goes off.
+   *  Cheap to call every frame: an unchanged value returns immediately. */
+  setGlassFade: (opacity: number) => void;
+  /** DEV (/lens Demos): THE PASSAGE FADE — one opacity PER ELEMENT, keyed by
+   *  node name, MULTIPLIED by setGlassFade's stack-wide one. Ids the table omits
+   *  hold whatever they were last given (1 until told otherwise), so a caller
+   *  may drive the whole stack every frame or a single element once.
+   *
+   *  WHY IT EXISTS. three's transmission is a SCREEN-SPACE effect: the fragment
+   *  reads a copy of the framebuffer, offset by the refraction ray. From INSIDE
+   *  an element that offset is enormous and the separable dual blur behind it
+   *  smears the frame into an axis-aligned cross — the shot breaks down exactly
+   *  when the camera is in the glass. So the fly-through takes each element down
+   *  as it arrives: fully gone a short distance BEFORE the near plane reaches
+   *  its rearmost surface, over a ramp short enough that the element is already
+   *  filling the whole frame while it dissolves.
+   *
+   *  NOT the old per-element dissolve this file used to carry, which hid an
+   *  element outright for the frames the camera was inside it — thirteen
+   *  single-frame visibility jumps, and the reason it was pulled. This is an
+   *  OPACITY ramp, and it fires at passage rather than while the element is
+   *  still a distant object ahead.
+   *
+   *  A no-op unless setGlassTransmissive is on, and cleared when it goes off.
+   *  Cheap to call every frame: values equal to what is already there return
+   *  without a write, and the visibility pass only re-runs when an element
+   *  crosses 0. */
+  setGlassElementFade: (fades: Record<string, number>) => void;
+  /** DEV (/lens Demos): scale the GLINTS on the transmissive clones —
+   *  setRoomLight's opposite number for the glass. 1 = the reflections
+   *  setGlassTransmissive shipped (GLASS_TRANSMISSIVE_SPECULAR), 0 = no reflected
+   *  light on the elements at all, so nothing but what shines THROUGH them is
+   *  left. Multiplies `specularIntensity`, which is the only live knob for this:
+   *  it scales the dielectric Fresnel at BOTH ends (three r185
+   *  MeshPhysicalNodeMaterial.setupSpecular — specularColor is F0 × it and
+   *  specularF90 IS it at metalness 0), so the IBL reflection and the studio
+   *  lights' highlights go out together. `envMapIntensity` cannot do it: three
+   *  reads it only when the MATERIAL carries an envMap, and these are lit by the
+   *  SCENE environment (MaterialProperties.js:23).
+   *
+   *  WHY, SEPARATELY FROM setRoomLight: the room ramp leaves a floor so the
+   *  barrel interior keeps a rim, and at that floor the studio lights were still
+   *  painting white smudges across glass that is supposed to be inside a dark
+   *  tube under starlight. The dive drives this to 0 on the same window.
+   *
+   *  Survives a theme flip: the level is re-applied wherever a clone is made
+   *  (enableGlassTransmissive), exactly as GLASS_DETINT is. Reset to 1 when
+   *  setGlassTransmissive goes off. Cheap to call every frame: an unchanged
+   *  level returns immediately. */
+  setGlassGlint: (level: number) => void;
+  /** DEV (/lens Demos): fade the WHOLE BODY — everything applyVisibility governs
+   *  that is NOT optical glass: the mount, the barrel, the rings, the blades,
+   *  the greeble. 1 = the lens as shipped, 0 = gone. setGlassFade's opposite
+   *  number, and the two together dissolve the entire model.
+   *
+   *  NO CLONES. The glass fade has to clone because thickness is per-element;
+   *  a body fade is ONE opacity for every mesh, and core/model.ts's signature
+   *  cache already collapses ~180 body meshes onto ~10 shared material
+   *  instances (plus ops/host's per-source deform variants). So this writes
+   *  `transparent`/`opacity` straight onto those shared instances and remembers
+   *  what each wore, which is a dozen property writes instead of 180 clones and
+   *  180 pipeline compiles.
+   *
+   *  WHY NOT uIsolateHide (materials/shading.ts), which is already a whole-model
+   *  non-glass fade: it is folded into the TECHNICAL palettes' `opacityNode`
+   *  only (ink/blueprint/flat). The fly-through runs "realistic" (demos.ts
+   *  FLY.shading — the technical looks fold in a depth fade an interior camera
+   *  would dissolve), whose materials are the shipped MeshStandardMaterials with
+   *  no opacityNode at all. Reusing it would mean giving every mesh on the whole
+   *  site a transparent material and an opacity graph to serve one demo.
+   *
+   *  ONE HITCH, AT THE START: `transparent` flips on the first sub-1 call, which
+   *  re-sorts and re-compiles those ~10 pipelines (the same cost the glass swap
+   *  pays at enable, and for the same reason it is taken once). It is restored —
+   *  with the original opacity — the moment the fade returns to exactly 1.
+   *
+   *  At exactly 0 the meshes also leave applyVisibility, so nothing survives as
+   *  a depth write or a transmission ghost. Cheap to call every frame: an
+   *  unchanged value returns immediately. */
+  setBodyFade: (opacity: number) => void;
+  /** DEV (/lens Demos): scale the ROOM — the PMREM'd scene environment and the
+   *  three studio lights together. 1 = the lighting the site ships with, 0 =
+   *  nothing but what the scene emits for itself. The fly-through ramps it down
+   *  as the camera enters the barrel: a lens barrel is a dark tube, and from the
+   *  mount inward the starfield is supposed to be the only light in the frame.
+   *
+   *  The traced sky is NOT room light and does not dim with this — it reaches
+   *  the frame through `scene.backgroundNode`, which three multiplies by
+   *  `backgroundIntensity`, not by `environmentIntensity`.
+   *
+   *  NOT a recorded kit verb, so a demo restores it in exit() (as it does
+   *  setBodyFade). Cheap to call every frame: an unchanged level returns. */
+  setRoomLight: (level: number) => void;
   /** DEV (/lens Demos): snap the model GROUP to an absolute orientation
    *  (radians; omitted axes keep their boot values), keeping the recentred
    *  visual centre pinned at the origin. null restores the exact boot
@@ -410,6 +674,13 @@ export async function initScene(
     antialias: true,
     alpha: true,
     powerPreference: "high-performance",
+    // MOBILE-FALLBACK REPRO SWITCH (`?webgl`, the `?story` dev-param mould):
+    // phones without WebGPU silently take three's WebGL2 backend
+    // (WebGPURenderer.js:57 getFallback), which compiles the TSL graphs to GLSL
+    // instead of WGSL. This param forces that same backend on the desktop so
+    // the fallback is reproducible. Read `renderer.backend.isWebGLBackend` to
+    // see which one is live (WebGLBackend.js:57 / WebGPUBackend.js:88).
+    forceWebGL: new URLSearchParams(location.search).has("webgl"),
   });
   // Story mode is the always-rendering, full-viewport hero (highest-traffic
   // surface): cap its pixel ratio at 1.5 — on a 2× display that is ~44% fewer
@@ -422,6 +693,19 @@ export async function initScene(
   renderer.setClearColor(0x000000, 0);
   await renderer.init();
   performance.mark("lens:renderer-ready");
+
+  // DEV (`?diag`, same param mould as `?webgl` above): a fixed status card the
+  // owner can read off a PHONE — backend, warp status, trace channels, three
+  // revision. Only `warp` is live, written by enableLensWarp below; the overlay
+  // module is imported lazily so it drags optics/warp.ts into its own chunk
+  // rather than the eager bundle. After `renderer.init()`, which is when the
+  // backend choice (WebGPU vs the WebGL2 fallback) is final.
+  const diag: import("../dev/diag").LensDiag | null =
+    import.meta.env.DEV && new URLSearchParams(location.search).has("diag")
+      ? { warp: "unmounted", post: "unmounted" }
+      : null;
+  if (diag)
+    void import("../dev/diag").then((m) => m.mountLensDiag(renderer, diag));
 
   const scene = new THREE.Scene();
   // far=400: the ortho holds pull the camera back to ~150 units (ORTHO_FOV 3° with
@@ -437,7 +721,27 @@ export async function initScene(
   key.position.set(3, 5, 6);
   const rim = new THREE.DirectionalLight(0xbcd4ff, 1.3);
   rim.position.set(-4, -1, -3);
-  scene.add(key, rim, new THREE.HemisphereLight(0xf1f5f9, 0x8090a0, 0.9));
+  const hemi = new THREE.HemisphereLight(0xf1f5f9, 0x8090a0, 0.9);
+  scene.add(key, rim, hemi);
+
+  // ── Room light (setRoomLight) ──────────────────────────────────────────────
+  //
+  // THE ROOM IS FOUR NUMBERS: the PMREM'd IBL above and the three lights just
+  // added. A dive INTO the barrel has to put all four out together — a lens
+  // barrel is a dark tube, and dimming only the IBL leaves the key light still
+  // painting an interior wall that has no window. Boot values are captured here
+  // so the ramp is a pure scale off the shipped look and the restore is exact.
+  //
+  // NOT scene.backgroundIntensity, which is what multiplies the traced sky
+  // (three r185 Background.js:91) — the stars are meant to be the only thing
+  // left, so nothing here may touch them.
+  const roomLightBoot = {
+    env: scene.environmentIntensity,
+    key: key.intensity,
+    rim: rim.intensity,
+    hemi: hemi.intensity,
+  };
+  let roomLight = 1;
 
   // --- real lens model (Blender exterior + optics, GLB) --------------------
   const modelGroup = new THREE.Group();
@@ -479,6 +783,13 @@ export async function initScene(
     // contract is about the frames it stamps.
     void import("../dev/model-contract").then(({ reportModelContract }) =>
       reportModelContract({ scene: gltfScene, accessoriesReady }, frames),
+    );
+    // Prescription probe (dev/prescription-probe.ts): `window.__lensPrescriptionProbe()`
+    // measures the 13 optical elements and prints a paste-ready table for
+    // optics/prescription.ts. Dynamically imported like the contract tripwire,
+    // so nothing of it reaches a production bundle.
+    void import("../dev/prescription-probe").then(
+      ({ installPrescriptionProbe }) => installPrescriptionProbe(gltfScene),
     );
     (window as unknown as Record<string, unknown>).__lensOps = {
       frames,
@@ -597,19 +908,331 @@ export async function initScene(
     return isolateKeeps(o) ? (isolateSnapshot.get(o) ?? true) : false;
   }
 
-  // The story's visibility INTENT, as cinematics.update last reported it.
-  let storyVis: StoryVisibility = { isolate: false, occluders: false };
-  // The iris beat's occluders that are MESHES; the empties in that list gate
-  // their whole branch instead and are written at the end of applyVisibility.
-  const occluderMeshes = new Set<THREE.Object3D>(
-    cinematics.irisOccluders.filter((o) => o instanceof THREE.Mesh),
-  );
+  // The fly-through's glass gate (setGlassHidden): the traced background warp
+  // replaces the elements' optics, so the meshes that would occlude it stand
+  // down for the dive.
+  let glassHidden = false;
+
+  // ── Transmissive glass (setGlassTransmissive) ──────────────────────────────
+  //
+  // WHY A MATERIAL SWAP AND NOT A FLAG. core/model.ts already ships the glass
+  // with `transmission: 1, ior: 1.52`, but its `thickness` is 0 — and with zero
+  // thickness three offsets the refraction sample by nothing
+  // (getVolumeTransmissionRay, three/src/nodes/functions/PhysicalLightingModel.js:42
+  // — the ray is scaled by `thickness * modelScale`), so the elements read as
+  // flat tinted windows rather than as lenses. Thickness is per-element, and
+  // all thirteen elements SHARE ONE material instance (model.ts's signature
+  // cache builds one glass material for the whole stack), so it cannot be
+  // written onto the shipped material without giving every element the front
+  // element's span. Each element therefore gets its own CLONE.
+  //
+  // CLONE, never a fresh MeshPhysicalNodeMaterial: the elements are FRAMED
+  // meshes wearing ops/host's deform graph, and a fresh material would drop it
+  // — Element_12 would stop riding focus and every element would render at rest
+  // pose. NodeMaterial.copy carries every node slot across (three r185
+  // src/materials/nodes/NodeMaterial.js:1315-1360), so the clone still deforms.
+  //
+  // OWNERSHIP HAZARD. materials/shading.ts's setShading re-materials EVERY mesh
+  // from its own `original` map, captured at load — which never sees these
+  // clones. So a shading switch while this is on silently stomps them (harmless:
+  // that mode's look simply wins), and a naive restore would stomp the new mode
+  // right back. Hence the restore only touches meshes still wearing the clone it
+  // made. The demo's own ordering is safe by construction and must stay that
+  // way: d-flythrough's enter() calls setShading BEFORE enabling this, and
+  // lens.astro's selectDemo runs the demo's exit() — which disables this —
+  // BEFORE kit.restore() puts the bench look back.
+  //
+  // THE ONE PATH THAT IS NOT ORDERED: a SITE THEME FLIP mid-demo. shading's
+  // setTheme re-runs the active mode over every mesh (materials/shading.ts
+  // setTheme → set(currentMode)), which stomps the clones out from under a
+  // running fly-through — the melt then writes opacity onto materials nothing is
+  // wearing and the glass draws opaque for the rest of the dive. There is no
+  // ordering that fixes it, because the flip is the USER's, not a demo's. So
+  // setTheme RE-SEATS instead: the theme work is allowed to land, and the swap
+  // is re-made on top of it from the spans this remembers, carrying `glassFade`
+  // across (see reseatGlassTransmissive).
+  let glassTransmissive = false;
+  /** the spans setGlassTransmissive was last enabled with — kept so a theme
+   *  flip can re-make the swap without the caller being involved. */
+  let glassSpans: Record<string, GlassSpanMm> = {};
+  /** what each swapped mesh wore before, and the clones we own. */
+  const glassSavedMaterial = new Map<THREE.Mesh, THREE.Material>();
+  const glassClones = new Set<THREE.Material>();
+  /** the same clones and their meshes, GROUPED BY ELEMENT — what the passage
+   *  fade writes through. Rebuilt with the clones (so a theme re-seat re-groups
+   *  the fresh ones), and the fade LEVELS below survive it. */
+  const glassElementClones = new Map<string, THREE.Material[]>();
+  const glassElementMeshes = new Map<string, THREE.Mesh[]>();
+  /** setGlassFade: the stack-wide opacity. */
+  let glassFade = 1;
+  /** setGlassElementFade: the per-element multiplier, absent = 1. */
+  const glassElementFade = new Map<string, number>();
+  /** setGlassGlint: the multiplier on GLASS_TRANSMISSIVE_SPECULAR. Held here
+   *  rather than on the clones because the clones are thrown away and re-made on
+   *  every theme flip — enableGlassTransmissive reads this back. */
+  let glassGlint = 1;
+  /** every mesh whose EFFECTIVE opacity (the product of the two) has reached 0 —
+   *  the set applyVisibility reads. An element at alpha 0 still costs a
+   *  transmission-pass draw and still writes depth, and "fully gone" is a
+   *  promise the fly-through's timing depends on. */
+  const glassGone = new Set<THREE.Mesh>();
+
+  /** Push `glassFade × glassElementFade[id]` onto every clone, and keep
+   *  `glassGone` in step. Returns true if the gone-set MOVED, i.e. if the caller
+   *  owes an applyVisibility pass — the expensive half, so it is not run from in
+   *  here (this is called every frame of the dive). */
+  function writeGlassOpacity(): boolean {
+    let goneMoved = false;
+    for (const [id, clones] of glassElementClones) {
+      const o = glassFade * (glassElementFade.get(id) ?? 1);
+      for (const c of clones) c.opacity = o;
+      const gone = o <= 0;
+      for (const m of glassElementMeshes.get(id) ?? []) {
+        if (gone === glassGone.has(m)) continue;
+        goneMoved = true;
+        if (gone) glassGone.add(m);
+        else glassGone.delete(m);
+      }
+    }
+    return goneMoved;
+  }
+
+  function enableGlassTransmissive(spans: Record<string, GlassSpanMm>) {
+    glassSpans = spans;
+    for (const [id, span] of Object.entries(spans)) {
+      const root = node(id);
+      if (!root) continue;
+      const meshes: THREE.Mesh[] = [];
+      root.traverse((o) => {
+        // shading's inverted-hull pass parents under the mesh it outlines — not
+        // glass, and it rides its host (same rule as applyVisibility).
+        if (o instanceof THREE.Mesh && !(o.parent instanceof THREE.Mesh))
+          meshes.push(o);
+      });
+      if (!meshes.length) continue;
+      // Thickness is in the mesh's LOCAL space and three multiplies it by the
+      // model scale itself, so the prescription's millimetres go in raw: the
+      // gltf frame IS millimetres (MODEL_SCALE is what makes it world units).
+      const thickness = Math.abs(span.frontYmm - span.rearYmm);
+      const elementClones: THREE.Material[] = [];
+      const elementMeshes: THREE.Mesh[] = [];
+      for (const m of meshes) {
+        const src = m.material;
+        if (Array.isArray(src)) continue; // multi-material: leave it alone
+        const clone = src.clone() as THREE.MeshPhysicalNodeMaterial;
+        clone.transmission = 1;
+        clone.ior = 1.52;
+        clone.roughness = GLASS_TRANSMISSIVE_ROUGHNESS;
+        // …times the GLINT LEVEL, for the same reason the detint below is
+        // applied here: this is the one place a clone is made, so a theme flip's
+        // re-seat mid-dive comes back at the darkness the dive had reached
+        // instead of handing the studio lights back to the glass.
+        clone.specularIntensity = GLASS_TRANSMISSIVE_SPECULAR * glassGlint;
+        clone.thickness = thickness;
+        // COLOURLESS (see GLASS_DETINT). Applied HERE, in the one function that
+        // makes a clone, so the theme flip's re-seat (reseatGlassTransmissive)
+        // detints too — a flip mid-dive must not hand the tint back.
+        // Whole Color objects rather than `.setHex`: `attenuationColor` and
+        // `specularColor` exist only on a physical material, and a non-physical
+        // source (a shading mode that re-materialled the glass before the flip)
+        // would make a mutation throw where an assignment is inert.
+        clone.color = new THREE.Color(GLASS_DETINT.color);
+        clone.specularColor = new THREE.Color(GLASS_DETINT.specularColor);
+        clone.attenuationColor = new THREE.Color(GLASS_DETINT.attenuationColor);
+        clone.attenuationDistance = GLASS_DETINT.attenuationDistance;
+        clone.iridescence = GLASS_DETINT.iridescence;
+        // Marked transparent HERE, once, rather than when the fade first moves:
+        // `transparent` picks the render list a mesh lands in, and flipping it
+        // mid-demo would re-sort (and recompile) the whole glass stack in the
+        // middle of the dive. At opacity 1 it costs nothing — a transmissive
+        // material is already drawn in the transmission pass.
+        clone.transparent = true;
+        glassSavedMaterial.set(m, src);
+        glassClones.add(clone);
+        elementClones.push(clone);
+        elementMeshes.push(m);
+        m.material = clone;
+      }
+      if (elementClones.length) {
+        glassElementClones.set(id, elementClones);
+        glassElementMeshes.set(id, elementMeshes);
+      }
+    }
+    // The opacities LAST, in one pass, so a re-seat resumes at exactly the fade
+    // levels the demo had reached (both of them) rather than at 1.
+    writeGlassOpacity();
+  }
+
+  /** Hand every mesh STILL WEARING one of our clones back its saved material and
+   *  free the clones. Touches neither fade LEVEL — the re-seat below carries
+   *  both across, and only the real disable resets them. */
+  function releaseGlassClones() {
+    for (const [m, saved] of glassSavedMaterial)
+      if (glassClones.has(m.material as THREE.Material)) m.material = saved;
+    glassSavedMaterial.clear();
+    for (const c of glassClones) c.dispose();
+    glassClones.clear();
+    glassElementClones.clear();
+    glassElementMeshes.clear();
+    glassGone.clear();
+  }
+
+  function disableGlassTransmissive() {
+    releaseGlassClones();
+    glassSpans = {};
+    glassFade = 1;
+    glassElementFade.clear();
+    glassGlint = 1;
+  }
 
   /**
-   * THE ONE OWNER of the model's `.visible` flags. Three gates can hide a
-   * piece — the demo isolate (setIsolate), the story's light-path glass isolate
-   * and its iris-occluder reveal (story/cinematics REPORTS both as intent and
-   * writes no flag itself) — and they overlap on the rear meshes. Composed in
+   * Re-make the transmissive swap over whatever the meshes are wearing NOW —
+   * the theme flip's answer to the ownership hazard above.
+   *
+   * Order matters. `releaseGlassClones` restores only meshes still holding a
+   * clone, so after shading has already stomped them it restores nothing and the
+   * NEW theme's materials stay put; the re-clone then sources from those, which
+   * is the whole point (a clone of the old theme's material would carry the old
+   * palette straight back). `enableGlassTransmissive` ends by re-applying BOTH
+   * fade levels (the stack-wide one and the per-element passage) to the fresh
+   * clones, so a flip at any point of the dive resumes at the same opacities;
+   * the visibility pass then re-composes the gone-set the release emptied.
+   */
+  function reseatGlassTransmissive() {
+    releaseGlassClones();
+    enableGlassTransmissive(glassSpans);
+    applyVisibility();
+  }
+
+  // ── Body fade (setBodyFade) ────────────────────────────────────────────────
+  //
+  // The glass fade's opposite number, and a much cheaper mechanism — see the
+  // handle method for why this writes shared material PROPERTIES where the
+  // glass had to clone. What each touched material wore before, so the restore
+  // is exact and a mesh that never faded is never written at all.
+  let bodyFade = 1;
+  let bodyFadedOut = false;
+  const bodySaved = new Map<
+    THREE.Material,
+    { transparent: boolean; opacity: number }
+  >();
+
+  /** Every DISTINCT material currently worn by a non-glass piece of the model.
+   *  Walks the same shapes applyVisibility does, plus the child passes that ride
+   *  a host mesh (shading's inverted hulls and its LineSegments) — those are
+   *  separate materials, and a body that fades while its outline stays put would
+   *  read as a wireframe ghost rather than as a body going away. */
+  function bodyMaterials(): Set<THREE.Material> {
+    const out = new Set<THREE.Material>();
+    gltfScene.traverse((o) => {
+      const host = o instanceof THREE.Mesh ? o : o.parent;
+      if (!(host instanceof THREE.Mesh) || isOpticalGlass(host.name)) return;
+      const mat = (o as THREE.Mesh).material;
+      if (!mat) return;
+      for (const m of Array.isArray(mat) ? mat : [mat]) out.add(m);
+    });
+    return out;
+  }
+
+  function applyGlassFade(opacity: number) {
+    // Guarded like setGlassHidden: the fly-through calls this from apply(p)
+    // every frame, and the visibility pass below costs a full traversal on top
+    // of tick()'s.
+    const o = Math.min(1, Math.max(0, opacity));
+    if (!glassTransmissive || o === glassFade) return;
+    glassFade = o;
+    if (writeGlassOpacity()) applyVisibility();
+    dirty = true;
+  }
+
+  /** The passage fade. Same guard, applied per element: nothing is written and
+   *  no traversal is paid unless a level actually moved. */
+  function applyGlassElementFade(fades: Record<string, number>) {
+    if (!glassTransmissive) return;
+    let moved = false;
+    for (const [id, v] of Object.entries(fades)) {
+      const o = Math.min(1, Math.max(0, v));
+      if ((glassElementFade.get(id) ?? 1) === o) continue;
+      glassElementFade.set(id, o);
+      moved = true;
+    }
+    if (!moved) return;
+    if (writeGlassOpacity()) applyVisibility();
+    dirty = true;
+  }
+
+  /** setGlassGlint: the reflection ramp, a pure scale off the shipped specular.
+   *  The LEVEL is kept whether or not the swap is on (enableGlassTransmissive
+   *  applies it to every clone it makes, which is what carries it through a theme
+   *  re-seat); with no clones the write below is simply an empty loop. */
+  function applyGlassGlint(level: number) {
+    const k = Math.min(1, Math.max(0, level));
+    if (k === glassGlint) return;
+    glassGlint = k;
+    for (const c of glassClones)
+      (c as THREE.MeshPhysicalNodeMaterial).specularIntensity =
+        GLASS_TRANSMISSIVE_SPECULAR * k;
+    dirty = true;
+  }
+
+  function applyBodyFade(opacity: number) {
+    const o = Math.min(1, Math.max(0, opacity));
+    if (o === bodyFade) return;
+    bodyFade = o;
+    if (o >= 1) {
+      // Back to the shipped state, exactly: opacity AND the transparent flag, so
+      // the body returns to the opaque render list it normally lives in.
+      for (const [m, was] of bodySaved) {
+        m.transparent = was.transparent;
+        m.opacity = was.opacity;
+        m.needsUpdate = true;
+      }
+      bodySaved.clear();
+    } else {
+      // Captured LAZILY, on the first sub-1 call, and re-captured after every
+      // restore: a shading switch or a theme flip re-materials every mesh, so a
+      // set captured at boot would be writing opacity onto materials nothing
+      // wears (the ownership hazard the glass swap documents, in its cheaper
+      // form). Late capture always sees what is actually on the meshes NOW.
+      if (!bodySaved.size)
+        for (const m of bodyMaterials()) {
+          bodySaved.set(m, { transparent: m.transparent, opacity: m.opacity });
+          m.transparent = true;
+          m.needsUpdate = true;
+        }
+      for (const m of bodySaved.keys()) m.opacity = o;
+    }
+    const out = o <= 0;
+    if (out !== bodyFadedOut) {
+      bodyFadedOut = out;
+      applyVisibility();
+    }
+    dirty = true;
+  }
+
+  /** setRoomLight: every room-light contribution scaled off its boot value.
+   *  Cheap to call every frame — an unchanged level returns immediately. */
+  function applyRoomLight(level: number) {
+    const k = Math.min(1, Math.max(0, level));
+    if (k === roomLight) return;
+    roomLight = k;
+    scene.environmentIntensity = roomLightBoot.env * k;
+    key.intensity = roomLightBoot.key * k;
+    rim.intensity = roomLightBoot.rim * k;
+    hemi.intensity = roomLightBoot.hemi * k;
+    dirty = true;
+  }
+
+  // The story's visibility INTENT, as cinematics.update last reported it.
+  let storyVis: StoryVisibility = { isolate: false };
+
+  /**
+   * THE ONE OWNER of the model's `.visible` flags. Four gates can hide a
+   * piece — the demo isolate (setIsolate), the fly-through's glass gate
+   * (setGlassHidden), the tail of its glass fades (setGlassFade /
+   * setGlassElementFade, once a transmissive clone reaches opacity 0), and the
+   * story's light-path glass isolate (story/cinematics REPORTS it as intent and
+   * writes no flag itself). Composed in
    * ONE pass: a piece is visible iff EVERY active gate allows it, so no gate's
    * restore can stomp another that is still engaged.
    *
@@ -631,13 +1254,16 @@ export async function initScene(
       }
       o.visible =
         allowed &&
-        !(storyVis.isolate && !isGlassElement(o.name)) &&
-        !(storyVis.occluders && occluderMeshes.has(o));
+        // the full hide wins over the fade-out if both are somehow on
+        !(glassHidden && isOpticalGlass(o.name)) &&
+        // the two glass fades' tail, scoped by the set writeGlassOpacity keeps:
+        // exactly the meshes this scene swapped a clone onto whose effective
+        // opacity has reached 0 (stack-wide fade × passage fade)
+        !glassGone.has(o) &&
+        // the body fade's tail: everything that is NOT glass, once it hits 0
+        !(bodyFadedOut && !isOpticalGlass(o.name)) &&
+        !(storyVis.isolate && !isGlassElement(o.name));
     });
-    // The occluder list also carries GROUP empties (Optics_G4/G5), whose glass
-    // children must survive the isolate — so an empty un-hides fully.
-    for (const o of cinematics.irisOccluders)
-      if (!occluderMeshes.has(o)) o.visible = !storyVis.occluders;
   }
 
   // Fold the accessories into the live scene once they finish loading: resolve
@@ -779,15 +1405,16 @@ export async function initScene(
   };
   const camPoseTarget = new THREE.Vector3();
   function applyCameraPose(pose: CameraPose) {
+    const tx = pose.targetX ?? 0;
     const ty = pose.targetY ?? 0;
     const { azimuth: az, elevation: el, distance: d } = pose;
     camera.position.set(
-      d * Math.cos(el) * Math.sin(az),
+      tx + d * Math.cos(el) * Math.sin(az),
       ty + d * Math.sin(el),
       d * Math.cos(el) * Math.cos(az),
     );
     camera.up.set(0, 1, 0);
-    camera.lookAt(camPoseTarget.set(0, ty, 0));
+    camera.lookAt(camPoseTarget.set(tx, ty, 0));
     camera.fov = pose.fov ?? bootFov;
     camera.clearViewOffset();
     camera.updateProjectionMatrix();
@@ -1034,12 +1661,29 @@ export async function initScene(
       uFadeFar1.value = camDist + modelRadius * 2.6;
     }
 
-    const { apertureT, explodeT } = driveChannels();
+    // Fly-through warp: the background trace reads the SAME channel values
+    // the mechanism just used and the model's live world matrix, so the glass
+    // it refracts through and the glass on screen can never disagree.
+    lensWarp?.sync(
+      clamp01(state.focus),
+      clamp01(state.aperture),
+      camera,
+      gltfScene,
+    );
+    // The drawn sky rides ON the camera: parking the sphere on this frame's eye
+    // position is what makes 200-unit-away geometry behave like the traced
+    // background's infinitely distant sky (no parallax as the dive travels).
+    starfield?.sync(camera);
+    // The screen-space wormhole reads the SAME frame the warp just synced — the
+    // throat is the exit axis projected through this tick's camera pose, so the
+    // funnel's centre and the sky it swallows can never be a frame apart.
+    if (postMounted) wormholePost?.sync(camera);
+
+    const { explodeT } = driveChannels();
     // Per-part offsets compose ON TOP of what the mechanism just wrote (and are
     // reverted after the frame's callbacks — see the block above tick()).
     applyPartOffsets();
     storyVis = cinematics.update(
-      apertureT,
       explodeT,
       clamp01(state.story),
       performance.now(),
@@ -1048,8 +1692,16 @@ export async function initScene(
     // the demo isolate and the accessory choice (see applyVisibility).
     applyVisibility();
 
-    renderer.render(scene, camera);
-    // screen-space overlay pass (demos) — composites over the finished frame
+    // TWO RENDER PATHS, and the second one exists only while the fly-through is
+    // running: mounted, the frame goes through optics/wormhole-post.ts's
+    // RenderPipeline (scene → target → pinch → canvas); unmounted, this is the
+    // direct call the whole site has always made, untouched.
+    if (postMounted && wormholePost) wormholePost.render();
+    else renderer.render(scene, camera);
+    // screen-space overlay pass (demos) — composites over the finished frame.
+    // Works on BOTH paths: it keeps the colour buffer (explore/overlay.ts sets
+    // autoClear false) and the canvas is the current target either way. No demo
+    // currently asks for both at once — the fly-through sets no overlay pass.
     overlayPass?.(renderer, camera);
     // after the render, so tracked annotations see this frame's final transforms
     for (const cb of frameCbs) cb(project);
@@ -1064,6 +1716,33 @@ export async function initScene(
   let paused = false;
   let pathViz: PathViz | null = null;
   let inspector: Inspector | null = null;
+  // DEV (/lens Demos): the fly-through starfield warp (optics/warp.ts). While
+  // mounted it owns `scene.backgroundNode` and is fed this frame's channel and
+  // frame values from tick(). Dynamically imported, like the path viz and the
+  // inspector, so nothing of it reaches the homepage bundle.
+  let lensWarp: import("../optics/warp").LensWarp | null = null;
+  // The page's live warp choice, tracked like accessoryOn: the lazy import is
+  // awaited, so an on→off during that fetch must resolve OFF (see
+  // enableLensWarp) instead of mounting an opaque sky with no demo running.
+  let warpWanted = false;
+  // Which direction of travel the BUILT warp traces (see enableLensWarp).
+  let warpReverse = false;
+  // DEV (/lens Demos): the fly-through's DRAWN starfield (optics/starfield.ts)
+  // — the default sky, and the reason the traced warp above is now the fallback.
+  // Same lazy-import + latest-state shape as the warp; while mounted it is
+  // re-centred on the camera from tick() and owns scene.background.
+  let starfield: import("../optics/starfield").Starfield | null = null;
+  let starsWanted = false;
+  let starsBgSaved: THREE.Scene["background"] = null;
+  // DEV (/lens Demos): the fly-through's SCREEN-SPACE wormhole
+  // (optics/wormhole-post.ts). Same lazy-import shape as the warp above, and
+  // the same latest-state rule — `postMounted` is what tick() renders through,
+  // and it is only ever set from `postWanted` AFTER the await, so an exit
+  // during the import cannot strand the pipeline on the shipped path.
+  let wormholePost: import("../optics/wormhole-post").WormholePost | null =
+    null;
+  let postWanted = false;
+  let postMounted = false;
 
   // Dev-only perf probe: renderer.info (draw calls/triangles) + live scene
   // internals for measurement scripts. Never present in prod builds.
@@ -1077,6 +1756,16 @@ export async function initScene(
       invalidate: () => {
         dirty = true;
       },
+      // The two model dissolves, reachable from the console for look passes —
+      // the handle itself is held by lens.astro and the demo kit, not by
+      // window, and an opening treatment is judged by driving BOTH against a
+      // parked scrub beat.
+      setBodyFade: applyBodyFade,
+      setGlassFade: applyGlassFade,
+      // the dive's two darkness ramps, for the same parked-beat look passes —
+      // the room, and the glass's own reflections
+      setRoomLight: applyRoomLight,
+      setGlassGlint: applyGlassGlint,
     };
   }
 
@@ -1176,6 +1865,57 @@ export async function initScene(
         scene.background = savedBg;
       }
       dirty = true;
+    },
+    setDust(visible) {
+      cinematics.setDust(visible);
+      dirty = true;
+    },
+    setGlassHidden(hidden) {
+      // Guarded like setTransparentBackground: the fly-through drives this from
+      // apply(p) EVERY frame, and an unguarded write would run a second full
+      // applyVisibility traversal per rendered frame on top of tick()'s.
+      if (hidden === glassHidden) return;
+      glassHidden = hidden;
+      applyVisibility();
+      dirty = true;
+    },
+    setGlassTransmissive(on, spans) {
+      if (on === glassTransmissive) return;
+      glassTransmissive = on;
+      if (on) enableGlassTransmissive(spans ?? {});
+      else disableGlassTransmissive();
+      applyVisibility();
+      dirty = true;
+    },
+    setGlassFade(opacity) {
+      applyGlassFade(opacity);
+    },
+    setGlassElementFade(fades) {
+      applyGlassElementFade(fades);
+    },
+    setGlassGlint(level) {
+      applyGlassGlint(level);
+    },
+    worldAxialSpans(ids) {
+      const out: Record<string, { x0: number; x1: number }> = {};
+      for (const id of ids) {
+        const root = node(id);
+        if (!root) continue;
+        // Ancestors AND descendants: the model group's own matrix carries the
+        // recentre and MODEL_SCALE, and nothing guarantees this is called after
+        // a render.
+        root.updateWorldMatrix(true, true);
+        const box = new THREE.Box3().setFromObject(root);
+        if (box.isEmpty()) continue;
+        out[id] = { x0: box.min.x, x1: box.max.x };
+      }
+      return out;
+    },
+    setBodyFade(opacity) {
+      applyBodyFade(opacity);
+    },
+    setRoomLight(level) {
+      applyRoomLight(level);
     },
     setModelOrientation(euler) {
       if (euler) {
@@ -1314,6 +2054,122 @@ export async function initScene(
       inspector.setEnabled(on);
       return true;
     },
+    async enableLensWarp(on, reverse = false) {
+      warpWanted = on;
+      // The mounted warp is built for ONE direction of travel (optics/warp.ts:
+      // the trace's surface table is unrolled into the shader graph). Turning
+      // the warp on in the other direction therefore has to REPLACE it, not
+      // re-configure it — the same dispose-and-rebuild shape setTheme would
+      // need if the sky bake were not swappable behind the texture node.
+      if (lensWarp && on && reverse !== warpReverse) {
+        scene.backgroundNode = null;
+        lensWarp.dispose();
+        lensWarp = null;
+      }
+      if (!lensWarp) {
+        if (!on) return true; // never started, nothing to turn off
+        try {
+          const { createLensWarp } = await import("../optics/warp");
+          if (destroyed) return false; // torn down mid-import
+          lensWarp = createLensWarp(
+            renderer,
+            !document.documentElement.classList.contains("dark"),
+            () => {
+              dirty = true;
+            },
+            { reverse },
+          );
+          warpReverse = reverse;
+        } catch (err) {
+          // The message goes in the TEXT, not only in the second argument: a
+          // phone's remote console (and the `?diag` card) shows the string.
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn(
+            `lens optics: the starfield warp failed to start — ${msg}`,
+            err,
+          );
+          if (diag) diag.warp = `FAILED: ${msg}`;
+          return false;
+        }
+      }
+      // Mounting the node is the on/off switch: an assigned backgroundNode is
+      // an opaque sphere, so `null` is what keeps the transparent clear the
+      // whole site ships with. Mount per the LATEST desired state, not the
+      // captured `on`: an exit during the import above would otherwise take the
+      // early-return, unmount nothing, and let this continuation strand an
+      // opaque sky over the stage. (Equal to `on` when nothing awaited.)
+      scene.backgroundNode = warpWanted
+        ? (lensWarp.node as THREE.Scene["backgroundNode"])
+        : null;
+      if (diag) diag.warp = warpWanted ? "mounted" : "unmounted";
+      dirty = true;
+      return true;
+    },
+    async enableStarfield(on) {
+      starsWanted = on;
+      if (!starfield) {
+        if (!on) return true; // never started, nothing to turn off
+        try {
+          const { createStarfield } = await import("../optics/starfield");
+          if (destroyed) return false; // torn down mid-import
+          starfield = createStarfield(
+            !document.documentElement.classList.contains("dark"),
+            () => {
+              dirty = true;
+            },
+          );
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn(
+            `lens optics: the drawn starfield failed to start — ${msg}`,
+            err,
+          );
+          return false;
+        }
+      }
+      // The LATEST desired state, not the captured `on` — see enableLensWarp.
+      // The BACKDROP travels with the mount: the stars are drawn ONTO a flat
+      // ground rather than onto whatever the page was showing, and `backdrop`
+      // is one live Color the starfield re-tints on a theme flip, so assigning
+      // it once is enough.
+      if (starsWanted && !starfield.object.parent) {
+        starsBgSaved = scene.background ?? null;
+        scene.background = starfield.backdrop;
+        scene.add(starfield.object);
+      } else if (!starsWanted && starfield.object.parent) {
+        scene.remove(starfield.object);
+        scene.background = starsBgSaved;
+      }
+      dirty = true;
+      return true;
+    },
+    async enableWormholePost(on) {
+      postWanted = on;
+      if (!wormholePost) {
+        if (!on) return true; // never started, nothing to turn off
+        try {
+          const { createWormholePost } =
+            await import("../optics/wormhole-post");
+          if (destroyed) return false; // torn down mid-import
+          wormholePost = createWormholePost(renderer, scene, camera, () => {
+            dirty = true;
+          });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn(
+            `lens optics: the wormhole post pass failed to start — ${msg}`,
+            err,
+          );
+          if (diag) diag.post = `FAILED: ${msg}`;
+          return false;
+        }
+      }
+      // The LATEST desired state, not the captured `on` — see enableLensWarp.
+      postMounted = postWanted;
+      if (diag) diag.post = postMounted ? "mounted" : "unmounted";
+      dirty = true;
+      return true;
+    },
     setShading(mode) {
       applyShading(mode);
     },
@@ -1322,6 +2178,14 @@ export async function initScene(
     setTheme(l) {
       shading.setTheme(l);
       cinematics.setTheme(l);
+      lensWarp?.setTheme(l); // the sky re-bakes in the other ink palette
+      starfield?.setTheme(l); // …and the drawn one just re-tints (no re-bake)
+      // AFTER shading, never instead of it: shading.setTheme re-materials every
+      // mesh and stomps the transmissive clones (the ownership hazard at
+      // enableGlassTransmissive). Let the theme work land, then re-seat the swap
+      // on top of it — the fade value rides along, so a flip mid-melt is
+      // invisible instead of freezing the glass opaque for the rest of the dive.
+      if (glassTransmissive) reseatGlassTransmissive();
       // a theme flip must not reintroduce a background while a demo backdrop is
       // showing through the canvas (setTransparentBackground)
       if (transparentBg) scene.background = null;
@@ -1330,14 +2194,23 @@ export async function initScene(
     destroy() {
       destroyed = true;
       overlayPass = null;
+      postMounted = false;
       if (activeSwap) {
         cancelAnimationFrame(activeSwap.raf);
         activeSwap.run.finish(); // restore whatever the transition was driving
         activeSwap = null;
       }
       renderer.setAnimationLoop(null);
+      // put the shipped glass materials back before the model teardown walks
+      // them, so the clones this owns are the only thing it frees here, and
+      // hand the body materials back their opacity/transparent flags
+      disableGlassTransmissive();
+      applyBodyFade(1);
       pathViz?.dispose();
       inspector?.dispose();
+      lensWarp?.dispose();
+      starfield?.dispose();
+      wormholePost?.dispose();
       ro.disconnect();
       controls?.dispose();
       cinematics.dispose();

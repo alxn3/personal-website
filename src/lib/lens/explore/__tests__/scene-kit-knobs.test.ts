@@ -32,7 +32,18 @@ const fakeApi = (over: Partial<DemoApi> = {}): DemoApi =>
     scene: new Proxy(
       {},
       {
-        get: (_t, k) => (k === "getShading" ? () => "realistic" : () => {}),
+        get: (_t, k) => {
+          if (k === "getShading") return () => "realistic";
+          // The lazy-loading scene verbs (`enable*`) hand back a promise a demo
+          // may chain onto — the fly-through warns off `enableLensWarp`'s false.
+          // A stub returning undefined would throw before the demo body ran.
+          if (typeof k === "string" && k.startsWith("enable"))
+            return () => Promise.resolve(true);
+          // …and the READS a demo measures the model with: the fly-through asks
+          // for the elements' world extents in enter() and iterates the answer.
+          if (k === "worldAxialSpans") return () => ({});
+          return () => {};
+        },
       },
     ),
     setPageWipe() {},

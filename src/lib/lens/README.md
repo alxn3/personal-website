@@ -65,6 +65,11 @@ bit-exact, which is how every regression here has announced itself:
 | Realistic-mode materials (rubber, chrome, brass, glass coating)            | `core/model.ts` — `lensMaterialFor`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | Which meshes count as glass / decal / accessory / wedge                    | `core/parts.ts` — the ONE home for name classification (the sets differ on purpose; read the doc comments)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | Depth-fade dissolve planes                                                 | `materials/depthfade.ts` (graph) + `core/scene.ts` (per-frame placement)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| Fly-through pacing, camera, passage fades, darkness, sky arrival           | `explore/demos.ts` — the `FLY` knob table + `flyPose` + `travelRemap`; see "The fly-through scene" below                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| Star catalog (authored constellations, background density, palettes)       | `optics/sky.ts` — 82 authored rows (never perturb; constellations index into them) + `BACKGROUND_LOOK` seeded field (deterministic LCG; count/seed/mag knobs)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Star look (disc size, streaks, Einstein-ring arcs)                         | `optics/starfield.ts` — `STARFIELD_LOOK` + uniforms; live via `window.__lensStars`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| Wormhole distortion, ring fold/smear, chromatic aberration, edge safety    | `optics/wormhole-post.ts` — `RING_LOOK` / `CA_LOOK` / `EDGE_FADE`; live via `window.__lensWormhole`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| Glass during the dive (transmissive clones, detint, per-element fades)     | `core/scene.ts` — `enableGlassTransmissive` (+ `GLASS_DETINT`), `setGlassElementFade`, `setRoomLight`; the demo drives them from `FLY` spans                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | Model/preload URLs                                                         | `core/model.ts` + `../../components/LensPreloads.astro`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | Theme behavior                                                             | `core/theme.ts` (watcher); palettes live per-consumer: `materials/shading.ts` (ink/blueprint), `story/cinematics.ts` (dust/rays), the pages' CSS vars                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 
@@ -129,6 +134,128 @@ buttons, "follow scroll" to release. Iterate: jump to the scene → nudge the
 (headless browser recipe): see `verify-SKILL.md` in the WORKSPACE directory one
 level above this git root (`../verify-SKILL.md` from the repo root — it sits
 next to `lens_work/`, not in the site repo).
+
+## The fly-through scene (Demos → "Fly-through")
+
+The dive: camera enters the lens at the bayonet mount, flies rear→front down
+the optical axis (world +X, one heading, zero rotation), passes every element,
+and exits into open starfield with "The Keyhole" constellation on axis. It is
+the prototype for the story's lens→sky transition; the story's next scene has
+NO lens, so the demo ends on pure sky. Doctrine (owner): **performance over
+precision** — the site must run on all devices; effects are geometry and
+screen-space passes, never per-pixel physics.
+
+### The frame pipeline
+
+Each tick, in order:
+
+1. **Pose** — `flyPose` (`explore/demos.ts`): a `posePath` over `targetX`
+   (travel-by-moving-target; camera X ≈ targetX − distIn). `travelRemap(p,
+FLY.pInside, FLY.insideRate)` compresses the in-glass stretch about its own
+   midpoint (insideRate 1 = the old linear dive, bit-recoverable). Elevation and
+   fov are FLAT through the flight; fov is held from `pClear` to 1 — a late fov
+   ramp reads as zooming into the stars (owner-rejected, twice: it was the
+   "still zooming after we're through" bug).
+2. **Scene channels** (all kit-recorded, auto-restored on exit):
+   `setRoomLight` ramps IBL + studio lights to `FLY.darkFloor` over `pDark`
+   (dark tube; stars carry the light — the sky/backdrop is deliberately NOT
+   dimmed); `setGlassElementFade` runs the passage fades (below);
+   `uStarMix` fades the stars in over `pSkyIn` (nothing before the dive).
+3. **Starfield** — `optics/starfield.ts`: ~300 stars from `optics/sky.ts`'s
+   catalog as ONE merged quad-soup draw (+1 for constellation strokes), sphere
+   re-centred on the camera every frame (camera translation cannot magnify
+   stars — only fov can). Discs are analytic circles in the fragment shader:
+   round at any size, radius = `starRhoRad · magnitude-scale · uStarSize`.
+   Streaks = per-quad elongation toward the throat (`uStarStreak`); ring-band
+   stars (angular band about the exit axis, baked per-star into an `aRing`
+   attribute) swing tangential instead (`uStarRing`) — the Einstein ring's
+   speckle half.
+4. **Glass** — 13 transmissive clones (`enableGlassTransmissive`), fully
+   colorless via `GLASS_DETINT` (the tint was iridescence + green specular in
+   the shipped material; Fresnel reflections survive, they're ior-driven).
+   Refraction of the stars comes from three's transmission (framebuffer-copy
+   sampling), NOT from any traced physics.
+5. **Wormhole post** — `optics/wormhole-post.ts`, mounted only during this
+   demo, warm-rendered at construction (the pipeline compiles before p moves —
+   otherwise the filter pops on a beat late). Screen-space radial pinch about
+   the throat (= the vanishing point of +X, computed per frame), plus the ring
+   fold + tangential smear, plus chromatic aberration (R/G/B sampled at
+   k·(1∓caShift)). 10 texture reads total.
+
+### Laws (each one was paid for)
+
+- **Transmission sees only the opaque pass.** three r185 copies the framebuffer
+  when the first transmissive object draws; anything in the transparent list
+  renders after and is INVISIBLE through glass. The starfield therefore rides
+  the opaque list with `transparent: false` + `CustomBlending` (blending is
+  applied regardless of the transparent flag; `isOpaque()` only forces
+  alpha = 1 under NormalBlending) + `depthWrite false` +
+  `blendSrcAlpha One` (a soft rim through the default alpha blend punches a
+  hole in the canvas). A suite test transcribes three's own predicate — if an
+  edit would drop the stars out of the transmission copy, the test fails.
+- **The camera must never be inside visible glass.** Screen-space transmission
+  from inside an element explodes the refraction offset ("everything goes
+  small") and its separable dual-blur smears an axis-aligned cross. Hence the
+  per-element passage fades: each element fades out finishing `passageLead`
+  world units BEFORE the near plane reaches its rearmost point (extents
+  measured from mesh bounding boxes at enter(), `worldAxialSpans`;
+  `passageLead` must exceed the 0.1 near plane — tripwired in tests).
+- **`uWormhole = 0` is a bit-exact passthrough.** Every distortion term is
+  offset-form (`uv + d·k` with k exactly 0 at rest) and every ring/CA term
+  rides k or `mix(base, extra, mask·uWormhole)` — never "×1.0" round trips.
+  Goldens must never be taken through the post pass (HalfFloat RT).
+- **Edge safety = circular shape × rectangular window.** The pinch profile is
+  the aspect-corrected circle (corner-pinned); a separate border window (ρ =
+  fraction of the way to the frame border along the pixel's own ray, `EDGE_FADE`)
+  fades ALL displacement to zero on the border. History: circle-only smeared
+  clamped bands on the short-dimension edges at wide aspects; rectangle-only
+  made the funnel bulge into a four-leaf clover. Ring taps additionally clamp
+  via `keepInFrame` (they leave the pixel's ray, so the window alone can't
+  vouch for them).
+- **WebKit-on-Metal caps shader private memory at 8KB** (macOS + iOS Safari).
+  Big TSL graphs must LOOP or stay small; the old unrolled trace died at
+  9,548 bytes. The current shaders are tiny; keep tap counts bounded.
+- **`THREE.Points` are 1px on WebGPU** (PointsNodeMaterial.size is ignored) —
+  "point sprites" here means quads, always.
+- **Theme flips re-seat materials from the load-time original map.** Anything
+  stateful on the transmissive clones (detint, fade levels, glint scaling) must
+  be applied wherever clones are (re)created, or a mid-dive theme flip restores
+  the stock look. `GLASS_DETINT` is the pattern to copy.
+- **Deterministic sky.** The background field is a seeded LCG
+  (`BACKGROUND_LOOK.seed`); no `Math.random` in render paths. The 82 authored
+  stars are byte-stable and FIRST in the array — constellations index into that
+  prefix (`AUTHORED_COUNT` tripwired).
+
+### Dev surface
+
+- `?tracesky` — the legacy per-pixel refraction trace (`optics/warp.ts` +
+  `optics/sky.ts` equirect bake, loop-built for the 8KB law). Kept as an A/B
+  reference; the bake only runs on this branch. `?webgl` forces the WebGL
+  fallback; `?diag` overlays backend/warp/post state.
+- `window.__lensStars` — `.set({size, streak})`, `.look` (STARFIELD_LOOK
+  mutable; re-select the demo to re-bake per-star attributes), `.reset()`.
+- `window.__lensWormhole` — `.set({ringRadius, ringWidth, foldGain, smearArc,
+smearMix, caShift})` live, `.reset()`.
+- `/lens` persists the selected demo in localStorage `lens-demo` — clear it
+  before automated checks or the bench auto-resumes mid-demo.
+
+### Test map
+
+`optics/__tests__/`: trace goldens + laws (legacy path — untouched by sprite
+work, never regenerate silently), `sky.test` (catalog determinism, authored
+byte-stability, seam/guard rules), `starfield.test` (opaque-pass material
+contract, streak tangents, ring band mask, packing).
+`explore/__tests__/flythrough.test.ts`: travelRemap identity/monotonicity,
+passage-fade windows ("gone before the near plane", rear→front order), fov
+held over `[pClear, 1]`, ramp overlap invariants. Suite baseline at this
+writing: 25 files / 257 tests.
+
+### Story integration (not yet built)
+
+The demo is self-contained bench work. Still open for the story: wiring the
+dive into the scroll story table, the words/content in the sky, the stars'
+rotate-and-trail morph into shell segments feeding the signed-off
+coming-together, and the owner's storyboard for overall flow (in progress).
 
 ## Module boundaries
 
@@ -215,8 +342,8 @@ explore/               /lens ONLY — lazy-loaded, keeps anime.js out of the her
   __tests__/           scene-kit-knobs.test.ts — the kit's auto-restore contract
                        (knob + channel undos, the measured-prior class)
 dev/                   DEV ONLY — dynamically imported by scene.enablePathViz()
-                       / scene.enableInspect(), so none of it reaches a normal
-                       visitor's bundle
+                       / scene.enableInspect() / the `?diag` param, so none of
+                       it reaches a normal visitor's bundle
   paths.ts             motion-path overlay + its two drift checks (lazy-loaded)
   inspect.ts           hover/click piece-name inspector (proxy raycast + tooltip)
   ops-cpu.ts           ops/cpu.ts swept over a whole geometry — displaced
@@ -225,6 +352,8 @@ dev/                   DEV ONLY — dynamically imported by scene.enablePathViz(
   analysis.ts          programmatic scene analysis (window.__lensPaths API):
                        analyze/compare/interference/curlCorners as JSON
   model-contract.ts    boot tripwire: every structural assumption about the GLBs
+  diag.ts              `?diag` status card: backend / warp status / trace
+                       channels / three revision, readable off a PHONE
 ```
 
 Related, outside this dir: `components/LensStory.astro` (the hero — pinned

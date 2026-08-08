@@ -40,30 +40,24 @@ export interface StoryVisibility {
    *  non-accessory mesh can be culled. The fade itself is `uIsolateHide`; this
    *  flag is fill-rate only, which is why it trails the feather. */
   isolate: boolean;
-  /** The aperture beat is engaged — the rear occluders come out of the iris's
-   *  way (`irisOccluders`). */
-  occluders: boolean;
 }
 
 export interface LensCinematics {
   /** Drive the extras for one frame from the eased mechanism/story values, and
    *  report what the story wants hidden (see StoryVisibility). */
-  update(
-    apertureT: number,
-    explodeT: number,
-    storyP: number,
-    nowMs: number,
-  ): StoryVisibility;
-  /** The nodes the iris beat clears out of the way — DATA for core/scene's
-   *  visibility owner. Group empties as well as meshes: an empty's glass
-   *  children have to survive the light-path isolate. */
-  readonly irisOccluders: readonly THREE.Object3D[];
+  update(explodeT: number, storyP: number, nowMs: number): StoryVisibility;
   /** Kick off the sketch-in entrance over the given ink edge lines (no-op if an
    *  entrance is already running). */
   startEntrance(lines: THREE.LineSegments[]): void;
   /** Re-tint the presentation extras (dust motes, refraction rays) for the site
    *  theme — the dark-stage cream dust vanishes on a light stage and vice versa. */
   setTheme(light: boolean): void;
+  /** Show/hide the ambient dust motes. Always on by default (the story never
+   *  calls this); the /lens fly-through demo clears the stage so the starfield
+   *  behind the lens reads. Dispose-safe — the only thing it writes is the
+   *  `.visible` flag of a node this module owns outright, exactly like the
+   *  caps-on finale's two writes. */
+  setDust(visible: boolean): void;
   /** DEV (/lens hero-camera preview): run the caps-on finale outside story
    *  mode. Turning it OFF reseats the caps at their rest positions; the caller
    *  re-applies its own cap visibility (the finale toggles it per-frame). */
@@ -79,20 +73,6 @@ export function createCinematics(
 ): LensCinematics {
   const node = (name: string) => gltfScene.getObjectByName(name);
   const disposables: { dispose: () => void }[] = [];
-
-  // Parts that block the iris from the REAR — hidden during the aperture beat so
-  // the closing blades actually read (the rear glass/baffle/pcb otherwise cover them).
-  const irisOccluders = [
-    "Baffle_Rear",
-    "PCB_Rear",
-    "PCB_Components",
-    "Mount_Contacts",
-    "Mount_ContactShelf",
-    "Optics_G5",
-    "Optics_G4_Focus",
-  ]
-    .map((n) => node(n))
-    .filter((o): o is THREE.Object3D => Boolean(o));
 
   // Glass elements, sorted along the optical axis — threaded by the refraction rays.
   const glassElements: THREE.Mesh[] = [];
@@ -239,19 +219,16 @@ export function createCinematics(
   }
 
   function update(
-    apertureT: number,
     explodeT: number,
     storyP: number,
     nowMs: number,
   ): StoryVisibility {
-    // iris reveal: clear the rear occluders once the aperture beat is engaged.
     // isolate the glass: dissolve everything non-glass ONLY for the light-path
     // scene (tied to scroll position, not the explode amount — so the teardown
     // scene still shows the fanned-out structure, and caps-on brings it back).
-    // Both are REPORTED at the bottom of this function; the two overlap on the
-    // rear meshes (PCB/baffle/contacts) and core/scene composes them there with
-    // the demo isolate, so no gate's restore can stomp another that is still on.
-    const wantHidden = apertureT > 0.35;
+    // (The old aperture beat's "iris reveal" — hiding the rear occluders so the
+    // blades read from a rear orbit — was DELETED with that scene: the
+    // fly-through is the aperture showcase now, seen through the glass.)
     // The isolate is a FADE (uIsolateHide multiplies the non-glass ink opacity),
     // feathered at both ends — a hard visibility toggle made every structural
     // piece vanish in a single frame ("pieces just disappear" — owner). The
@@ -334,7 +311,11 @@ export function createCinematics(
       }
     }
 
-    return { isolate: isolateT > 0.995, occluders: wantHidden };
+    return { isolate: isolateT > 0.995 };
+  }
+
+  function setDust(visible: boolean) {
+    dust.visible = visible;
   }
 
   // hero-camera preview flag (see LensCinematics.setStoryPreview)
@@ -355,9 +336,9 @@ export function createCinematics(
 
   return {
     update,
-    irisOccluders,
     startEntrance,
     setTheme,
+    setDust,
     setStoryPreview,
     dispose,
   };
