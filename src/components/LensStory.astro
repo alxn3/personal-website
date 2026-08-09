@@ -56,8 +56,8 @@ const heroBand = bandOf("hero");
           <h1 class="hero-title">Wide angle,<br /><em>sharp</em> focus.</h1>
           <div class="hero-sub">
             <p>
-              Backend systems by trade, graphics by obsession. Scroll — the lens
-              zooms, pulls focus, stops down, and comes apart.
+              Backend systems by trade, graphics by obsession. Scroll — there's
+              more beneath the surface.
             </p>
           </div>
         </div>
@@ -90,15 +90,22 @@ const heroBand = bandOf("hero");
       }
       <div class="pointer-events-none absolute inset-0 z-4" aria-hidden="true">
         <LensPin
-          scene="focus"
+          scene="internals"
           track="Focus_LeadScrew"
           label="STM lead screw · 327°/mm"
         />
         <LensPin
-          scene="focus"
-          track="Element_12"
+          scene="internals"
+          track="Optics_G4_Focus"
           side="left"
-          label="Focusing element (E12)"
+          label="Focusing group (G4) · ±1.5mm"
+        />
+        <LensPin scene="internals" track="Iris_Housing" label="7-blade iris" />
+        <LensPin
+          scene="internals"
+          track="Mount_Contacts"
+          side="left"
+          label="Bayonet contacts"
         />
       </div>
 
@@ -156,64 +163,65 @@ const heroBand = bandOf("hero");
       </p>
     </LensSceneContent>
 
-    <LensSceneContent
-      scene="focus"
-      pos="right"
-      progressFrom={0.25}
-      progressTo={0.75}
-    >
+    <LensSceneContent scene="peel" pos="left">
       <span class="cap-ghost" aria-hidden="true">02</span>
-      <span class="cap-tag">FOCUS — PERSPECTIVE</span>
-      <h2 class="cap-title">Same scene, different planes.</h2>
-      <div class="cap-rack">
-        <p class="rack-near">
-          Near plane: the systems underneath — queues, storage, schedulers.
-        </p>
-        <p class="rack-far">
-          Far plane: the surfaces people touch — the web, rendered fast.
-        </p>
-      </div>
+      <span class="cap-tag">PEEL — BENEATH THE SURFACE</span>
+      <h2 class="cap-title">That's just the shell.</h2>
+      <p class="cap-body">There's more underneath.</p>
     </LensSceneContent>
 
-    <LensSceneContent scene="aperture" pos="bottom">
+    <LensSceneContent scene="cards" pos="right">
       <span class="cap-ghost" aria-hidden="true">03</span>
-      <span class="cap-tag">APERTURE — DEPTH</span>
-      <h2 class="cap-title">Seven blades, wide open to a star.</h2>
-      <p class="cap-body">
-        Stopping down f/2.8 → f/22: less light in, more of the frame held sharp.
-      </p>
+      <span class="cap-tag">HOBBIES — BREADTH</span>
+      <h2 class="cap-title">I get bored easily.</h2>
+      <p class="cap-body">So I've picked up more hobbies than I can count.</p>
     </LensSceneContent>
 
-    <LensSceneContent scene="explode" pos="top">
+    <LensSceneContent scene="internals" pos="right">
       <span class="cap-ghost" aria-hidden="true">04</span>
-      <span class="cap-tag">EXPLODE — TEARDOWN</span>
-      <h2 class="cap-title">Take it apart, piece by piece.</h2>
-      <p class="cap-body">
-        Housing, rings, contacts, motor — every part fans away from the axis.
-      </p>
+      <span class="cap-tag">INTERNALS — DEPTH</span>
+      <h2 class="cap-title">
+        When something catches me, I have to know how it works.
+      </h2>
     </LensSceneContent>
 
-    <LensSceneContent scene="lightPath" pos="left">
+    <LensSceneContent scene="flythrough" pos="bottom">
       <span class="cap-ghost" aria-hidden="true">05</span>
-      <span class="cap-tag">LIGHT PATH</span>
-      <h2 class="cap-title">Only the light path is left.</h2>
-      <p class="cap-body">
-        Thirteen elements on a single axis — the reason the whole thing works.
-      </p>
+      <span class="cap-tag">APERTURE — WIDE OPEN</span>
+      <h2 class="cap-title">
+        You can't capture the stars without opening all the way up.
+      </h2>
+      <p class="cap-body">So I stay wide open.</p>
+    </LensSceneContent>
+
+    <LensSceneContent scene="constellations" pos="left">
+      <span class="cap-ghost" aria-hidden="true">06</span>
+      <span class="cap-tag">CONSTELLATIONS</span>
+      <h2 class="cap-title">Everything connects.</h2>
+    </LensSceneContent>
+
+    {
+      /* A short beat — no body copy: the boredom quote is already carrying
+        this scene. */
+    }
+    <LensSceneContent scene="trails" pos="right">
+      <span class="cap-ghost" aria-hidden="true">07</span>
+      <span class="cap-tag">TRAILS — TIME</span>
+      <h2 class="cap-title">Give it time.</h2>
     </LensSceneContent>
 
     <LensSceneContent scene="rewrap" pos="right">
-      <span class="cap-ghost" aria-hidden="true">06</span>
-      <span class="cap-tag">REWRAP — ASSEMBLY</span>
-      <h2 class="cap-title">And it all wraps back on.</h2>
+      <span class="cap-ghost" aria-hidden="true">08</span>
+      <span class="cap-tag">REWRAP — WHOLE AGAIN</span>
+      <h2 class="cap-title">It's what lets me piece everything together.</h2>
       <p class="cap-body">
-        Layer by layer — each shell flies home flat and curls around the glass
-        until the lens is whole again.
+        Layer by layer — each piece flies home and wraps around the glass until
+        the lens is whole again.
       </p>
     </LensSceneContent>
 
     <LensSceneContent scene="capsOn" pos="right">
-      <span class="cap-ghost" aria-hidden="true">07</span>
+      <span class="cap-ghost" aria-hidden="true">09</span>
       <span class="cap-tag">CAPS ON</span>
       <h2 class="cap-title">That's the tour. The rest is the work.</h2>
       <p class="cap-body">Caps on. Demos and writing below — keep scrolling.</p>
@@ -235,10 +243,17 @@ const heroBand = bandOf("hero");
     --ink-border: rgba(44, 40, 34, 0.18);
     --olive: #66754f;
     --orange: #b06a3c;
-    /* scrim + caption halo pull from the paper, keeping text legible over the lens */
+    /* scrim + caption halo pull from the paper, keeping text legible over the lens.
+       TWO LAYERS, not one: dark ink on paper only needs the wide soft layer, and
+       over paper a halo is invisible by definition — but the rewrap reassembly
+       fills the light stage with near-black slabs, and against those a single
+       24px halo is too diffuse to separate the letterforms. The tight second
+       layer hugs the glyph edges and is what does the work there. */
     --scrim-rgb: 242 238 228;
-    --cap-shadow: 0 2px 24px rgba(242, 238, 228, 0.8);
-    --cap-shadow-sm: 0 1px 16px rgba(242, 238, 228, 0.85);
+    --cap-shadow:
+      0 2px 24px rgba(242, 238, 228, 0.95), 0 0 10px rgba(242, 238, 228, 0.9);
+    --cap-shadow-sm:
+      0 1px 16px rgba(242, 238, 228, 0.95), 0 0 7px rgba(242, 238, 228, 0.9);
   }
   :global(html.dark) #lens-hero {
     background: #1d1a14;
@@ -309,7 +324,12 @@ const heroBand = bandOf("hero");
      viewport before the bottom edge arrives, before the band drags it back out.
      Two elements share the work because one element cannot host two FILLING
      animations on the same property: the band fades OUT, the caption fades IN,
-     and what you see is the product. */
+     and what you see is the product.
+     ON PHONES the two windows are SPLIT at the overlap's midpoint instead of
+     shared (the override below): the mobile layout collapses every block into
+     the one bottom slot, so an overlapping hand-over stacks two headlines in the
+     same place rather than cross-dissolving beside each other — the outgoing
+     caption has to be gone before the incoming one starts. */
   :global(#lens-track .cap-band) {
     animation: lens-cap-out linear both;
     animation-timeline: view(block);
@@ -322,6 +342,20 @@ const heroBand = bandOf("hero");
     animation: lens-cap-in linear both;
     animation-timeline: --cap-band;
     animation-range: cover 100dvh cover calc(100dvh + var(--cap-fade));
+  }
+  /* the mobile split (see above): each half-window keeps the same total
+     --cap-fade of travel, so the hand-over still finishes inside the shared pad
+     — it just runs out-then-in instead of both at once. A p exactly on the
+     midpoint shows no caption at all, which is the point. */
+  @media (max-width: 760px) {
+    :global(#lens-track .cap-band) {
+      animation-range: cover calc(100% - 100dvh - var(--cap-fade)) cover
+        calc(100% - 100dvh - var(--cap-fade) / 2);
+    }
+    :global(#lens-track [data-cap-fade]) {
+      animation-range: cover calc(100dvh + var(--cap-fade) / 2) cover
+        calc(100dvh + var(--cap-fade));
+    }
   }
   /* The two ENDS of the track are structural, not tuned: the first band starts
      at p = 0, so there is no room to fade in and the intro is simply on at
@@ -491,32 +525,12 @@ const heroBand = bandOf("hero");
     text-wrap: balance;
     text-shadow: var(--cap-shadow);
   }
-  .cap-body,
-  .cap-rack p {
+  .cap-body {
     margin: 0;
     font-size: 14.5px;
     line-height: 1.65;
     color: var(--ink-dim);
     text-shadow: var(--cap-shadow-sm);
-  }
-  .cap-rack {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-  }
-  /* focus blur-rack: near sharpens as far blurs across the focus scene. Blur
-     is capped low and opacity kept up so the "out of focus" line still READS.
-     Driven by --beat-progress — the scroll driver sweeps it 0→1 over this
-     block's progressFrom/progressTo window (0.25..0.75 of the focus scene, set
-     on the <LensSceneContent> above). The effect is content-specific, so it
-     lives here with the markup, not in the driver. */
-  .rack-near {
-    filter: blur(calc(var(--beat-progress, 0) * 3px));
-    opacity: calc(1 - var(--beat-progress, 0) * 0.3);
-  }
-  .rack-far {
-    filter: blur(calc((1 - var(--beat-progress, 0)) * 3px));
-    opacity: calc(0.7 + var(--beat-progress, 0) * 0.3);
   }
 
   /* ---- mobile / portrait: hero type + chrome (content-block placement is
@@ -544,8 +558,7 @@ const heroBand = bandOf("hero");
       font-size: clamp(22px, 6.4vw, 28px);
       margin: 8px 0 10px;
     }
-    .cap-body,
-    .cap-rack p {
+    .cap-body {
       font-size: 13.5px;
       line-height: 1.55;
     }
@@ -579,11 +592,12 @@ const heroBand = bandOf("hero");
     gap: 16px;
   }
   /* Rail colors were previously written inline by the driver every frame. The
-     inactive value is deliberately theme-fixed (the dark-stage faint ink, on
-     both themes) — kept exactly; the active color is the stage orange token. */
+     inactive value was theme-fixed (the dark-stage faint ink on BOTH themes),
+     which left the rail near-invisible on the paper stage — it now reads the
+     per-theme faint-ink token; the active color is the stage orange token. */
   #scene-rail span {
     transition: color 0.3s;
-    color: rgba(236, 231, 218, 0.35);
+    color: var(--ink-faint);
   }
   #scene-rail span::before {
     content: "○ ";
@@ -643,15 +657,15 @@ const heroBand = bandOf("hero");
     if (!canvas) return;
     let scene;
     try {
-      // The op recipes the hero's deform folds in — EXACTLY the two channels
+      // The op recipes the hero's deform folds in — EXACTLY the channels
       // story/hero-driver.ts drives (explode = the teardown fan, assemble =
-      // the peel-flat/wrap-back-on pair). Anything else the bench offers
-      // (helix, rollout, bend) is left out on purpose: an unfolded recipe
-      // contributes literally nothing to the graph, so the hero's shader stays
-      // as small as the story needs.
+      // the peel-flat/wrap-back-on pair, peel = the peel scene's scoped shell
+      // unroll). Anything else the bench offers (helix, rollout, bend) is left
+      // out on purpose: an unfolded recipe contributes literally nothing to the
+      // graph, so the hero's shader stays as small as the story needs.
       scene = await initScene(canvas, {
         story: true,
-        recipes: ["assemble", "explode"],
+        recipes: ["assemble", "explode", "peel"],
       });
     } catch (err) {
       // Captions are layout + CSS, so a dead scene costs nothing but the lens:

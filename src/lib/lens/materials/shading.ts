@@ -47,18 +47,10 @@ const celShade = () => {
 // The scroll hero drives this so the intro reads as a blueprint that fills in.
 export const uInkFill = uniform(1);
 
-// Light-path isolate as a FADE (0 = everything shown, 1 = non-glass dissolved):
-// multiplied into the non-glass ink fills/lines below. The old whole-mesh
-// visibility toggle made every structural piece vanish in a single frame
-// ("pieces just disappear instead of fade out" — owner). story/cinematics.ts
-// drives it; meshes are still visibility-culled once fully faded (fill-rate).
-// It lives HERE, with the two sites that read it: it is a colour-side uniform,
-// not a deform one.
-export const uIsolateHide = uniform(0);
-
 // Swappable render styles for the lens viewer, as Node materials (WebGPU). Each
-// mode re-materials every mesh; "realistic" restores the originals captured at
-// load. Every FRAMED mesh (one carrying the derived `_op*` attributes) gets the
+// mode re-materials every mesh, from a build it keeps for the rest of the
+// session (ModeBuild); "realistic" restores the originals captured at load.
+// Every FRAMED mesh (one carrying the derived `_op*` attributes) gets the
 // op position/normal graph attached so it still deforms in every mode.
 // Textures (the bronze matcap) are generated procedurally — nothing external.
 export type ShadingMode =
@@ -358,6 +350,9 @@ function makeBronzeMatcap(light: boolean): THREE.Texture {
 }
 
 export interface ShadingController {
+  /** Wear `mode`. A mode is BUILT once per theme and kept (ModeBuild below), so
+   *  switching back to a look this session already wore re-wears its materials
+   *  instead of re-deriving them — the story alternates ink ↔ realistic. */
   set(mode: ShadingMode): void;
   /** Fold meshes that loaded AFTER creation (the background accessories) into the
    *  swapper and style them in the current mode. Idempotent per mesh. */
@@ -368,6 +363,18 @@ export interface ShadingController {
   /** The edge-line objects created for the current mode (empty unless "ink"). Used
    *  by the scene's sketch-in entrance to stroke them on. */
   getInkLines(): THREE.LineSegments[];
+  /** Wear the ORIGINALS (the "realistic" materials captured at load) for the
+   *  duration of `cb`, then put back exactly what each mesh was wearing.
+   *
+   *  NOT `set("realistic")` and back: even with the builds kept, a round trip
+   *  re-materials every mesh twice and parks/unparks the extras — and it would
+   *  stomp anything else riding on a mesh (the transmissive glass clones the
+   *  warm-up itself puts on). This swaps the material references and puts back
+   *  exactly what was worn, so a caller that needs the realistic look for one
+   *  off-screen frame (core/scene's fly warm-up) pays nothing for the trip. The
+   *  stylized extras (edge lines, hulls) stay parented and simply draw as they
+   *  were — this is not a mode change and must not be used as one. */
+  withOriginals(cb: () => void): void;
   dispose(): void;
 }
 
@@ -392,47 +399,76 @@ export function createShading(root: THREE.Object3D): ShadingController {
   // janky. Threshold is in the key because "flat" runs the same construction at
   // a coarser crease angle than ink/blueprint.
   const edgeGeoCache = new Map<string, THREE.BufferGeometry>();
-  // materials + edge-line/hull objects created for the current mode, replaced each switch
-  let created: THREE.Material[] = [];
-  let createdLines: THREE.LineSegments[] = [];
-  // outline mode's inverted-hull meshes (share the source geometry — only the
-  // material offsets them), torn down with the lines on every mode switch
-  let createdHulls: THREE.Mesh[] = [];
-  // Per-mode SHARED-material caches, persisted for the current mode so integrate()
-  // can fold a late-arriving mesh (the background accessories) into the live look
-  // without rebuilding everything. A mode switch throws them away (clearCreated).
-  const fillCache = new Map<string, THREE.MeshBasicNodeMaterial>();
-  const lineCache = new Map<string, THREE.LineBasicNodeMaterial>();
-  // shared materials for the self-contained modes (riso/bronze) — keyed by
-  // mode × part-class × framed, same lifecycle as fillCache
-  const modeCache = new Map<string, THREE.Material>();
+
+  // ONE MODE'S BUILD — every material it created, every extra object it parented
+  // under the meshes (the technical looks' edge lines, outline's inverted hulls)
+  // and what each mesh ended up WEARING. Builds are kept per mode and never torn
+  // down on a switch: leaving a mode parks its extras, returning re-wears them.
+  // Rebuilding instead is what stalled the story's fly exit — realistic → ink
+  // re-derived ~200 materials and every pipeline behind them, mid-scroll.
+  // "realistic" has no build: the `original` map captured at load IS its cache.
+  // Every colour here is baked from the THEME PALETTE, so a theme flip throws
+  // all builds away (flushBuilds) rather than trying to re-tint them.
+  interface ModeBuild {
+    materials: THREE.Material[];
+    /** edge lines in creation order — the sketch-in entrance strokes these */
+    lines: THREE.LineSegments[];
+    /** lines + hulls with the mesh each hangs under, so parking can detach them
+     *  and a return can put them back */
+    extras: { owner: THREE.Mesh; obj: THREE.Object3D }[];
+    worn: Map<THREE.Mesh, THREE.Material | THREE.Material[]>;
+    // SHARED-material caches: one material per look × part class, not per mesh.
+    // They also let integrate() fold a late-arriving mesh (the background
+    // accessories) into a built look without rebuilding it.
+    fill: Map<string, THREE.MeshBasicNodeMaterial>;
+    line: Map<string, THREE.LineBasicNodeMaterial>;
+    /** the self-contained modes' (outline/riso/bronze) shared materials */
+    shared: Map<string, THREE.Material>;
+  }
+  const builds = new Map<ShadingMode, ModeBuild>();
+  /** the live mode's build — null while "realistic" is worn */
+  let build: ModeBuild | null = null;
+  const makeBuild = (mode: ShadingMode): ModeBuild => {
+    const b: ModeBuild = {
+      materials: [],
+      lines: [],
+      extras: [],
+      worn: new Map(),
+      fill: new Map(),
+      line: new Map(),
+      shared: new Map(),
+    };
+    builds.set(mode, b);
+    return b;
+  };
   // bronze matcap is theme-dependent (lifted shadow floor on light), so it's
   // cached per theme flag and rebuilt on a flip
   let bronzeMatcap: THREE.Texture | null = null;
   let bronzeMatcapLight = false;
   const track = <T extends THREE.Material>(m: T): T => {
-    created.push(m);
+    build!.materials.push(m);
     return m;
   };
-  const clearCreated = () => {
-    created.forEach((m) => m.dispose());
-    created = [];
-    // geometries live in edgeGeoCache (reused on the next ink entry) — only the
-    // line OBJECTS are torn down here; the cache is disposed with the controller
-    createdLines.forEach((l) => l.removeFromParent());
-    createdLines = [];
-    // hulls borrow the source mesh's geometry — nothing of their own to dispose
-    createdHulls.forEach((h) => h.removeFromParent());
-    createdHulls = [];
-    // the caches point into `created` (now disposed) — reset for the next mode
-    fillCache.clear();
-    lineCache.clear();
-    modeCache.clear();
+  const attach = (owner: THREE.Mesh, obj: THREE.Object3D) => {
+    obj.raycast = () => {}; // extras are never pickable
+    owner.add(obj);
+    build!.extras.push({ owner, obj });
+  };
+  /** Free EVERY build. The materials are the only thing a build owns outright:
+   *  edge geometries live in edgeGeoCache and the hulls borrow their source
+   *  mesh's geometry. */
+  const flushBuilds = () => {
+    for (const b of builds.values()) {
+      b.materials.forEach((m) => m.dispose());
+      b.extras.forEach((e) => e.obj.removeFromParent());
+    }
+    builds.clear();
+    build = null;
   };
 
-  // Apply the CURRENT mode's material(s) to ONE mesh, drawing from the shared
-  // per-mode caches above. This is the per-mesh half of set(); integrate() calls
-  // it for meshes that arrive after the initial build (the background accessories).
+  // BUILD the CURRENT mode's material(s) for ONE mesh, drawing from that mode's
+  // shared caches. This is the per-mesh half of set() — it runs only the first
+  // time a mode meets a mesh; every later entry re-wears `build.worn`.
   function applyToMesh(mesh: THREE.Mesh) {
     // ink assigns renderOrder to the window pieces (drawn last, no depth write);
     // every other mode uses plain depth-sorted rendering — clear the override.
@@ -445,6 +481,7 @@ export function createShading(root: THREE.Object3D): ShadingController {
       return;
     }
 
+    const b = build!; // every mode below the realistic branch has one
     // Every look below classifies by NAME. Runtime names ARE node names now
     // (one primitive per mesh — lens_work MIGRATION §2), so the palettes see
     // e.g. `Focus_LeadScrew` where they used to see a Blender datablock name
@@ -462,7 +499,8 @@ export function createShading(root: THREE.Object3D): ShadingController {
       // Materials are SHARED per look (colour × glass × framed), not per mesh: one
       // material per mesh built ~260 separate node graphs, and compiling all those
       // pipelines was the single largest chunk of time-to-first-frame. The palette
-      // collapses to ~a dozen fill materials and 4 line materials (fillCache/lineCache).
+      // collapses to ~a dozen fill materials and 4 line materials (build.fill,
+      // build.line).
       const theme = light ? ("light" as const) : ("dark" as const);
       const edgeBody = palette.edgeBody[theme];
       const edgeGlass = palette.edgeGlass[theme];
@@ -475,7 +513,7 @@ export function createShading(root: THREE.Object3D): ShadingController {
       const spin = opsVariantKey(mesh);
       const colorHex = palette.fill(name, light);
       const fillKey = `${colorHex}|${glass}|${framed}|${spin}`;
-      let m = fillCache.get(fillKey);
+      let m = b.fill.get(fillKey);
       if (!m) {
         m = new THREE.MeshBasicNodeMaterial();
         m.color.setHex(colorHex);
@@ -503,15 +541,15 @@ export function createShading(root: THREE.Object3D): ShadingController {
         // fade (was a second position graph — one deform per material).
         const opsPos = framed ? attachOps(m, mesh) : undefined;
         const fade = depthFadeFactor(opsPos);
-        let op = (glass ? float(0.45) : float(1).mul(uInkFill)).mul(fade);
-        if (!glass) op = op.mul(float(1).sub(uIsolateHide)); // light-path isolate FADE
-        m.opacityNode = op;
+        m.opacityNode = (glass ? float(0.45) : float(1).mul(uInkFill)).mul(
+          fade,
+        );
         // DISCARD fully-faded fragments: a transparent fill at opacity ~0 still
         // writes depth, so a depth-faded wedge would invisibly hard-clip
         // everything behind its silhouette (screw, rods, rings). Discarded
         // fragments write nothing.
         m.alphaTest = 0.02;
-        fillCache.set(fillKey, track(m));
+        b.fill.set(fillKey, track(m));
       }
       mesh.material = m;
 
@@ -519,18 +557,18 @@ export function createShading(root: THREE.Object3D): ShadingController {
       // rectangle — and any palette-declared lineSkip parts)
       if (isDecal(name) || palette.lineSkip?.(name)) return;
       const lineKey = `${glass}|${framed}|${spin}`;
-      let lineMat = lineCache.get(lineKey);
+      let lineMat = b.line.get(lineKey);
       if (!lineMat) {
         lineMat = new THREE.LineBasicNodeMaterial();
         lineMat.color.setHex(glass ? edgeGlass : edgeBody);
         lineMat.transparent = true;
         // Attach the deform first, then share its position node with the fade.
         const lineOpsPos = framed ? attachOpsLine(lineMat, mesh) : undefined;
-        let lop = float(glass ? 0.7 : 0.9).mul(depthFadeFactor(lineOpsPos));
-        if (!glass) lop = lop.mul(float(1).sub(uIsolateHide)); // isolate fade
-        lineMat.opacityNode = lop;
+        lineMat.opacityNode = float(glass ? 0.7 : 0.9).mul(
+          depthFadeFactor(lineOpsPos),
+        );
         lineMat.alphaTest = 0.02; // faded lines must not depth-clip either
-        lineCache.set(lineKey, track(lineMat));
+        b.line.set(lineKey, track(lineMat));
       }
       const thr = palette.edgeThresholdDeg ?? 24;
       const geoKey = `${mesh.id}|${thr}`;
@@ -542,9 +580,8 @@ export function createShading(root: THREE.Object3D): ShadingController {
         edgeGeoCache.set(geoKey, geo);
       }
       const line = new THREE.LineSegments(geo, lineMat);
-      line.raycast = () => {}; // never pickable
-      mesh.add(line);
-      createdLines.push(line);
+      b.lines.push(line);
+      attach(mesh, line);
       return;
     }
 
@@ -560,18 +597,18 @@ export function createShading(root: THREE.Object3D): ShadingController {
       const spin = opsVariantKey(mesh);
       const fillHex = outlineFill(P, name);
       const fillKey = `outline|${fillHex}|${framed}|${spin}`;
-      let m = modeCache.get(fillKey);
+      let m = b.shared.get(fillKey);
       if (!m) {
         const mat = new THREE.MeshBasicNodeMaterial({ color: fillHex });
         if (framed) attachOps(mat, mesh);
         m = track(mat);
-        modeCache.set(fillKey, m);
+        b.shared.set(fillKey, m);
       }
       mesh.material = m;
       // no hull on the flat printed decals — they'd just outline a rectangle
       if (isDecal(name)) return;
       const hullKey = `outline|hull|${framed}|${spin}`;
-      let hullMat = modeCache.get(hullKey);
+      let hullMat = b.shared.get(hullKey);
       if (!hullMat) {
         const mat = new THREE.MeshBasicNodeMaterial({
           color: P.line,
@@ -583,12 +620,9 @@ export function createShading(root: THREE.Object3D): ShadingController {
             normalLocal.mul(OUTLINE_WIDTH) as any,
           );
         hullMat = track(mat);
-        modeCache.set(hullKey, hullMat);
+        b.shared.set(hullKey, hullMat);
       }
-      const hull = new THREE.Mesh(mesh.geometry, hullMat);
-      hull.raycast = () => {}; // never pickable
-      mesh.add(hull);
-      createdHulls.push(hull);
+      attach(mesh, new THREE.Mesh(mesh.geometry, hullMat));
       return;
     }
 
@@ -601,7 +635,7 @@ export function createShading(root: THREE.Object3D): ShadingController {
       const decal = isDecal(name);
       const framed = hasOpFrames(mesh);
       const key = `riso|${glass}|${decal}|${framed}|${opsVariantKey(mesh)}`;
-      let m = modeCache.get(key);
+      let m = b.shared.get(key);
       if (!m) {
         const mat = new THREE.MeshBasicNodeMaterial();
         if (glass) {
@@ -615,7 +649,7 @@ export function createShading(root: THREE.Object3D): ShadingController {
         }
         if (framed) attachOps(mat, mesh);
         m = track(mat);
-        modeCache.set(key, m);
+        b.shared.set(key, m);
       }
       mesh.material = m;
       return;
@@ -634,7 +668,7 @@ export function createShading(root: THREE.Object3D): ShadingController {
       const grip = /Ring_/.test(name);
       const framed = hasOpFrames(mesh);
       const key = `bronze|${glass}|${grip}|${framed}|${opsVariantKey(mesh)}`;
-      let m = modeCache.get(key);
+      let m = b.shared.get(key);
       if (!m) {
         const mat = glass
           ? new THREE.MeshBasicNodeMaterial({
@@ -648,16 +682,36 @@ export function createShading(root: THREE.Object3D): ShadingController {
             });
         if (framed) attachOps(mat, mesh);
         m = track(mat);
-        modeCache.set(key, m);
+        b.shared.set(key, m);
       }
       mesh.material = m;
     }
   }
 
+  /** build this mesh in the current mode and remember what it ends up wearing */
+  function style(mesh: THREE.Mesh) {
+    applyToMesh(mesh);
+    build?.worn.set(mesh, mesh.material);
+  }
+
   function set(mode: ShadingMode) {
+    // PARK the outgoing mode: its extras come off the meshes, but nothing is
+    // freed — the build stays whole so coming back is a re-wear, not a rebuild.
+    if (build) for (const e of build.extras) e.obj.removeFromParent();
     currentMode = mode;
-    clearCreated();
-    for (const mesh of meshes) applyToMesh(mesh);
+    build = mode === "realistic" ? null : (builds.get(mode) ?? makeBuild(mode));
+    for (const mesh of meshes) {
+      const worn = build?.worn.get(mesh);
+      if (!worn) {
+        style(mesh); // first time this mode meets this mesh
+        continue;
+      }
+      mesh.renderOrder = 0; // as applyToMesh does — clear any foreign override
+      mesh.material = worn;
+    }
+    // …and the parked extras go back on. add() on a child already parented here
+    // is a no-op, so anything style() just attached doesn't double up.
+    if (build) for (const e of build.extras) e.owner.add(e.obj);
   }
 
   // Fold meshes that appear AFTER the initial capture (the background accessories
@@ -670,12 +724,12 @@ export function createShading(root: THREE.Object3D): ShadingController {
       if (!(o instanceof THREE.Mesh) || original.has(o)) return;
       meshes.push(o);
       original.set(o, o.material);
-      applyToMesh(o);
+      style(o);
     });
   }
 
   function dispose() {
-    clearCreated();
+    flushBuilds();
     edgeGeoCache.forEach((g) => g.dispose());
     edgeGeoCache.clear();
     bronzeMatcap?.dispose();
@@ -684,8 +738,33 @@ export function createShading(root: THREE.Object3D): ShadingController {
   function setTheme(l: boolean) {
     if (l === light) return;
     light = l;
+    // EVERY build is palette-baked, not just the live one — keeping the parked
+    // ones would re-wear the old theme's colours on the next switch.
+    flushBuilds();
     set(currentMode); // rebuild the active mode under the other palette
   }
 
-  return { set, integrate, setTheme, getInkLines: () => createdLines, dispose };
+  function withOriginals(cb: () => void) {
+    const worn = new Map<THREE.Mesh, THREE.Material | THREE.Material[]>();
+    for (const mesh of meshes) {
+      const orig = original.get(mesh);
+      if (!orig) continue;
+      worn.set(mesh, mesh.material);
+      mesh.material = orig;
+    }
+    try {
+      cb();
+    } finally {
+      for (const [mesh, mat] of worn) mesh.material = mat;
+    }
+  }
+
+  return {
+    set,
+    integrate,
+    setTheme,
+    getInkLines: () => build?.lines ?? [],
+    withOriginals,
+    dispose,
+  };
 }

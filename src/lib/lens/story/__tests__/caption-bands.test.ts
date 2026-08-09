@@ -122,8 +122,8 @@ describe("CAPTION_FADE_CSS", () => {
 
 describe("bandOf", () => {
   it("returns the band a scene id owns", () => {
-    expect(bandOf("explode")).toBe(
-      CAPTION_BANDS.find((b) => b.id === "explode"),
+    expect(bandOf("internals")).toBe(
+      CAPTION_BANDS.find((b) => b.id === "internals"),
     );
   });
 

@@ -79,6 +79,88 @@ export const isSilhouetteGreeble = (name: string): boolean =>
   /^Optics_Cell/.test(name) ||
   name.startsWith("Cam_Followers");
 
+/** THE PEEL'S CAST — what leaves with the shell and returns in the rewrap.
+ *  The lens's OUTER SKIN: the barrel sections (`Barrel_Base`, `Barrel_Inner`),
+ *  the exterior name band (`Band_Mid`), the two control grips (`Ring_Focus`,
+ *  `Ring_Zoom`) and every printed marking, which is painted ON one of those and
+ *  must leave with it.
+ *
+ *  Drawn from the SHIPPED GEOMETRY, not from intuition: those families are the
+ *  only ones that reach the outer radius (r ≈ 30.2-30.8 mm, and between them
+ *  they skin the whole length y ≈ 1-77). The next layer in — `Chassis_Fixed` at
+ *  29.4, `Cam_Barrel` at 28.6 — is covered end to end and never sees daylight,
+ *  so it is not SKIN; it leaves anyway, one beat later, as the peel's third cast
+ *  (isPeelTube). Everything mechanical stays — glass, iris, focus, cams, mount,
+ *  PCB, optics cells and the accessories.
+ *
+ *  `Shim_Ring_*` is NOT a control ring — the anchor is what keeps it (and
+ *  `Mount_BrassRing`) out, so the `^` is load-bearing rather than decorative.
+ *
+ *  Matched on a piece's OWN name, `_SegN` wedges included: a wedge carries its
+ *  part's name with a suffix, so the prefixes cover them without a parent walk. */
+export const isShellPart = (name: string): boolean =>
+  /^(Barrel_|Band_Mid|Ring_)/.test(name) || isDecal(name);
+
+/** THE PEEL'S SECOND CAST — the internal light-trap baffles, which leave with
+ *  the peel and return with it, but are NOT shell: `Baffle_Rear` (the rear
+ *  aperture plate, y ≈ −1.6) and the two optics traps `Optics_Baffle_Front`
+ *  (y ≈ 50.3) and `Optics_Baffle_G2` (y ≈ 54.8), each cut into the same five
+ *  sectors as the shell.
+ *
+ *  WHY THEY GO. With the skin off, the card scene looks down a lens whose BORE
+ *  is the subject — and these three plates are exactly what closes it: the rear
+ *  one caps the tube end and the two front ones stop the sight-line short of the
+ *  glass. They are structure, so nothing about them classes as shell; but they
+ *  are also not part of the mechanism the internals scene is about, so they may
+ *  leave once the skin has.
+ *
+ *  They cannot ride the sheet recipe with the shell — they sit at r ≈ 12-16mm,
+ *  far below the peel's outer rank band, and their motion is a rigid staggered
+ *  departure (story/peelcards.ts) rather than an unroll. What they SHARE with the
+ *  shell is the visibility gate: core/scene.ts's shell fade takes this predicate
+ *  as well, in its own late band, so they wink out after the skin and are
+ *  restored by the same rewrap. Matched on the piece's OWN name, `_SegN` wedges
+ *  included, exactly as isShellPart is. */
+export const isPeelExtra = (name: string): boolean =>
+  /^(Baffle_|Optics_Baffle_)/.test(name);
+
+/** THE PEEL'S THIRD CAST — the two CLOSED INNER TUBES the skin was wrapped
+ *  around: `Chassis_Fixed` (r ≈ 29.4, y ≈ 1.5-65) and `Cam_Barrel` (r ≈ 28.6,
+ *  y ≈ 14-56). Between them they run nearly the whole barrel with no window in
+ *  either, so with only the shell off the card scene still looks at a lens that
+ *  is a solid cylinder from the side: the glass column, the iris and the focus
+ *  mechanism are all sealed inside two more layers of tube.
+ *
+ *  So they leave too, in their OWN beat between the skin and the bore: shell
+ *  wedges, then these, then the baffles (core/scene's four-band shell fade, and
+ *  the drift windows in story/peelcards.ts that feed it). Outside-in — which is
+ *  the order the layers are actually stacked in, and the only order in which
+ *  each one uncovers the next.
+ *
+ *  Each is cut into wedges on its own seam count — five for `Chassis_Fixed`
+ *  (the shell's own cut) and seven for `Cam_Barrel` — so they fly out radially
+ *  like strips rather than sliding out of an end like a baffle plate. They
+ *  cannot ride the peel RECIPE with the shell even so: the sticker unroll is
+ *  scoped to the outer rank band (ops/recipes peel, rankLo 0.93) and these sit
+ *  below it at rank ≈ 0.919, which is exactly what keeps the inner structure
+ *  seated while the skin curls. Their departure is rigid, like the baffles'.
+ *
+ *  WHERE THIS STOPS, and why it is not one family further in. `Cam_OpticsCage`
+ *  (r ≈ 22, y 17.5-55.7) is the next closed layer and was tried here: it takes
+ *  the body away without buying the glass. The elements it covers are 03-06,
+ *  and 07-13 are wrapped in their own `Optics_Cell_G3`/`Cam_LightTrap` at
+ *  r ≈ 9-14 either way — so the column stays as hidden as before while the lens
+ *  loses the cam slots that are the last thing making it read as a lens rather
+ *  than as a mount ring with glass in front of it. The cage is mechanism, not
+ *  cladding; it stays.
+ *
+ *  Matched on the piece's OWN name, `_SegN` wedges included, as both casts above
+ *  are. `Chassis_Fixed` ADOPTS `Focus_Motor`/`Focus_GuideRods` as children
+ *  (ops/frames.ts) — they carry their own names, so they are not matched here
+ *  and stay behind with the rest of the mechanism. */
+export const isPeelTube = (name: string): boolean =>
+  /^(Chassis_Fixed|Cam_Barrel)/.test(name);
+
 /** The ops `PART_CLASS` id a node name belongs to — the ONE bridge from these
  *  name predicates to the integer `ops/ops.ts` selectors match on (`selClass`),
  *  written per piece into the packed frame attributes by `ops/frames.ts`. The order

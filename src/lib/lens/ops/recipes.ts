@@ -28,6 +28,7 @@ import {
   approach,
   arc,
   coil,
+  during,
   group,
   ladder,
   orbit,
@@ -45,10 +46,12 @@ import {
 import {
   foldOps,
   memoCtx,
+  peelOrder,
   rollStepOps,
   selNotAccessory,
   selNotOptical,
   selSheet,
+  stickerPeelOps,
 } from "./house";
 
 // Written out rather than taken from Math: a recipe is pure algebra, and these
@@ -94,6 +97,13 @@ const ROLLOUT_SNAP_EXP = 2.0; // inert at snap 0, kept for the gate signature
 const ROLLOUT_MASK_FEATHER = 0.3;
 const ROLLOUT_RANK_FEATHER = 0.1;
 
+// ── PEEL constants — the story's sticker peel ──────────────────────────────
+// q of the freed run, INVERTED (ops/house stickerPeelOps negates it). 1 would
+// unroll to a mirror of the seated barrel; above 1 the lip rolls BACK tighter
+// than the shell it came off, which is what reads as a sticker rather than as an
+// unwrapped tube. Tuned live against the peel scene.
+const PEEL_CURL = 2.6;
+
 // ── BEND-LAB constants (formation.ts:213-217, 321-327) ─────────────────────
 const BEND_SPLIT = 0.95;
 const BEND_SNAP_EXP = 2.0;
@@ -102,11 +112,11 @@ const BEND_SNAP_EXP = 2.0;
 const SCRATCH_SPLIT = 0.95;
 const SCRATCH_SNAP_EXP = 2.0;
 
-/** Every recipe channel there is: the five authored recipes below plus `scratch`,
+/** Every recipe channel there is: the six authored recipes below plus `scratch`,
  *  the owner's editable bench — a recipe in every respect, kept deliberately
  *  empty of choreography so a new motion can be tried in it directly. */
 export type RecipeName =
-  "assemble" | "explode" | "helix" | "rollout" | "bend" | "scratch";
+  "assemble" | "explode" | "helix" | "rollout" | "peel" | "bend" | "scratch";
 
 export interface Recipe<S> {
   name: RecipeName;
@@ -425,6 +435,83 @@ export function makeRecipes<S>(
     },
   };
 
+  // The STORY's shell peel — the STICKER chain (ops/house stickerPeelOps),
+  // scoped so glass/iris/accessories and axisymmetric bodies can never unroll;
+  // the shell cast (sub-span wedges + decals at the outer ranks) is the only
+  // participant. rankLo 0.93 keeps the inner sheet-like structure (PCB wings,
+  // chassis plates) seated; Focus_Motor/GuideRods share rank 1.0 with the shell
+  // and may ride along — verified visually, tighten here if it ever reads wrong.
+  //
+  // NOT rollout's chain any more. Rollout frees its material FLAT, and a wedge
+  // half-peeled that way reads as a plate hovering off the barrel rather than as
+  // something coming OFF it. The sticker chain frees the same material at
+  // −PEEL_CURL instead: the lip inverts at the crease and the freed body rolls
+  // back away from the shell, which is the gesture the scene is about. Everything
+  // else — the anchor, the travelling front at d = flight·L, the seated tail — is
+  // shared with rollout, and the two still read as the same KIND of motion.
+  //
+  // A SEPARATE recipe rather than knobs on `rollout`: rollout is global by
+  // contract and /lens's filmstrip/molt/heartbeat/bloom animations scrub it, so
+  // scoping it there would re-choreograph four shipped demos.
+  const peel: Recipe<S> = {
+    name: "peel",
+    // A BARE gate — no stagger of its own. See the `during` in `build`: the
+    // gate's two stagger inputs are both degenerate on this cast, so the peel
+    // fans its pieces out on the CHANNEL instead and this spec is only the
+    // flight ramp's shape (rollout's split and snapExp, since the two are the
+    // same kind of travelling front).
+    gateSpec: () => ({
+      layerStagger: 0,
+      windowFrac: 1,
+      split: ROLLOUT_SPLIT,
+      snap: 0, // plain smoothstep
+      snapExp: ROLLOUT_SNAP_EXP,
+      // no overlap — the peel chain reads only flight (stick is unused)
+    }),
+    // ONE `during` scope, which is a group in assemble's idiom: the
+    // participation selectors scope the peel chain and nothing else, so a term
+    // added to this pipeline after it (an axial slide, a drift) moves the whole
+    // model unless it says otherwise. Selectors FIRST inside it — `arc` is a
+    // modifier, and a spatial selector after one reads a stale frame
+    // (validatePipeline).
+    //
+    // THE STAGGER IS THE `during` WINDOW, not the gate's. The gate staggers on
+    // `rank01` and `layerPhase`, and BOTH are degenerate on the peel's cast:
+    //
+    //   • the cast IS the outer skin, so every piece of it measures rank01
+    //     within 0.07 of 1 — a rank-keyed offset spreads the departures over
+    //     seven percent of one window;
+    //   • the 0.01mm rank bucket puts most wedges in a layer of ONE (measured on
+    //     the shipped model: 68 of its 100 layers are singletons), and a layer of
+    //     one has layerPhase 0 by construction.
+    //
+    // Raise either knob and the whole shell still leaves as one block. So the
+    // fan is keyed on the piece's MERIDIAN, which is the one intrinsic that
+    // really does separate them — `peelOrder`, 0 → 1 once around the barrel in
+    // the house winding direction. The five families of a sector share a window
+    // and the sectors go one after another, so the skin peels AROUND the lens
+    // and each sector's column is free before the next one starts. `stagger` is
+    // how much of the channel the fan spends and the window is the remainder, so
+    // `from` ≥ 0 and the last piece's `to` is exactly 1: both identity ends stay
+    // exact.
+    //
+    // (story/peelcards.ts's outward drift keys its own windows on the SAME
+    // peelOrder, so a strip leaves on the heels of its own unroll rather than on
+    // somebody else's.)
+    build: (ctx, knobs) => {
+      const from = A.mul(peelOrder(A, ctx.t0, ctx.wrapDir), knobs.stagger);
+      return [
+        during<S>({ from, to: A.add(from, A.sub(1, knobs.stagger)) }, [
+          selSheet(A),
+          // NOT bypassed by default (rollout's is): the band IS the scope.
+          selRank<S>(knobs.rankLo, knobs.rankHi, ROLLOUT_RANK_FEATHER),
+          ...stickerPeelOps(A, knobs.curl),
+        ]),
+      ];
+    },
+    knobDefaults: { curl: PEEL_CURL, stagger: 0.72, rankLo: 0.93, rankHi: 1 },
+  };
+
   const bendLab: Recipe<S> = {
     name: "bend",
     // No stagger — every piece folds on the shared scrub. It is a bench, not a
@@ -496,5 +583,5 @@ export function makeRecipes<S>(
     knobDefaults: { spread: 0.5, turn: 0, depth: 0.4 },
   };
 
-  return { assemble, explode, helix, rollout, bend: bendLab, scratch };
+  return { assemble, explode, helix, rollout, peel, bend: bendLab, scratch };
 }

@@ -20,7 +20,7 @@ import {
   type VertexState,
 } from "../ops";
 
-// The five recipes on the NUM backend (the executable spec). A recipe is three
+// The recipe table on the NUM backend (the executable spec). A recipe is three
 // things — a gate spec derived from its knobs, an ORDERED op list, and the knob
 // defaults — so the tests check exactly those three: the channel-0 identity
 // (every recipe leaves the seated model untouched), the composition ORDER (the
@@ -61,10 +61,11 @@ type Vert = (typeof VERTS)[number];
 
 // Real wedges OVERRUN the nominal half-span on both edges, and a bend chain's
 // first/last segments are unbounded for exactly that reason — so the identity
-// has to hold outside [0, L] too. The one exception is the rollout's negative
-// overrun: its profile leads with a q = 0 (tangent-line) segment by
-// construction — a verbatim port of the classic — so seam overrun there leaves
-// the barrel along the tangent instead of following it.
+// has to hold outside [0, L] too. The one exception is the travelling-front
+// chains' negative overrun (rollout and peel): both lead with a non-seated arc
+// by construction — rollout's is q = 0, a tangent line and a verbatim port of
+// the classic; peel's is the inverted curl — so seam overrun there leaves the
+// barrel instead of following it.
 const OVERRUN = [
   { frac: -0.2, yN: 0.15, off: 0 },
   { frac: 1.2, yN: -0.35, off: 0.25 },
@@ -188,7 +189,7 @@ function runAt(
 describe("every recipe is the seated identity at channel 0", () => {
   for (const recipe of Object.values(RECIPES)) {
     const probes =
-      recipe.name === "rollout"
+      recipe.name === "rollout" || recipe.name === "peel"
         ? [...VERTS, OVERRUN[1]] // see OVERRUN: negative overrun is by design
         : [...VERTS, ...OVERRUN];
     it(`(a) ${recipe.name} leaves every probe vertex seated`, () => {
@@ -707,6 +708,143 @@ describe("explode's default selection", () => {
       expect(decal.out.radius).toBeCloseTo(ref.out.radius, 12);
       expect(decal.out.axial).toBeCloseTo(ref.out.axial, 12);
     }
+  });
+});
+
+// ── (f) peel's DEFAULT SELECTION: the story's SCOPED unroll ─────────────────
+// `peel` is rollout's roll step under two participation selectors, so the
+// recipe's whole content is WHO unrolls: the sheet cast (selSheet) intersected
+// with the outer rank band (selRank at the [0.93, 1] default). Everything below
+// probes that admission, at every channel — the story drives this channel over
+// a whole scene, so a piece that leaks in mid-scrub is as wrong as one that
+// leaks in at 1.
+
+describe("peel's scoped selection", () => {
+  const recipe = RECIPES.peel;
+  const knobs = recipe.knobDefaults;
+  const OUTER = PIECES[2]; // rank01 1 — inside the default band
+  const CHANNELS = [0.25, 0.5, 0.75, 1];
+
+  it("(f) an OUTER-rank shell wedge unrolls, and so does what rides it", () => {
+    // The three ways into selSheet, exactly as assemble's (b⁵): the measured
+    // sector span, the adopted flag, the decal class.
+    const ADMITTED: { name: string; over: Partial<OpCtx<number>> }[] = [
+      { name: "a cut shell wedge (the file's default)", over: {} },
+      { name: "a bolted screw (adopted frame)", over: { adopted: 1 } },
+      {
+        name: "a decal painted on a shell",
+        over: { partClass: PART_CLASS.decal },
+      },
+    ];
+    for (const { name, over } of ADMITTED) {
+      const moved = VERTS.map((v) => {
+        const r = runAt(recipe, OUTER, v, 1, over);
+        return dist(xz(r.out), xz(r.seated));
+      });
+      expect(Math.max(...moved), `${name}: unrolls`).toBeGreaterThan(1);
+      for (const m of moved) expect(Number.isFinite(m)).toBe(true);
+      // …and it is the SAME chain the reference wedge walks.
+      for (const v of VERTS) {
+        const r = runAt(recipe, OUTER, v, 1, over);
+        const ref = runAt(recipe, OUTER, v, 1);
+        expect(r.out.theta, `${name}: theta`).toBeCloseTo(ref.out.theta, 12);
+        expect(r.out.radius, `${name}: radius`).toBeCloseTo(ref.out.radius, 12);
+        expect(r.out.rot, `${name}: rot`).toBeCloseTo(ref.out.rot, 12);
+      }
+    }
+  });
+
+  it("(f′) glass, the iris mechanism, accessories and bodies of revolution NEVER unroll", () => {
+    // The reason the story needs its own recipe rather than rollout: these are
+    // in the outer ranks too (the front element sits at rank 1 with the front
+    // shell), so the rank band alone would admit them. Probed at rank01 1 on
+    // purpose — the band is wide open here, and selSheet is the only thing
+    // holding them.
+    const BARRED: { name: string; over: Partial<OpCtx<number>> }[] = [
+      { name: "a glass element", over: { partClass: PART_CLASS.glass } },
+      { name: "an iris blade", over: { partClass: PART_CLASS.iris } },
+      {
+        name: "a removable accessory",
+        over: { partClass: PART_CLASS.accessory },
+      },
+      {
+        name: "an accessory bolted to a shell (adopted)",
+        over: { partClass: PART_CLASS.accessory, adopted: 1 },
+      },
+      { name: "an axisymmetric structure ring", over: { axi: 1 } },
+      { name: "a full ring, span 2π", over: { halfSpan: Math.PI } },
+    ];
+    for (const { name, over } of BARRED) {
+      for (const channel of CHANNELS) {
+        for (const v of VERTS) {
+          const r = runAt(recipe, OUTER, v, channel, over);
+          expect(
+            dist(xz(r.out), xz(r.seated)),
+            `${name} @ ${channel}: seated`,
+          ).toBeCloseTo(0, 9);
+          expect(
+            r.out.axial - r.seated.axial,
+            `${name} @ ${channel}: no axial slide (peel has no ladder)`,
+          ).toBeCloseTo(0, 9);
+          expect(r.out.rot, `${name} @ ${channel}: normals`).toBeCloseTo(0, 9);
+        }
+      }
+    }
+  });
+
+  it("(f″) the rank band keeps the INNER sheet-like structure seated", () => {
+    // rankLo 0.93 with the house 0.1 feather: rank01 0.5 (PCB wings, chassis
+    // plates — sector-shaped structure that would otherwise unroll) is well
+    // below the ramp's foot, so its weight is exactly 0 at every channel.
+    for (const p of [PIECES[0], PIECES[1]]) {
+      for (const channel of CHANNELS) {
+        for (const v of VERTS) {
+          const r = runAt(recipe, p, v, channel);
+          expect(
+            dist(xz(r.out), xz(r.seated)),
+            `rank ${p.rank01} @ ${channel}`,
+          ).toBeCloseTo(0, 9);
+          expect(r.out.rot).toBeCloseTo(0, 9);
+        }
+      }
+    }
+  });
+
+  it("(f‴) the freed run CURLS BACK — the sticker law, and what parts it from rollout", () => {
+    // The one thing peel's chain does that rollout's does not: over the freed
+    // material it turns the OTHER WAY from the seated barrel, by exactly q·d/R
+    // with q = −curl. Rollout's freed run is q = 0 — it adds no turn at all
+    // beyond the anchor's own seam-to-here seed (d/R), which is the flatten the
+    // scene rejected. So the DIFFERENCE between the two is the back-roll itself.
+    // Probed at channel 1, where flight is 1 for every piece and the whole sheet
+    // is therefore freed.
+    //
+    // The rank band is opened so the comparison is about the CHAIN, not about
+    // who is admitted — (f)…(f″) above are the scope's own statements.
+    const open: Recipe<number> = {
+      ...recipe,
+      knobDefaults: { ...knobs, rankLo: 0, rankHi: 1 },
+    };
+    for (const p of PIECES) {
+      for (const v of VERTS) {
+        const a = runAt(open, p, v, 1);
+        const b = runAt(RECIPES.rollout, p, v, 1);
+        const at = `rank ${p.rank01} frac=${v.frac}`;
+        const d = v.frac * a.ctx.L;
+        expect(a.flight, `${at}: fully freed`).toBe(1);
+        expect(b.out.rot, `${at}: rollout's freed run stays flat`).toBeCloseTo(
+          d / p.R,
+          12,
+        );
+        expect(a.out.rot - b.out.rot, `${at}: the back-roll`).toBeCloseTo(
+          (knobs.curl * d) / p.R,
+          12,
+        );
+      }
+    }
+    // …and the back-roll is TIGHTER than the barrel it left: over one wedge's
+    // material the seated shell turns 2·halfSpan, the freed lip curl× that.
+    expect(knobs.curl).toBeGreaterThan(1);
   });
 });
 

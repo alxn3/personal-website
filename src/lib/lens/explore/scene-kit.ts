@@ -1,6 +1,6 @@
 // ============================================================================
 // scene-kit: the ergonomics layer under the /lens demos. Scenes stay typed TS
-// (demos.ts) — this kit only absorbs the four bookkeeping chores that made the
+// (demos.ts) — this kit only absorbs the three bookkeeping chores that made the
 // hand-written compositions long and haunted:
 //
 //   1. AUTO-RESTORE — the api handed to enter/apply RECORDS every write; on
@@ -8,11 +8,12 @@
 //      for truly custom teardown, e.g. disposing an object the demo created).
 //   2. spans()     — one declaration owns segment state, boundary gestures,
 //      mid-gesture retarget, multi-boundary jumps, and reduced-motion.
-//   3. posePath()  — camera keyframes lerped into a CameraPose, with `dist`
-//      derived from a `frame` size (frame/tan(fov/2)) so framing holds as fov
-//      drifts and ortho→perspective reads as one move.
-//   4. drive()     — writes a channel's value AND target together, so a scrubbed
+//   3. drive()     — writes a channel's value AND target together, so a scrubbed
 //      frame is a pure function of p (no target-easing scrub history).
+//
+// posePath() is a kit VERB but no longer a kit chore: it moved to
+// optics/fly-core.ts (pure math the story modules import statically) and is
+// re-exported below, unchanged, so demos still call it from here.
 //
 // Demos call the kit through the FREE-FUNCTION VERBS at the bottom of this
 // file (setShading, drive, spans, …) — no api parameter to thread. The page
@@ -22,7 +23,6 @@
 // House rule: this file must stay SMALLER than the boilerplate it deletes.
 // ============================================================================
 import type { Object3D } from "three/webgpu";
-import { lerp } from "../core/math";
 import type {
   CameraPose,
   SceneHandle,
@@ -43,74 +43,11 @@ interface UniformRef<T> {
 }
 
 // ---------------------------------------------------------------------------
-// posePath: camera keyframes → (p) => CameraPose.
+// posePath: camera keyframes → (p) => CameraPose. It LIVES in optics/fly-core.ts
+// (pure math the story modules import statically, outside this animejs tree);
+// re-exported here because the kit's demos call it as a kit verb.
 // ---------------------------------------------------------------------------
-interface Pose {
-  az?: number;
-  el?: number;
-  fov?: number;
-  /** slides the look-at point (and with it the whole rig) along world X — a
-   *  TRANSLATION the spherical rig has no other way to express. */
-  targetX?: number;
-  targetY?: number;
-  /** on-screen framing size — dist = frame/tan(fov/2), recomputed from the
-   *  interpolated fov each frame (holds the subject size as fov drifts). */
-  frame?: number;
-  /** explicit distance — wins over frame. */
-  dist?: number;
-}
-export interface PoseKey {
-  p: number;
-  /** OMITTED fields carry forward from the previous key, so a key lists only
-   *  what CHANGES; `dist`/`frame` are mutually exclusive (setting one drops the
-   *  carried other). Omit `pose` entirely to HOLD. The first key must give
-   *  az/el (and fov unless the boot fov is intended). */
-  pose?: Pose;
-  /** shapes the segment ENDING at this key (default linear). */
-  ease?: (t: number) => number;
-}
-
-const distOf = (pose: Pose, fov: number) =>
-  pose.dist ?? (pose.frame ?? 0) / Math.tan((fov * Math.PI) / 360);
-
-/** Build a pose sampler from ascending keys. Between two keys every field is
- *  lerped under the destination key's ease; `dist` is lerped between each end's
- *  distOf() evaluated at the CURRENT fov, so a frame-locked end tracks the
- *  drifting fov while a fixed-dist end holds — the exact ortho→perspective /
- *  frame idiom the hand-stacked lerps encoded. Clamps outside the key range. */
-export function posePath(
-  keys: PoseKey[],
-  bootFov = 45,
-): (p: number) => CameraPose {
-  // resolve carry-forward once: each key inherits the prior key's resolved pose
-  const R: { p: number; pose: Pose; ease?: (t: number) => number }[] = [];
-  let carry: Pose = {};
-  for (const k of keys) {
-    const pose: Pose = { ...carry, ...k.pose };
-    if (k.pose?.dist !== undefined) delete pose.frame;
-    if (k.pose?.frame !== undefined) delete pose.dist;
-    carry = pose;
-    R.push({ p: k.p, pose, ease: k.ease });
-  }
-  return (p) => {
-    let i = 0;
-    while (i < R.length - 1 && p > R[i + 1].p) i++;
-    const a = R[i];
-    const b = R[Math.min(i + 1, R.length - 1)];
-    const span = b.p - a.p;
-    const u = span > 1e-6 ? Math.min(1, Math.max(0, (p - a.p) / span)) : 0;
-    const e = b.ease ? b.ease(u) : u;
-    const fov = lerp(a.pose.fov ?? bootFov, b.pose.fov ?? bootFov, e);
-    return {
-      azimuth: lerp(a.pose.az ?? 0, b.pose.az ?? 0, e),
-      elevation: lerp(a.pose.el ?? 0, b.pose.el ?? 0, e),
-      distance: lerp(distOf(a.pose, fov), distOf(b.pose, fov), e),
-      fov,
-      targetX: lerp(a.pose.targetX ?? 0, b.pose.targetX ?? 0, e),
-      targetY: lerp(a.pose.targetY ?? 0, b.pose.targetY ?? 0, e),
-    };
-  };
-}
+export { posePath, type Pose, type PoseKey } from "../optics/fly-core";
 
 // ---------------------------------------------------------------------------
 // spans: shading sequenced across p-boundaries. One boundary crossed by a

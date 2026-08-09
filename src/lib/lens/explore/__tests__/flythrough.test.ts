@@ -6,13 +6,11 @@ import {
   passageOrder,
   poseCamX,
   travelRemap,
-} from "../demos";
+} from "../../optics/fly-core";
 
-// demos.ts's module scope reaches for `window` through scene-kit's
-// reduced-motion probe, exactly as scene-kit-knobs.test.ts does.
-(globalThis as unknown as { window: unknown }).window ??= {
-  matchMedia: () => ({ matches: false }),
-};
+// No DOM shim: optics/fly-core.ts is pure math (core/math + the prescription
+// table), unlike demos.ts, whose module scope reached for `window` through
+// scene-kit's reduced-motion probe.
 
 /**
  * The fly-through's PURE half: where the camera is, which element it is

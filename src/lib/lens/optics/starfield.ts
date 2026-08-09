@@ -4,6 +4,9 @@ import {
   attribute,
   cameraProjectionMatrix,
   clamp,
+  cos,
+  cross,
+  dot,
   float,
   length,
   max,
@@ -11,6 +14,7 @@ import {
   modelViewMatrix,
   positionGeometry,
   pow,
+  sin,
   smoothstep,
   step,
   uniform,
@@ -201,6 +205,76 @@ export const uStarSize = uniform(1);
 /** GLOBAL STREAK LENGTH GAIN, a multiplier on `streakLenRad`. Separate from
  *  `uStarStreak` so the SHAPE can be tuned live while the RAMP stays the demo's. */
 export const uStreakGain = uniform(1);
+
+// ── THE SKY TURNS ───────────────────────────────────────────────────────────
+// The `trails` scene rotates the whole field about a pole low in the frame, and
+// it does so IN THE SHADER: one angle uniform, applied to every star's and every
+// stroke's direction before anything else reads it. Not on the group transform,
+// because the group is also what story/constellations.ts's type rides
+// (SceneHandle.starfieldAttach) and the typography must stay put while the stars
+// go round it. optics/star-trails.ts draws the arcs off the same two uniforms.
+
+/** How far BELOW the view axis the pole sits, radians (~24°). The held fly pose
+ *  looks down world +X with +Y up, so a negative Y component puts the pole low
+ *  in the frame — the stars wheel around a point near the bottom of the screen,
+ *  which is where the front element's crown arrives at the reveal. */
+const SKY_SPIN_ELEV_RAD = 0.42;
+
+/** THE POLE, as a unit direction. Unit by construction (cos² + sin² = 1), and
+ *  the ONE place it is defined: the starfield's spin, the trail arcs and the
+ *  driver all read this. */
+export const SKY_SPIN_AXIS: [number, number, number] = [
+  Math.cos(SKY_SPIN_ELEV_RAD),
+  -Math.sin(SKY_SPIN_ELEV_RAD),
+  0,
+];
+
+/** THE SKY'S ROTATION, radians, BOOTS 0 — written by story/trails.ts and by
+ *  nothing else. At 0 every mark in this file is drawn exactly where it was
+ *  before the spin existed (see `rodrigues`), so the dive and the constellations
+ *  scene are bit-for-bit unchanged. */
+export const uSkySpin = uniform(0);
+/** The pole, as a uniform, so the shader side and `SKY_SPIN_AXIS` cannot drift. */
+export const uSkySpinAxis = uniform(new THREE.Vector3(...SKY_SPIN_AXIS));
+
+/**
+ * Rodrigues' rotation of a vector about a UNIT axis — the CPU mirror of
+ * `rodriguesTsl` below, and the law the tests hold.
+ *
+ * EXACT AT ANGLE 0 in floating point, which is the whole identity discipline:
+ * cos 0 is exactly 1 and sin 0 is exactly 0, so the expression collapses to
+ * `v·1 + 0 + axis·0` — the input vector, bit for bit, with no epsilon in it.
+ */
+export function rodrigues(
+  v: [number, number, number],
+  axis: [number, number, number],
+  ang: number,
+): [number, number, number] {
+  const c = Math.cos(ang);
+  const s = Math.sin(ang);
+  const d = axis[0] * v[0] + axis[1] * v[1] + axis[2] * v[2];
+  const k = d * (1 - c);
+  return [
+    v[0] * c + (axis[1] * v[2] - axis[2] * v[1]) * s + axis[0] * k,
+    v[1] * c + (axis[2] * v[0] - axis[0] * v[2]) * s + axis[1] * k,
+    v[2] * c + (axis[0] * v[1] - axis[1] * v[0]) * s + axis[2] * k,
+  ];
+}
+
+/** The same rotation as a node graph — ~10 nodes, inline math rather than a
+ *  loop, so the marks' shaders stay well inside the WebKit shader budget. */
+export function rodriguesTsl(v: TslNode, axis: TslNode, ang: TslNode): TslNode {
+  const c = cos(ang);
+  return v
+    .mul(c)
+    .add(cross(axis, v).mul(sin(ang)))
+    .add(axis.mul(dot(axis, v).mul(float(1).sub(c))));
+}
+
+/** A star direction under the sky's current rotation — the one call site's worth
+ *  of spin that every mark in this file shares. */
+const spun = (dir: TslNode): TslNode =>
+  rodriguesTsl(dir, uSkySpinAxis, uSkySpin);
 
 /** THE THROAT, as a unit direction: the fly-through's exit/view axis, world +X.
  *  Read from optics/sky.ts so the two paths can never disagree about where the
@@ -438,8 +512,13 @@ const R = float(STARFIELD_LOOK.radius);
 
 /** normalize a 2D view-space direction with an exact fallback: `mix` at t = 0
  *  returns the fallback bit-for-bit, and the divide is by `max(len, EPS)` so it
- *  can never produce a NaN to mix WITH. */
-function safeDir2(v: TslNode): TslNode {
+ *  can never produce a NaN to mix WITH.
+ *
+ *  EXPORTED because every mark drawn on this sphere needs it — the constellation
+ *  strokes (optics/constellation-lines.ts) and the trail arcs
+ *  (optics/star-trails.ts) extrude their width the same way, and three copies of
+ *  a guard is three places for an epsilon to drift. */
+export function safeDir2(v: TslNode): TslNode {
   const l = length(v);
   return mix(vec2(1, 0), v.div(max(l, EPS)), step(EPS, l));
 }
@@ -448,7 +527,11 @@ function safeDir2(v: TslNode): TslNode {
  *  tangent, shaded as an analytic capsule. */
 function starMark(ink: TslNode, opacity: TslNode): THREE.MeshBasicNodeMaterial {
   const m = markMaterial();
-  const aDir: TslNode = attribute("aDir", "vec3");
+  // THE SPIN, before anything reads the direction. `aTan` is deliberately NOT
+  // spun with it: the streak tangent only matters while `uStarStreak` is above
+  // zero, which is the dive, and the dive holds `uSkySpin` at 0 — the two ramps
+  // never overlap, so a second rotation here would be nodes spent on nothing.
+  const aDir: TslNode = spun(attribute("aDir", "vec3"));
   const aRho: TslNode = attribute("aRho", "float");
   const aTan: TslNode = attribute("aTan", "vec3");
   const aLen: TslNode = attribute("aLen", "float");
@@ -528,8 +611,9 @@ function lineMark(
   width: TslNode,
 ): THREE.MeshBasicNodeMaterial {
   const m = markMaterial();
-  const aA: TslNode = attribute("aA", "vec3");
-  const aB: TslNode = attribute("aB", "vec3");
+  // both ends spin, so an asterism turns as one rigid shape
+  const aA: TslNode = spun(attribute("aA", "vec3"));
+  const aB: TslNode = spun(attribute("aB", "vec3"));
   const side: TslNode = positionGeometry.x;
   const end: TslNode = positionGeometry.y;
 
@@ -559,6 +643,14 @@ export interface Starfield {
    *  Color object so `scene.background = starfield.backdrop` survives a theme
    *  flip without being re-assigned. */
   backdrop: THREE.Color;
+  /** THE COLOR-MATCHED CUT (story/fly.ts's exit fade): blend the live backdrop
+   *  `f` of the way from its palette value toward `rgb(r, g, b)` — 0-255 sRGB
+   *  ints, i.e. a story scene's stage tint as the page's CSS writes it — so the
+   *  last frame the sky is drawn on can already be the color of the frame that
+   *  replaces it. `f = 0` restores the palette value EXACTLY, and the dim is
+   *  remembered: a theme flip re-derives it over the new palette side rather
+   *  than dropping it (setTheme). */
+  setBackdropDim(f: number, r: number, g: number, b: number): void;
   /** park the sphere on the camera (call once per rendered frame) */
   sync(camera: THREE.Camera): void;
   /** re-palette in place — no re-bake, no rebuild, just four uniform writes */
@@ -583,6 +675,16 @@ export function createStarfield(
   const uLineOpacity = uniform(palette().lineOpacity);
   const uLineWidth = uniform(STARFIELD_LOOK.lineWidthRad);
   const backdrop = new THREE.Color(palette().backdrop);
+  /** the live backdrop dim (setBackdropDim), as fraction + target. Held as
+   *  STATE, not applied once: both a theme flip and a new dim re-derive the
+   *  backdrop from the palette side, so the two can never compound. The target
+   *  Color doubles as the call's scratch — nothing is allocated per frame. */
+  let dimF = 0;
+  const dimTarget = new THREE.Color();
+  const applyBackdrop = () => {
+    backdrop.setHex(palette().backdrop);
+    if (dimF > 0) backdrop.lerp(dimTarget, dimF);
+  };
 
   const quads = buildStarQuads(SKY.stars);
   const starGeo = new THREE.BufferGeometry();
@@ -670,6 +772,14 @@ export function createStarfield(
   return {
     object: group,
     backdrop,
+    setBackdropDim(f, r, g, b) {
+      dimF = Math.min(1, Math.max(0, f));
+      // sRGB, like the palette's own setHex: these ints are the CSS color the
+      // stage behind the canvas is painted with, and the two must READ the same.
+      dimTarget.setRGB(r / 255, g / 255, b / 255, THREE.SRGBColorSpace);
+      applyBackdrop();
+      invalidate();
+    },
     sync(camera) {
       group.position.copy(camera.position);
     },
@@ -680,7 +790,7 @@ export function createStarfield(
       uStarOpacity.value = p.starOpacity;
       uLineInk.value.setHex(p.line);
       uLineOpacity.value = p.lineOpacity;
-      backdrop.setHex(p.backdrop);
+      applyBackdrop(); // the new palette side, carrying any live dim
       invalidate();
     },
     dispose() {

@@ -159,6 +159,62 @@ export function rollStepOps<S>(A: Algebra<S>): OpItem<S>[] {
   ];
 }
 
+const PI = 3.141592653589793;
+const TAU = 6.283185307179586;
+
+/** THE HOUSE SEAM HANDEDNESS — the winding sense the ctx's material coordinate
+ *  `d` is written in, shared by every recipe (`swirl` reads it off ctx.wrapDir;
+ *  every other rotation takes it at the recipe's call site). It lives here
+ *  because THREE tiers need the same number: both hosts, which put it on the ctx
+ *  they build (ops/host.ts, ops/cpu.ts), and story/peelcards.ts, whose drift has
+ *  to fan its sectors the same way round the barrel the peel does. */
+export const WRAP_DIR = -1;
+
+/** THE PEEL'S FAN ORDER: where a piece whose seated meridian is `t0` sits in the
+ *  peel's departure sequence, 0 → 1 once around the barrel, walking it in the
+ *  house winding direction (`wrapDir`). `t0` is atan2's range (−π, π], so the
+ *  result lands in [0, 1] whichever way the winding runs.
+ *
+ *  It lives here, generic over the algebra, because TWO tiers key on it and a
+ *  second answer would put a strip's drift on some other sector's clock: the
+ *  `peel` recipe builds it as nodes for its `during` window (ops/recipes says why
+ *  the gate's own staggers cannot do this job), and story/peelcards.ts calls it
+ *  on NUM for the outward drift's per-sector windows. */
+export function peelOrder<S>(A: Algebra<S>, t0: Sc<S>, wrapDir: number): S {
+  return A.div(A.add(A.mul(t0, wrapDir), PI), TAU);
+}
+
+// STICKER-PEEL chain — the roll step's sibling, and the ONE line of difference
+// is the freed run's curvature.
+//
+// The roll step above frees material FLAT (q = 0): the sheet leaves the barrel
+// along its own tangent plane and lies down like a carpet. A sticker does the
+// opposite. Lift a decal off a curved surface and the freed lip does not
+// flatten — it INVERTS: the film relaxes past straight and rolls back on itself,
+// away from the surface it came off, so the free end ends up facing where it
+// started. That is a NEGATIVE q on the same chain — the arc turns the other way
+// round — and |q| > 1 makes the back-roll TIGHTER than the barrel it left, which
+// is what reads as a curl rather than as a slack flap.
+//
+// So: anchor on the seam, spend `flight·L` of material at q = −curl (the freed,
+// curled-back run), and leave the rest on the seated barrel. The boundary
+// between the two IS the crease, and it travels along the sheet as flight runs —
+// the same travelling front the roll step has, with the freed side rolled up
+// instead of laid out.
+//
+// The LEADING arc carries the curl rather than the seated q = 1, exactly as the
+// roll step's leads with q = 0: seam overrun leaves the barrel here too (see
+// `arc`'s note), which is the price of a travelling front whose first boundary
+// is at the seam. It is the same exception, one sign further from the barrel.
+export function stickerPeelOps<S>(A: Algebra<S>, curl: Sc<S>): OpItem<S>[] {
+  return [
+    rot<S>((ctx) => ctx.halfSpan),
+    anchor<S>(),
+    arc<S>(A.neg(curl), (ctx) => A.mul(ctx.flight, ctx.L)),
+    arc<S>(1), // the still-seated remainder (unbounded)
+  ];
+}
+
 /** The fold profile's four shape knobs, in the recipes' own physical units. */
 export interface FoldKnobs<S> {
   /** crease centre as a fraction of the sheet's material length */

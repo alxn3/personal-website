@@ -60,6 +60,7 @@ import type { Sc } from "./algebra";
 import { tslAlgebra, type TslNode } from "./algebra-tsl";
 import { gate } from "./gate";
 import { makeRecipes, type Recipe } from "./recipes";
+import { WRAP_DIR } from "./house";
 import {
   runPipeline,
   validatePipeline,
@@ -78,11 +79,6 @@ import {
 export type RecipeName = Recipe<TslNode>["name"];
 
 const TAU = 6.283185307179586;
-// Seam handedness, shared by every recipe (ops/recipes.ts ASSEMBLE_WRAP_FROM /
-// ROLLOUT_FROM) — the HOUSE winding sense the ctx's material coordinate `d` is
-// written in, and the sign `swirl` reads off ctx.wrapDir (every other rotation
-// takes it at the recipe's call site).
-const WRAP_DIR = -1;
 const HOUSE_FROM = -1;
 // The same radius floor ops/frames.ts applies, for the edge-geometry fallback
 // (an unmatched vertex must never hand the algebra R = 0 — R is a divisor).
@@ -203,7 +199,9 @@ export function recipeChannel(name: RecipeName): { value: number } {
  * ops/gate.ts divide by zero. Three denominators have to stay positive:
  *
  *   windowFrac                  ≥ 0.05   (assemble: 1 − stagger − partStagger;
- *                                         rollout: 1 − stagger)
+ *                                         rollout: 1 − stagger; peel: a
+ *                                         literal 1 — its stagger is not a gate
+ *                                         input at all, see below)
  *   split − flightStart         > 0      (only assemble has flightStart ≠ 0)
  *   rollEnd − split + min(overlap, split) > 0
  *
@@ -250,7 +248,10 @@ export function recipeChannel(name: RecipeName): { value: number } {
  * `validatePipeline`'s advisory; a KNOB-BOUND one is a uniform no static pass
  * can read, so the rule is: any knob wired into a `Progress` field is a
  * gate-feeding knob and MUST enter this table (from ≥ 0, to ≥ from + ε,
- * ease > 0). None ship today — no recipe carries a `during` yet.
+ * ease > 0). ONE ships: `peel.stagger`, which IS its `during` window (the peel's
+ * cast defeats both of the gate's own staggers — ops/recipes says why), so its
+ * 0.85 ceiling is what keeps the window 0.15 wide rather than what keeps
+ * windowFrac off the floor. `__tests__/progress.test.ts` (l′) walks it.
  */
 export const KNOB_LIMITS: Partial<
   Record<RecipeName, Record<string, readonly [number, number]>>
@@ -267,6 +268,10 @@ export const KNOB_LIMITS: Partial<
     flatten: [0.05, 30],
   },
   rollout: { stagger: [0, 0.85] },
+  // peel's knob is a `during` width, not a gate window: 1 − stagger is how much
+  // of the channel each piece gets, so 0.85 leaves 0.15 — the same ceiling
+  // guarding a different denominator.
+  peel: { stagger: [0, 0.85] },
   helix: { snap: [0, 1], coil: [0.05, 3] },
   bend: { radius: [1, 200] },
 };

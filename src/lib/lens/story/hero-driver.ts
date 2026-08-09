@@ -31,6 +31,8 @@ import {
 } from "./story";
 import { band, BAND_FEATHER, clamp01, smoothstep } from "../core/math";
 import { isLightTheme } from "../core/theme";
+import { createInternalsAmbient } from "./internals";
+import { createPeelCards } from "./peelcards";
 
 const F_STOPS = ["2.8", "4", "5.6", "8", "11", "16", "22"];
 
@@ -123,8 +125,9 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
   // mechanism envelopes below name their scenes inline via pulse()
   const heroR = RANGES[0];
   const zR = rangeOf("zoom");
-  const fR = rangeOf("focus");
-  const exR = rangeOf("explode");
+  const peR = rangeOf("peel");
+  const inR = rangeOf("internals");
+  const tR = rangeOf("trails");
   const rwR = rangeOf("rewrap");
   const capR = rangeOf("capsOn");
   // Instrument chrome (HUD + scene rail) fades out over the tail of the FINAL
@@ -163,66 +166,143 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
 
   let lastP = 0; // last p handed to frame() — read by the dev scrub panel
 
+  // The fly-through span's driver (story/fly.ts), loaded on approach: it
+  // statically imports the optics uniform boxes, which must stay out of the
+  // homepage's initial chunk, so it is dynamic-import ONLY. Prefetch starts at
+  // the PEEL — several scenes of scrolling before the dive needs it, and, unlike
+  // the cards edge it used to sit on, a quiet one: the import's first-visit
+  // hitch used to land on the peel→cards park flip, which is the story's largest
+  // lateral pan and the worst place in the story to drop frames.
+  let fly: { frame(p: number): void; warm(): Promise<void> } | undefined;
+  let flyLoad: Promise<unknown> | undefined;
+  const flyPrefetchP = peR.p0;
+  /** Run `cb` when the page has a moment, and no later than the timeout. Used
+   *  for the fly's optics warm-up, which is expensive and must not land on the
+   *  frame that imported it either. */
+  const atIdle = (cb: () => void) => {
+    if (typeof requestIdleCallback === "function")
+      requestIdleCallback(cb, { timeout: 2000 });
+    else setTimeout(cb, 500);
+  };
+
+  // The sky chapter's ink (story/constellations.ts), loaded on the same terms
+  // and for the same reason: it statically imports optics/ (the line engine and
+  // the sky catalog), which must stay out of the homepage's initial chunk. It
+  // is SELF-DRIVING once created — its own scene.onFrame ambient, gated on
+  // storyTarget — so there is no per-frame call here, only the load. Prefetch
+  // starts as the dive does: the sky scenes are two scenes further on, which is
+  // several seconds of scrolling for a module of this size.
+  let constLoad: Promise<unknown> | undefined;
+  const constPrefetchP = rangeOf("flythrough").p0;
+
+  // The turning sky (story/trails.ts), on the same terms again: lazy for the
+  // same chunk reason, and SELF-DRIVING off its own scene.onFrame. Prefetch
+  // starts one scene ahead of its own span, at the top of the sky chapter.
+  //
+  // NO frame(lastP) RE-DRIVE, unlike the fly hook. That one exists because
+  // fly.frame(p) is called from HERE, so a deep link that imports on its one
+  // boot frame and never scrolls again would never mount the sky. This driver
+  // takes its p from scene.state.storyTarget inside its own onFrame, which the
+  // render loop runs every frame in story mode — so it catches up by itself.
+  let trailsLoad: Promise<unknown> | undefined;
+  const trailsPrefetchP = rangeOf("constellations").p0;
+
+  // The two STATICALLY imported story modules, booted here — above frame(),
+  // which reaches for peelCards, and together, because they are the same kind of
+  // thing: a scene's own choreography, gated on its own span.
+  //
+  // The internals scene's time-based ambient (story/internals.ts) registers its
+  // own onFrame and gates itself to the internals span, where it — not frame()
+  // — owns focus and aperture. The peel/cards module (story/peelcards.ts) is
+  // driven from frame() below on the scroll side and runs the card field's orbit
+  // from its own onFrame. Neither pulls in anything from optics/, unlike the fly.
+  createInternalsAmbient(scene);
+  const peelCards = createPeelCards(scene);
+
   function frame(p: number) {
     lastP = p;
     // Each mechanism PULSES over its own scene — rises during the hold, resets
     // during the NEXT scene's transit. All breakpoints derive from the ranges.
     const zoom = pulse(p, {
       rise: ["zoom", 0.15, 0.62],
-      fall: ["focus", 0, 0.4],
+      fall: ["peel", 0, 0.4],
     });
-    const focus = pulse(p, {
-      rise: ["focus", 0.15, 0.62],
-      fall: ["aperture", 0, 0.4],
-    });
-    const aperture = pulse(p, {
-      rise: ["aperture", 0.2, 0.66],
-      fall: ["explode", 0, 0.35],
-    });
-    // EXPLODE (the explode recipe) — the whole model fans off the axis. Completes
-    // EARLY in its scene (well fanned apart by the time the caption is prominent,
-    // not a half-open cage), HOLDS through the light-path scene, then collapses
-    // on its OWN early fall: the solid core comes home behind the light-path
-    // isolate's blackout and is seated, waiting, by the time the shells wrap
-    // back on — the classic "glass column waits" beat. Assemble keeps the shared
-    // RETURN window, so its staggered gate owns the visible layer-by-layer return.
+    // BRIDGE (Phase 0 — Phase F replaces this with the trails→shell entrance):
+    // the ring story never fully explodes the lens, but the signed-off rewrap
+    // reassembly needs the model torn down before it can wrap back on. Until
+    // the trails scene hands real shell pieces to rewrap, tear down over the
+    // trails scene so the ending still plays. Assemble keeps the shared RETURN
+    // window — its staggered gate owns the visible layer-by-layer return.
     const explode = pulse(p, {
-      rise: ["explode", 0.08, 0.55],
+      rise: ["trails", 0.05, 0.5],
       fall: [
-        ["lightPath", 0.9],
+        ["trails", 0.85],
         ["rewrap", 0.3],
       ],
     });
-    // ASSEMBLE (the assemble recipe) runs BACKWARDS here: 1 is the disassembled
-    // state — shells unrolled to flat sheets and flown off the ladder — and 0 is
-    // seated. So its RISE is the teardown's peel (it rides the explode, slightly
-    // delayed so the early explode still reads as solid wedges pulling apart) and
-    // its FALL, over the same return window, IS the reassembly: each layer flies
-    // home and wraps back on inner → outer, on the recipe's own per-rank gate,
-    // while the glass column sits waiting inside.
-    //
-    // ONE channel does both halves because no morph is needed: the assemble
-    // recipe's channel-1 state IS the flat-sheet one, so the teardown simply
-    // ENDS where the reassembly resumes — one continuous story. Curl is not a
-    // scrub either: the wrap profile derives each shell's curl from its own
-    // stick phase.
-    const assemble = pulse(p, { rise: ["explode", 0.2, 0.85], fall: RETURN });
+    const assemble = pulse(p, { rise: ["trails", 0.15, 0.8], fall: RETURN });
 
     scene.state.zoomTarget = zoom;
-    scene.state.focusTarget = focus;
-    scene.state.apertureTarget = aperture;
+    // THE DOOR CLOSES BEFORE THE DIVE: the aperture ramps to shut over the tail
+    // of the internals scene and stays there, so the fly-through's own opening
+    // ramp (story/fly.ts, FLY.pAperture) starts from f/22 with no jump. The
+    // stop-down is invisible — it happens inside the reassembling lens.
+    //
+    // PAIRED with story/internals.ts's `preShut` (internalsApertureAt), which
+    // runs this identical expression INSIDE the internals span and adds the
+    // ambient breath on top. Keep the two textually identical: together they
+    // are one continuous law across both edges of the scene.
+    const preShut = smoothstep(atFrac(inR, 0.6), atFrac(inR, 0.95), p);
+    // THE INTERNALS SPAN IS NOT OURS. story/internals.ts owns focus and
+    // aperture (value AND target) for the whole scene, writing from
+    // scene.onFrame — a different rAF with no ordering guarantee against this
+    // one, so the two writers are separated by RANGE, not by order.
+    //
+    // Outside the span focus rests at 0. The fly span writes focus (value AND
+    // target) too, and it does so from fly.frame() at the END of this function
+    // — after these lines, in the same call — so those two never fight either:
+    // the reset only reaches the channel on the frames the fly is not driving it.
+    if (p < inR.p0 || p > inR.p1) {
+      scene.state.focusTarget = 0;
+      scene.state.apertureTarget = preShut;
+    }
     scene.state.explodeTarget = explode;
     scene.state.assembleTarget = assemble;
     scene.state.storyTarget = p;
 
-    // ink fill: wireframe → HALF fill through zoom (see the internals extend) →
-    // FULL ink once zoom is done → drops toward wireframe for the teardown/light-
-    // path (glass pops) → back to full ink for the caps-on product shot.
+    // ink fill: wireframe → HALF fill through zoom → FULL ink once the peel
+    // starts → drops toward wireframe for the bridge teardown → back to full
+    // ink for the caps-on product shot.
     uInkFill.value =
       0.5 * smoothstep(atFrac(zR, 0.0), atFrac(zR, 0.5), p) +
-      0.5 * smoothstep(fR.p0, atFrac(fR, 0.35), p) -
-      0.84 * smoothstep(atFrac(exR, 0.1), atFrac(exR, 0.6), p) +
-      0.84 * smoothstep(atFrac(rwR, 0.1), atFrac(rwR, 0.8), p); // fills return as layers wrap on
+      0.5 * smoothstep(peR.p0, atFrac(peR, 0.35), p) -
+      0.84 * smoothstep(atFrac(tR, 0.1), atFrac(tR, 0.6), p) +
+      0.84 * smoothstep(atFrac(rwR, 0.1), atFrac(rwR, 0.8), p);
+
+    // THE SHELL LEAVES WITH THE PEEL, LATE: the strips have to stay visible
+    // through the whole unroll and the start of their outward drift, so the
+    // wink-out only runs over peel [0.60, 0.95] — inside the card cross-fade
+    // (story/peelcards.ts fades the cards in over peel [0.55, 0.98]), which is
+    // what covers it: the strips scatter away as the cards arrive over them.
+    // ONE envelope for all three casts — the skin, the two inner tubes and the
+    // baffles come off inside this same window, ordered outside-in by their own
+    // bands of the level (core/scene captureShellThresholds), so the layers
+    // uncover one another instead of leaving together.
+    // The shell then stays gone while the cards orbit and the internals work,
+    // and is restored at rewrap — behind the opaque sky backdrop (the fly span
+    // owns scene.background until ~rewrap 0.25), so the pop is unseen and the
+    // reassembly flies the shell home as before.
+    scene.setShellFade(
+      1 -
+        smoothstep(atFrac(peR, 0.6), atFrac(peR, 0.95), p) +
+        smoothstep(rwR.p0, atFrac(rwR, 0.05), p),
+    );
+
+    // THE PEEL AND THE CARD FIELD (story/peelcards.ts). AFTER the channel
+    // writes above, because it owns the `peel` channel outright (value AND
+    // target) and the shell wedges' part offsets; BEFORE the fly below, which
+    // must stay last for the same reason on aperture and focus.
+    peelCards.frame(p);
 
     // per-block progress custom properties, so content-specific effects (the
     // focus blur-rack, a pin's fade) live in CSS with the content instead of
@@ -242,7 +322,61 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
       c.el.style.setProperty("--beat-visibility", String(band(p, c.a, c.b)));
     }
 
-    // HUD + scene rail — current scene from the ranges
+    bgTint(p);
+
+    // LAST, deliberately: the fly owns the aperture and focus channels while it
+    // is active, and its writes have to land after the resets above.
+    //
+    // ALL THREE LAZY HOOKS CATCH AFTER THE .then, not with its second argument: the
+    // two-argument form only sees a failed IMPORT, and a factory that threw
+    // would go out as an unhandled rejection instead. Neither driver is
+    // load-bearing — the story runs without them — so a failure is a warning
+    // and nothing more.
+    if (!flyLoad && p > flyPrefetchP) {
+      flyLoad = import("./fly")
+        .then((m) => {
+          fly = m.createStoryFly(scene);
+          // A deep link parked inside the fly span schedules this import on
+          // its ONE boot frame and then never scrolls — without a re-drive,
+          // fly.frame(p) would not run until the user nudges the page and the
+          // sky would never mount. frame() is idempotent for a repeated p.
+          frame(lastP);
+          // …and then, at idle, BUILD the dive's optics (fly.ts warm): the
+          // module import is only half the prefetch — the wormhole pass's
+          // pipeline compile is the rest, and it is the crossing's whole stall
+          // if it is left to the first frame of the span. A no-op if that boot
+          // frame already put us inside the dive.
+          atIdle(() => void fly?.warm());
+        })
+        .catch((err) => console.warn("lens fly: driver failed to load", err));
+    }
+    fly?.frame(p);
+
+    if (!constLoad && p > constPrefetchP) {
+      constLoad = import("./constellations")
+        .then((m) => m.createStoryConstellations(scene))
+        .catch((err) =>
+          console.warn("lens constellations: driver failed to load", err),
+        );
+    }
+
+    if (!trailsLoad && p > trailsPrefetchP) {
+      trailsLoad = import("./trails")
+        .then((m) => m.createStoryTrails(scene))
+        .catch((err) =>
+          console.warn("lens trails: driver failed to load", err),
+        );
+    }
+
+    // HUD + scene rail — current scene from the ranges.
+    //
+    // DEAD LAST, after every span owner above has written its channels: the
+    // readout REPORTS the story, so it must be composed from the settled state
+    // rather than from the state as it stood at the top of this call. The
+    // f-stop is why — the fly owns aperture, so composing the string before
+    // fly.frame(p) printed the PRE-fly value, and re-entering the dive from
+    // above (a single scroll event from p ≈ 0.97 to ≈ 0.52, then parked) left
+    // the HUD claiming f/22 over a wide-open lens until the next scroll.
     let scn = RANGES.length - 1;
     for (let k = 0; k < RANGES.length; k++) {
       if (p < RANGES[k].p1) {
@@ -251,7 +385,8 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
       }
     }
     const focal = Math.round(18 + zoom * 32);
-    const fstop = F_STOPS[Math.round(aperture * (F_STOPS.length - 1))];
+    const fstop =
+      F_STOPS[Math.round(clamp01(scene.state.aperture) * (F_STOPS.length - 1))];
     hud.textContent = `SCN ${String(scn).padStart(2, "0")} / ${STORY[scn].title} · ${focal}MM · f/${fstop} · EXPL ${Math.round(explode * 100)}%`;
     for (const r of rails) r.el?.classList.toggle("is-on", scn === r.i);
 
@@ -262,8 +397,6 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
     const chrome = 1 - smoothstep(CHROME_FADE_P0, capR.p1, p);
     hud.style.opacity = String(chrome);
     sceneRail.style.opacity = String(chrome);
-
-    bgTint(p);
   }
 
   const scrollP = () => {
@@ -296,6 +429,7 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
       ["aperture", "aper"],
       ["explode", "expl"],
       ["assemble", "asm"],
+      ["peel", "peel"],
     ] as const;
 
     const style = document.createElement("style");

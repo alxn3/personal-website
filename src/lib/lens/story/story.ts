@@ -89,71 +89,115 @@ export const STORY: StoryScene[] = [
     cam: { pos: [0, 0, 1.3], fov: 32, up: [0, 1, 0], ortho: 1, xs: -0.24 }, // side profile (horizontal)
   },
   {
-    id: "focus",
-    title: "FOCUS",
+    id: "peel",
+    title: "PEEL",
     rail: true,
-    hold: 1.15,
+    hold: 1.2,
     transit: 0.5,
-    bg: [30, 35, 24],
-    bgLight: [238, 242, 229],
-    // Side elevation, lens VERTICAL (rolls up in place) — dollied IN (0.95 < 1.3)
-    // and the look-target dropped toward the mount (ys) so the hold frames the
-    // focusing element / lead screw region, not the whole lens.
-    // xs is smaller than the other parked scenes because the dolly-in magnifies
-    // the park shift in screen terms — 0.34 here would shove the lens half off-frame.
+    bg: [26, 23, 17],
+    bgLight: [240, 236, 226],
+    // Side profile with a touch of perspective, tuned live against the peel.
+    // PULLED BACK (r ≈ 17.6 vs the zoom's 14.3): the strips drift 2.6 wu out and
+    // 0.6 wu front, which at the zoom's radius walks the outermost ones off the
+    // top and bottom of the frame exactly as they flatten. xs is NEGATIVE — this
+    // caption sits LEFT, so the lens (and the card field fading in over the
+    // drift, whose rings turn about the OPTICAL AXIS and are strung ALONG it,
+    // so the field runs the length of the lens) is shoved RIGHT off it. Don't shove much harder: the field is ~11 wu across
+    // and the frame ~17.6, so every extra step of park that clears the caption
+    // walks the far side of the orbit out of the frame instead.
     cam: {
-      pos: [0, 0, 0.95],
+      pos: [0.31, 0.15, 1.57],
       fov: 32,
-      up: [1, 0, 0],
-      ortho: 1,
-      xs: 0.2,
-      ys: -0.09,
+      up: [0, 1, 0],
+      ortho: 0,
+      xs: -0.26,
     },
   },
   {
-    id: "aperture",
-    title: "APERTURE",
+    id: "cards",
+    title: "CARDS",
     rail: true,
-    hold: 1.15,
+    hold: 1.3,
     transit: 0.5,
-    bg: [36, 31, 21],
-    bgLight: [245, 239, 225],
-    cam: { pos: [-1.3, 0, 0], fov: 30, up: [0, 1, 0], ortho: 1, xs: 0 }, // rear elevation
+    bg: [26, 23, 17],
+    bgLight: [240, 236, 226],
+    // The card field's hold. Pulled back FURTHER than the peel (r ≈ 19.3): the
+    // rings turn about the OPTICAL AXIS at 3.6-6.0 wu and are strung along it,
+    // so a card swings to within ~4 wu of the camera at the near side of its
+    // pass and blows up on the frame — the extra radius (and the narrower fov,
+    // which flattens exactly that near-side swell) is what keeps a passing card
+    // readable instead of filling the frame. xs is POSITIVE and this scene's
+    // caption sits RIGHT, the mirror of the peel: the lens and the rings are
+    // shoved LEFT off it.
+    cam: { pos: [0.39, 0.23, 1.81], fov: 32, up: [0, 1, 0], ortho: 0, xs: 0.2 },
   },
   {
-    id: "explode",
-    title: "EXPLODE",
+    id: "internals",
+    title: "INTERNALS",
     rail: true,
-    hold: 1.5,
-    transit: 0.6,
-    bg: [18, 16, 11],
-    bgLight: [231, 227, 215],
-    // rolls DOWN out of the rear, structure fans radially off-frame; the up-vector
-    // routes through +Y (never antipodal to the rear's up) via the waypoints.
-    cam: { pos: [0, 0, -1.25], fov: 25, up: [-1, 0, 0], ortho: 0, xs: 0 }, // pure-side, pointing down, zoomed on the glass
-    via: [
-      {
-        pos: [-1.2, 0.35, -0.7],
-        fov: 34,
-        up: [-0.3, 0.95, 0],
-        xs: 0,
-      },
-      {
-        pos: [-0.7, 0.18, -1.15],
-        fov: 30,
-        up: [-0.9, 0.2, 0],
-        xs: 0,
-      },
-    ],
+    hold: 1.4,
+    transit: 0.5,
+    bg: [30, 35, 24],
+    bgLight: [238, 242, 229],
+    // Phase C: REAR three-quarter, looking down the bore from the mount end —
+    // tuned live against the shell-off model. The barrel under the shell is a
+    // closed chassis, so nothing reads from outside it: the bore is the only
+    // window, and the REAR bore is the one worth taking. The focusing group and
+    // the lead screw/motor sit in the rear third (world x ≈ −1.5…−0.9), so from
+    // here the ambient rack is a visible ring racking in and out instead of a
+    // shimmer buried behind the front element; the mount, contacts and control
+    // board are the parts the pins name. It also sets up the fly-through, which
+    // dives rear-to-front from almost this pose.
+    // The camera sits BEHIND the lens (−X), which also flips which way world +Z
+    // maps on screen — that is what un-crosses the pins, since the parts they
+    // name are all on the +Z side. Perspective, NOT the ortho flatten: an
+    // orthographic elevation has no bore to look down. Don't pull the radius in
+    // much below ~11 (|pos| ≈ 1.0): closer, the depth fade starts showing the
+    // chassis through itself and the frame turns to mush.
+    cam: {
+      pos: [-1.0, 0.16, 0.32],
+      fov: 28,
+      up: [0, 1, 0],
+      ortho: 0,
+      xs: 0.1,
+      ys: -0.02,
+    },
   },
   {
-    id: "lightPath",
-    title: "LIGHT PATH",
-    hold: 0.9,
-    transit: 0,
-    bg: [18, 16, 11],
+    id: "flythrough",
+    title: "FLY-THROUGH",
+    rail: true,
+    hold: 1.8,
+    transit: 0.5,
+    bg: [12, 11, 8],
     bgLight: [231, 227, 215],
-    cam: { pos: [0, 0, -1.25], fov: 25, up: [-1, 0, 0], ortho: 0, xs: 0 }, // holds the explode pose
+    // PLACEHOLDER pose (Phase B REPLACES the camera through this scene): parked
+    // dead-on at the rear, where the dive begins.
+    cam: { pos: [-1.3, 0, 0], fov: 30, up: [0, 1, 0], ortho: 0, xs: 0 },
+  },
+  {
+    id: "constellations",
+    title: "CONSTELLATIONS",
+    rail: true,
+    hold: 1.3,
+    transit: 0,
+    bg: [10, 9, 7],
+    bgLight: [238, 234, 222],
+    // PLACEHOLDER (Phase E): sky scene — holds the fly-through's parked pose
+    // exactly (transit 0 must not snap: same pose, pure hold, like the old
+    // lightPath row did with explode's).
+    cam: { pos: [-1.3, 0, 0], fov: 30, up: [0, 1, 0], ortho: 0, xs: 0 },
+  },
+  {
+    id: "trails",
+    title: "TRAILS",
+    rail: true,
+    hold: 1.2,
+    transit: 0,
+    bg: [10, 9, 7],
+    bgLight: [238, 234, 222],
+    // PLACEHOLDER (Phase F): still the same parked pose, pure hold.
+    cam: { pos: [-1.3, 0, 0], fov: 30, up: [0, 1, 0], ortho: 0, xs: 0 },
   },
   {
     id: "rewrap",
@@ -243,16 +287,18 @@ export const STORY: StoryScene[] = [
 // validates its own windows at call time.)
 
 // Scene ids consumers resolve BY NAME: camera.ts's hero-end portrait lift, the
-// hero-driver's pulse windows and return window, and cinematics.ts's isolate /
-// caps-on constants. The cinematics ones are MODULE-SCOPE behind a static
-// import, so a renamed id takes down /lens too — a page with no story at all.
+// hero-driver's pulse windows and return window, and cinematics.ts's caps-on
+// constants. The cinematics ones are MODULE-SCOPE behind a static import, so a
+// renamed id takes down /lens too — a page with no story at all.
 const REQUIRED_IDS = [
   "hero",
   "zoom",
-  "focus",
-  "aperture",
-  "explode",
-  "lightPath",
+  "peel",
+  "cards",
+  "internals",
+  "flythrough",
+  "constellations",
+  "trails",
   "rewrap",
   "capsOn",
 ];

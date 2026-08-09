@@ -8,6 +8,7 @@ import {
   type VertexState,
 } from "./ops";
 import { makeRecipes, type Recipe } from "./recipes";
+import { WRAP_DIR } from "./house";
 import {
   getActiveRecipes,
   opsSpinBox,
@@ -51,7 +52,6 @@ const RECIPES = makeRecipes<number>(A);
 
 // Mirrors of host.ts's fold() constants — same names, same values.
 const TAU = 6.283185307179586;
-const WRAP_DIR = -1;
 const HOUSE_FROM = -1;
 /** host.ts's hard idle gate is `step(1e-6, channel)`. */
 const IDLE_EPS = 1e-6;

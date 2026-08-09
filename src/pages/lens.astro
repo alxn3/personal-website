@@ -817,7 +817,7 @@ const shadingTransitions = [
     const storyCamActive = () => Boolean(storyCamToggle?.checked && activeAnim);
     // (Re)apply the toggle. Engaging SNAPS the story channel (value AND
     // target) — easing up from 0 would fly the camera through the whole
-    // earlier story (and its light-path isolate) just to reach the mapped p.
+    // earlier story just to reach the mapped p.
     const syncStoryCam = () => {
       const on = storyCamActive();
       scene.setStoryCamera(on);

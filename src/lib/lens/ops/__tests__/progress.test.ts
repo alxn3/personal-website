@@ -484,17 +484,52 @@ describe("validatePipeline — the Progress invariants", () => {
 
 // ── (l) inertness ───────────────────────────────────────────────────────────
 
-describe("no shipped recipe uses during", () => {
-  it("(l) the recipe goldens cannot move: not one carries a Progress", () => {
-    const RECIPES = makeRecipes(NUM);
-    const carries = (items: OpItem<number>[]): boolean =>
-      items.some(
-        (i) =>
-          i.kind === "group" && (i.progress !== undefined || carries(i.items)),
-      );
-    for (const recipe of Object.values(RECIPES)) {
-      const ctx = ctxAt(0.5);
-      expect(carries(recipe.build(ctx, recipe.knobDefaults))).toBe(false);
-    }
+describe("which shipped recipes use during", () => {
+  const RECIPES = makeRecipes(NUM);
+  const carries = (items: OpItem<number>[]): boolean =>
+    items.some(
+      (i) =>
+        i.kind === "group" && (i.progress !== undefined || carries(i.items)),
+    );
+
+  it("(l) exactly one does — `peel`, whose stagger IS its window", () => {
+    // The rest are inert, so their goldens cannot move through this machinery
+    // at all. `peel` is the exception on purpose (ops/recipes states why: both
+    // of the gate's stagger inputs are degenerate on the peel's cast), so its
+    // window is the thing to keep honest — (l′) below.
+    for (const recipe of Object.values(RECIPES))
+      expect(
+        carries(recipe.build(ctxAt(0.5), recipe.knobDefaults)),
+        recipe.name,
+      ).toBe(recipe.name === "peel");
+  });
+
+  it("(l′) peel's window is legal at every meridian and every stagger", () => {
+    // The invariants a knob-bound window puts beyond validatePipeline's reach
+    // (it can only read literals): from ≥ 0 and to > from for every piece, at
+    // both ends of KNOB_LIMITS' [0, 0.85] — and to ≤ 1, so the last piece is
+    // fully played by channel 1 rather than caught mid-peel forever.
+    const recipe = RECIPES.peel;
+    const spy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    for (const stagger of [0, 0.45, 0.72, 0.85])
+      for (const t0 of [-Math.PI, -1.15, 0, 1.4, Math.PI]) {
+        const items = recipe.build(
+          { ...ctxAt(0.5), t0 },
+          {
+            ...recipe.knobDefaults,
+            stagger,
+          },
+        );
+        const g = items[0] as { progress: { from: number; to: number } };
+        const at = `stagger ${stagger} t0 ${t0}`;
+        expect(g.progress.from, `${at}: from`).toBeGreaterThanOrEqual(0);
+        expect(g.progress.to, `${at}: width`).toBeGreaterThan(g.progress.from);
+        expect(g.progress.to, `${at}: ends by 1`).toBeLessThanOrEqual(
+          1 + 1e-12,
+        );
+        validatePipeline(items, `peel-${at}`);
+      }
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
   });
 });

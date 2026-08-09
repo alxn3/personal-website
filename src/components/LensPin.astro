@@ -4,7 +4,7 @@
  * named model node's live screen position (following it through zoom, focus,
  * explode…), a short leader line, and a small mono label (the slot, or `label`).
  *
- *   <LensPin scene="focus" track="Focus_LeadScrew" label="STM LEAD SCREW" />
+ *   <LensPin scene="internals" track="Focus_LeadScrew" label="STM LEAD SCREW" />
  *
  * `scene` ties the pin's fade to a story scene — the driver writes that scene's
  * band into `--beat-visibility` on every `[data-beat]` element, and the opacity
@@ -50,8 +50,13 @@ const { scene, track, label, side = "right", class: className } = Astro.props;
     width: 0;
     height: 0;
     /* the scroll driver writes this scene's band into --beat-visibility every
-       frame; with no driver the pin simply stays hidden */
-    opacity: var(--beat-visibility, 0);
+       frame; with no driver the pin simply stays hidden. The band lights
+       captions during the camera transit, but a pin points at a 3D position —
+       it must wait for the camera to arrive (scene-local ~0.3–0.47, past the
+       transit's worst) or the leader lines point at a pile. */
+    opacity: calc(
+      var(--beat-visibility, 0) * clamp(0, (var(--beat-local, 0) - 0.3) * 6, 1)
+    );
     pointer-events: none;
     will-change: opacity, transform;
   }

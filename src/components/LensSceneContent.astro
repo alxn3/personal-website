@@ -33,7 +33,7 @@
 import { bandOf } from "../lib/lens";
 
 interface Props {
-  /** StoryScene id from story/story.ts (e.g. "zoom", "explode") — the band. */
+  /** StoryScene id from story/story.ts (e.g. "zoom", "internals") — the band. */
   scene: string;
   /** Which stage edge to occupy on desktop. Default "left". */
   pos?: "left" | "right" | "top" | "bottom";
@@ -177,7 +177,6 @@ const band = bandOf(scene);
     );
   }
   /* right-placed blocks: dramatic rag-right heading, but body copy reads left */
-  .lens-cap[data-pos="right"] :global(.cap-rack),
   .lens-cap[data-pos="right"] :global(.cap-body) {
     text-align: left;
   }
@@ -233,13 +232,8 @@ const band = bandOf(scene);
         rgb(var(--scrim-rgb, 18 16 11) / 0) 74%
       );
     }
-    .lens-cap :global(.cap-rack),
     .lens-cap :global(.cap-body) {
       text-align: center;
-    }
-    .lens-cap :global(.cap-rack) {
-      align-items: center;
-      gap: 8px;
     }
   }
 </style>

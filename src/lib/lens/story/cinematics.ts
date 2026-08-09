@@ -1,51 +1,28 @@
 import * as THREE from "three/webgpu";
 import { rangeOf, atFrac } from "./story";
 import { clamp01, smoothstep } from "../core/math";
-import { uIsolateHide } from "../materials/shading";
 import { displaceSeatedPoint } from "../ops/cpu";
 import { isGlassElement } from "../core/parts";
 
 // ============================================================================
 // Cinematic extras (inspired by ./example) layered over the mechanism rig:
-// the iris reveal, the light-path glass isolate, refraction rays, ambient
-// dust, the sketch-in ink entrance, and the caps-on finale. Everything here is
-// presentation only — nothing in this module moves a mechanism part.
+// refraction rays, ambient dust, the sketch-in ink entrance, and the caps-on
+// finale. Everything here is presentation only — nothing in this module moves a
+// mechanism part.
 // ============================================================================
 
-// Scroll window over which the non-glass structure is dissolved to isolate the
-// glass (the light-path scene) — derived from the story ranges so it tracks the
-// scenes: from the tail of the explode scene until the REWRAP scene needs the
-// structure back (it reappears as far-out flat sheets, mostly depth-faded, and
-// flies in to wrap on layer by layer). On /lens (no story) `storyP` is
-// permanently 0, so the window is never entered — the isolate is inert there.
-const ISOLATE_P0 = atFrac(rangeOf("explode"), 0.85);
-const ISOLATE_P1 = rangeOf("rewrap").p0;
-const ISOLATE_FEATHER = 0.02; // scroll-p width of the fade at each end of the window
-
 // Scroll position where the caps-on fly-in starts — derived from the story
-// table like the isolate window above (so a scene-duration change upstream
-// can't silently break it): 0.54 through the capsOn scene reproduces the
-// signed-off absolute p ≈ 0.93 under today's holds.
+// table rather than hardcoded (so a scene-duration change upstream can't
+// silently break it): 0.54 through the capsOn scene reproduces the signed-off
+// absolute p ≈ 0.93 under today's holds.
 // ...and it finishes WITH that scene rather than at a hardcoded global 1 — the
 // two coincide only for as long as capsOn is the story's last beat.
 const CAP_P0 = atFrac(rangeOf("capsOn"), 0.54);
 const CAP_P1 = rangeOf("capsOn").p1;
 
-/** What the STORY wants hidden this frame. Reported, not applied: this module
- *  writes no model `.visible` flag of its own — core/scene.ts composes these
- *  with the page's accessory choice and the demo isolate gate and is the one
- *  owner of every flag (`applyVisibility` there). */
-export interface StoryVisibility {
-  /** The light-path isolate has FULLY faded in, so every non-glass,
-   *  non-accessory mesh can be culled. The fade itself is `uIsolateHide`; this
-   *  flag is fill-rate only, which is why it trails the feather. */
-  isolate: boolean;
-}
-
 export interface LensCinematics {
-  /** Drive the extras for one frame from the eased mechanism/story values, and
-   *  report what the story wants hidden (see StoryVisibility). */
-  update(explodeT: number, storyP: number, nowMs: number): StoryVisibility;
+  /** Drive the extras for one frame from the eased mechanism/story values. */
+  update(explodeT: number, storyP: number, nowMs: number): void;
   /** Kick off the sketch-in entrance over the given ink edge lines (no-op if an
    *  entrance is already running). */
   startEntrance(lines: THREE.LineSegments[]): void;
@@ -218,26 +195,7 @@ export function createCinematics(
     }
   }
 
-  function update(
-    explodeT: number,
-    storyP: number,
-    nowMs: number,
-  ): StoryVisibility {
-    // isolate the glass: dissolve everything non-glass ONLY for the light-path
-    // scene (tied to scroll position, not the explode amount — so the teardown
-    // scene still shows the fanned-out structure, and caps-on brings it back).
-    // (The old aperture beat's "iris reveal" — hiding the rear occluders so the
-    // blades read from a rear orbit — was DELETED with that scene: the
-    // fly-through is the aperture showcase now, seen through the glass.)
-    // The isolate is a FADE (uIsolateHide multiplies the non-glass ink opacity),
-    // feathered at both ends — a hard visibility toggle made every structural
-    // piece vanish in a single frame ("pieces just disappear" — owner). The
-    // reported flag only culls meshes once FULLY faded (fill-rate).
-    const isolateT =
-      smoothstep(ISOLATE_P0, ISOLATE_P0 + ISOLATE_FEATHER, storyP) *
-      (1 - smoothstep(ISOLATE_P1 - ISOLATE_FEATHER, ISOLATE_P1, storyP));
-    uIsolateHide.value = isolateT;
-
+  function update(explodeT: number, storyP: number, nowMs: number): void {
     // refraction rays — thread the optical axis through the (world-space) glass.
     // The explode deform runs IN-SHADER, so the seated centre above is where the
     // element USED to be: displace it through the same op field the render runs
@@ -310,8 +268,6 @@ export function createCinematics(
         capRear.position.y = capRearBaseY - (1 - capT) * 95;
       }
     }
-
-    return { isolate: isolateT > 0.995 };
   }
 
   function setDust(visible: boolean) {
