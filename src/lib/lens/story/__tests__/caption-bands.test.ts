@@ -17,11 +17,13 @@ import {
 // runtime — one table, two readers, so the two cannot drift. These checks pin
 // the DERIVATION, not the numbers: the durations are the owner's to retune.
 
-/** the track's scrollable length — see the scroll-space note in story.ts */
-const SCROLL = "(100% - 100dvh)";
+/** The track's scrollable length — see the scroll-space note in story.ts. The
+ *  UNIT is load-bearing and pinned on purpose: svh, never dvh, so an iOS toolbar
+ *  cannot re-lay-out the story mid-scroll (the unit law in story.ts). */
+const SCROLL = "(100% - 100svh)";
 /** a band box's multiple of that length, back out of the emitted CSS */
 const coeff = (css: string): number => {
-  const m = /^calc\((-?[\d.]+) \* \(100% - 100dvh\)/.exec(css);
+  const m = /^calc\((-?[\d.]+) \* \(100% - 100svh\)/.exec(css);
   if (!m) throw new Error(`not a scroll-space band length: ${css}`);
   return Number(m[1]);
 };
@@ -53,7 +55,7 @@ describe("CAPTION_BANDS", () => {
     // marking every band final, so non-final bands must carry undefined
     expect(last.finalAttr).toBe(true);
     expect(CAPTION_BANDS[0].finalAttr).toBeUndefined();
-    // top + height = 1·(100% − 100dvh) + 100dvh = the whole track
+    // top + height = 1·(100% − 100svh) + 100svh = the whole track
     expect(coeff(last.top) + coeff(last.height)).toBeCloseTo(1, 6);
     expect(CAPTION_BANDS.filter((b) => b.final)).toHaveLength(1);
   });
@@ -62,13 +64,13 @@ describe("CAPTION_BANDS", () => {
     for (const b of CAPTION_BANDS) {
       // p = scrollY / (track − viewport), so a band's box is measured in that
       // same scrollable length — NOT in percentages of the track, which would
-      // put every band a·100dvh late
+      // put every band a·100svh late
       expect(b.top, `${b.id} top`).toBe(`calc(${b.a.toFixed(6)} * ${SCROLL})`);
       expect(b.height, `${b.id} height`).toBe(
-        `calc(${(b.b - b.a).toFixed(6)} * ${SCROLL} + 100dvh)`,
+        `calc(${(b.b - b.a).toFixed(6)} * ${SCROLL} + 100svh)`,
       );
       // the trailing viewport is the sticky caption's pin room: without it a
-      // 100dvh caption would have none at all
+      // 100svh caption would have none at all
       expect(coeff(b.top), `${b.id} top`).toBeGreaterThanOrEqual(0);
       expect(coeff(b.height), `${b.id} height`).toBeGreaterThan(0);
       expect(
@@ -116,7 +118,7 @@ describe("CAPTION_FADE_CSS", () => {
   });
 
   it("measures the track's SCROLLABLE length, not its height", () => {
-    expect(TRACK_SCROLL_CSS).toBe(`calc(${TRACK_HEIGHT_CSS} - 100dvh)`);
+    expect(TRACK_SCROLL_CSS).toBe(`calc(${TRACK_HEIGHT_CSS} - 100svh)`);
   });
 });
 

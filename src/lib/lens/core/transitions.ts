@@ -69,7 +69,7 @@ const peakPulse = (t: number) => smoothstep(0, 1, 1 - Math.abs(2 * t - 1));
 // Drive a channel by writing value AND target together: tick()'s per-frame
 // ease (lerp toward target) then becomes a no-op on that channel regardless of
 // callback order, so the burst is exactly the curve authored here.
-const drive = (s: SceneState, c: "aperture" | "rollout", v: number) => {
+const drive = (s: SceneState, c: "aperture" | "peel", v: number) => {
   s[c] = v;
   s[`${c}Target`] = v;
 };
@@ -120,27 +120,34 @@ export const TRANSITIONS: Record<TransitionName, TransitionFactory> = {
     };
   },
 
-  // The lens sheds its skin into the new look: a fast pulse into rollout's
-  // staggered unroll wave — the shells peel open in rank order, in place — with
-  // the swap at the apex (the peel IS the reveal), then everything re-rolls.
-  // Amplitude 0.4 is a judgment call. assemble was tried and rejected: its unscoped ladder TRANSLATES the whole model, which
-  // breaks the Lookbook demo's fixed framing.
+  // The lens sheds its skin into the new look: a fast pulse into the `peel`
+  // channel's staggered unroll wave — the shell strips lift around the barrel,
+  // in place — with the swap at the apex (the peel IS the reveal), then
+  // everything re-rolls. Amplitude 0.4 is a judgment call. `assemble` was tried
+  // and rejected: its unscoped ladder TRANSLATES the whole model, which moves
+  // the framing under the swap.
+  //
+  // ON `peel` SINCE THE BENCH-RECIPE CLEANUP (this used to drive the global
+  // `rollout` recipe, which is gone): peel is the same travelling-front unroll
+  // scoped to the shell cast, so the gesture is if anything closer to a molt —
+  // the skin lifts and the mechanism under it stays put. The story drives this
+  // channel too, but never on /lens, where storyMode is off.
   molt(ctx, opts) {
     const s = ctx.state;
-    const prior = s.rollout;
-    const priorTarget = s.rolloutTarget;
+    const prior = s.peel;
+    const priorTarget = s.peelTarget;
     let written = prior;
     return {
       duration: opts.durationMs ?? 450,
       swapAt: 0.5,
       update(t) {
         written = lerp(prior, 0.4, holdPulse(t));
-        drive(s, "rollout", written);
+        drive(s, "peel", written);
       },
       finish() {
-        if (s.rolloutTarget === written) {
-          s.rollout = prior;
-          s.rolloutTarget = priorTarget;
+        if (s.peelTarget === written) {
+          s.peel = prior;
+          s.peelTarget = priorTarget;
         }
       },
     };

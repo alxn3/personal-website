@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import * as THREE from "three/webgpu";
 import fs from "node:fs";
-import { deriveFrames } from "../frames";
+import { deriveFrames, frameOf } from "../frames";
 import { createMechanism, MECHANISM } from "../mechanism";
 import { recipeChannel, RECIPE_NAMES } from "../host";
 import { displaceInto } from "../../dev/ops-cpu";
@@ -22,10 +22,17 @@ interface Gltf {
     mesh?: number;
     rotation?: number[];
     translation?: number[];
+    scale?: number[];
+    matrix?: number[];
     children?: number[];
   }[];
-  meshes: { name?: string; primitives: unknown[] }[];
+  meshes: {
+    name?: string;
+    primitives: { attributes?: Record<string, number>; indices?: number }[];
+  }[];
   materials?: unknown[];
+  extensionsUsed?: string[];
+  extensionsRequired?: string[];
   scenes: { nodes: number[] }[];
 }
 
@@ -63,12 +70,32 @@ describe("shipped lens_web_segmented.glb", () => {
     expect(g.meshes.filter((m) => nodeNames.has(m.name ?? ""))).toHaveLength(0);
   });
 
+  it("uses NO glTF extension — geometry is plain accessors (N.15)", () => {
+    // Draco was dropped from every web export: it saved transfer bytes on the
+    // first visit only, while its wasm decoder was fetched, instantiated and run
+    // on EVERY page load. A plain GLTFLoader reads these files, and the site no
+    // longer ships a decoder — so a re-export that quietly turns compression
+    // back on would load nothing at all. Note the exporter OMITS the two arrays
+    // rather than writing empty ones, so absence is the passing shape.
+    expect(g.extensionsUsed ?? [], "extensionsUsed").toEqual([]);
+    expect(g.extensionsRequired ?? [], "extensionsRequired").toEqual([]);
+    expect(JSON.stringify(g)).not.toContain("KHR_draco_mesh_compression");
+    // …and every primitive really does carry readable accessors
+    for (const m of g.meshes)
+      for (const p of m.primitives) {
+        expect(p.attributes?.POSITION, m.name).toBeTypeOf("number");
+        expect(p.indices, m.name).toBeTypeOf("number");
+      }
+  });
+
   it("carries the measured N.12 counts", () => {
-    expect(g.nodes.length, "nodes").toBe(224);
+    // nodes/top-level moved with lens_work MIGRATION STEP 5 (three new group
+    // empties, twelve nodes off the top level); meshes/wedges did not.
+    expect(g.nodes.length, "nodes").toBe(227);
     expect(g.meshes.length, "meshes").toBe(194);
     expect(names.filter((n) => /^Element_/.test(n)).length, "glass").toBe(13);
     expect(names.filter((n) => /_Seg\d+$/.test(n)).length, "wedges").toBe(143);
-    expect(g.scenes[0].nodes.length, "top-level groups").toBe(31);
+    expect(g.scenes[0].nodes.length, "top-level groups").toBe(19);
     const wedgeGroups = new Set(
       names
         .filter((n) => /_Seg\d+$/.test(n))
@@ -125,6 +152,254 @@ describe("shipped lens_web_segmented.glb", () => {
       5,
     );
     expect(names.filter((n) => /^Focus_Arms_Seg\d+$/.test(n))).toHaveLength(0);
+  });
+
+  it("carries the STEP 4b names and none of the ones they replaced", () => {
+    // lens_work MIGRATION STEP 4b. The names ARE the API with the pipeline, and
+    // every one of these is keyed on somewhere site-side (peelcards' sector and
+    // exit tables, frames' SHELL_ADOPT, the parts regexes), so a half-applied
+    // rename is a silent no-op rather than a crash.
+    for (const n of [
+      "Decal_DotMIJ",
+      "Decal_BadgeDisc",
+      "Shim_Ring_01",
+      "Shim_Ring_02",
+      "Baffle_Front",
+      "Baffle_G2",
+      "Baffle_Rear",
+      "Mount_ScrewCounterbores",
+    ])
+      expect(names, n).toContain(n);
+    const OLD = [
+      /^Decal_Dot2$/,
+      /^DecalT_BadgeDisc$/,
+      /^Shim_Ring_[01](_Seg\d+)?$/,
+      /^Optics_Baffle_/,
+      /^Mount_ScrewBores$/,
+    ];
+    expect(names.filter((n) => OLD.some((re) => re.test(n)))).toEqual([]);
+    // wedge children follow their stem — and the three that are not wedge-cut
+    // still have no `_SegN` children
+    for (const stem of [
+      "Baffle_Front",
+      "Baffle_G2",
+      "Shim_Ring_01",
+      "Shim_Ring_02",
+    ])
+      // prettier-ignore
+      expect(
+        names.filter((n) => n.startsWith(`${stem}_Seg`)),
+        stem,
+      ).toHaveLength(5);
+    for (const stem of [
+      "Decal_DotMIJ",
+      "Decal_BadgeDisc",
+      "Mount_ScrewCounterbores",
+    ])
+      expect(
+        names.filter((n) => n.startsWith(`${stem}_Seg`)),
+        stem,
+      ).toHaveLength(0);
+  });
+
+  it("carries the MISNOMER names and none of the ones they replaced", () => {
+    // lens_work MIGRATION "Misnomer renames": the three optics CELLS dropped
+    // `Optics_` (they hold optics, they are not optics) and the three structural
+    // tubes dropped `Cam_` (they are not cam parts). Same hazard as STEP 4b — the
+    // roster in core/names.ts keys peelcards' TUBE_CUT and the parts predicates,
+    // so a half-applied rename fades a tube that then never drifts.
+    for (const n of [
+      "Cell_G3",
+      "Cell_Collar",
+      "Cell_Flange",
+      "LightTrap",
+      "OpticsCage",
+      "RearTube",
+    ])
+      expect(names, n).toContain(n);
+    // `Cam_` now means exactly the two REAL cam parts and nothing else
+    const camParts = [
+      ...new Set(
+        names
+          .filter((n) => n.startsWith("Cam_"))
+          .map((n) => n.replace(/_Seg\d+$/, "")),
+      ),
+    ].sort();
+    expect(camParts).toEqual(["Cam_Barrel", "Cam_Followers"]);
+    const OLD = [/^Optics_Cell/, /^Cam_(LightTrap|OpticsCage|RearTube)/];
+    expect(names.filter((n) => OLD.some((re) => re.test(n)))).toEqual([]);
+    // all six are wedge-cut, so their wedges follow the new stem: 7 for the
+    // three cells and the cage, 5 for the light trap and the rear tube
+    for (const [stem, count] of [
+      ["Cell_G3", 7],
+      ["Cell_Collar", 7],
+      ["Cell_Flange", 7],
+      ["OpticsCage", 7],
+      ["LightTrap", 5],
+      ["RearTube", 5],
+    ] as const)
+      expect(
+        names.filter((n) => n.startsWith(`${stem}_Seg`)),
+        stem,
+      ).toHaveLength(count);
+  });
+
+  it("gathers the focus block, the rear mount and the front pair (STEP 5)", () => {
+    const node = (n: string) => g.nodes.find((x) => x.name === n)!;
+    const kidsOf = (n: string) =>
+      (node(n).children ?? []).map((c) => g.nodes[c].name).sort();
+    expect(kidsOf("Grp_FocusDrive")).toEqual([
+      "Focus_GuideRods",
+      "Focus_LeadScrew",
+      "Focus_Motor",
+    ]);
+    expect(kidsOf("Grp_MountRear")).toEqual([
+      "Mount_BrassRing",
+      "Mount_ChassisPlate",
+      "Mount_EncoderStrip",
+      "PCB_Rear",
+      "Shim_Ring_01",
+      "Shim_Ring_02",
+    ]);
+    // Optics_G1 is the model's FIRST nested group empty — every earlier
+    // `Optics_G*` was a scene-root node. Nesting is what keeps its two elements
+    // on Barrel_Inner's ladder rung (see the derived-ladder test below).
+    expect(kidsOf("Optics_G1")).toEqual(["Element_01", "Element_02"]);
+    expect(kidsOf("Barrel_Inner")).toContain("Optics_G1");
+    const top = g.scenes[0].nodes.map((i) => g.nodes[i].name);
+    expect(top).toContain("Grp_FocusDrive");
+    expect(top).toContain("Grp_MountRear");
+    expect(top).not.toContain("Optics_G1");
+
+    // PURE IDENTITY, and the whole `Grp_` design rests on it: these carry no
+    // mesh and NO transform key at all, so skipping them for naming (ops/frames
+    // nameChain) cannot move anything.
+    for (const n of ["Grp_FocusDrive", "Grp_MountRear", "Optics_G1"]) {
+      const nd = node(n);
+      expect(nd.mesh, `${n} carries no mesh`).toBeUndefined();
+      expect(
+        [nd.translation, nd.rotation, nd.scale, nd.matrix],
+        `${n} is identity`,
+      ).toEqual([undefined, undefined, undefined, undefined]);
+    }
+
+    // …and the five REAL re-parents, which do surrender their rungs
+    expect(kidsOf("PCB_Rear")).toContain("PCB_Components");
+    expect(kidsOf("Mount_ContactShelf")).toContain("Mount_Contacts");
+    for (const s of [
+      "Mount_Screws",
+      "Mount_ScrewCounterbores",
+      "Mount_FlangeScrews",
+    ])
+      expect(kidsOf("Mount_Bayonet"), s).toContain(s);
+  });
+});
+
+// ── The derived ladder, on the SHIPPED hierarchy ────────────────────────────
+//
+// This file reads no vertices at all: it rebuilds the shipped NODE GRAPH —
+// names, parenting, translations — and hangs one small triangle off every mesh
+// node. That is enough for the real deriveFrames to run, and the ladder's GROUP
+// MEMBERSHIP is derived from the graph alone, so the group set below is the one
+// the browser derives. (The rung VALUES are not: they measure geometry this
+// fixture does not carry.)
+//
+// The REAL vertices are read next door — story/__tests__/piece-flow.test.ts
+// slices all 194 meshes' accessors straight out of the BIN chunk to census the
+// real frames. The fixture stays here because this file's subject is the
+// HIERARCHY, which needs no geometry at all.
+
+/** A small triangle, offset off the axis so R > 0 and the span is real. */
+function tri(): THREE.BufferGeometry {
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute(
+    "position",
+    new THREE.BufferAttribute(
+      new Float32Array([5, 0, 0, 5, 1, 0.4, 5.4, 0.5, 0.2]),
+      3,
+    ),
+  );
+  geo.setIndex([0, 1, 2]);
+  return geo;
+}
+
+function shippedGraph(): THREE.Object3D {
+  const g = glbJson(MODEL);
+  const root = new THREE.Object3D();
+  root.name = "lens";
+  const objs = g.nodes.map((n) => {
+    const o =
+      n.mesh !== undefined ? new THREE.Mesh(tri()) : new THREE.Object3D();
+    o.name = n.name;
+    if (n.translation) o.position.fromArray(n.translation);
+    return o;
+  });
+  g.nodes.forEach((n, i) => {
+    for (const c of n.children ?? []) objs[i].add(objs[c]);
+  });
+  for (const i of g.scenes[0].nodes) root.add(objs[i]);
+  return root;
+}
+
+describe("the derived explode ladder of the shipped hierarchy", () => {
+  const root = shippedGraph();
+  const { ladderRungs } = deriveFrames(root);
+  const groups = [...ladderRungs.keys()].sort();
+
+  it("frames every mesh node in the file", () => {
+    // dev/model-contract's frameScan, run headless: a mesh with no frame is a
+    // NaN source for every op that normalizes over it.
+    const unframed: string[] = [];
+    let meshes = 0;
+    root.traverse((o) => {
+      if (!(o instanceof THREE.Mesh)) return;
+      meshes++;
+      if (!frameOf(o.geometry)) unframed.push(o.name);
+    });
+    expect(meshes, "mesh nodes").toBe(194);
+    expect(unframed).toEqual([]);
+  });
+
+  it("derives 26 groups — the `Grp_` empties are transparent", () => {
+    // 26, not 19: without the `Grp_` skip in ops/frames nameChain, the three
+    // focus-drive parts and the six rear-mount ones collapse onto two rungs and
+    // the ladder loses nine it still has model-side (lens_work MIGRATION STEP 5).
+    expect(groups).toHaveLength(26);
+    expect(groups.filter((n) => n.startsWith("Grp_")), "no Grp_ group").toEqual([]); // prettier-ignore
+    for (const n of [
+      "Focus_Motor",
+      "Focus_LeadScrew",
+      "Focus_GuideRods",
+      "Mount_ChassisPlate",
+      "Mount_EncoderStrip",
+      "Mount_BrassRing",
+      "Shim_Ring_01",
+      "Shim_Ring_02",
+      "PCB_Rear",
+    ])
+      expect(groups, `${n} keeps its own rung`).toContain(n);
+  });
+
+  it("merges exactly the five parts that were re-parented onto their hosts", () => {
+    // These surrendered their rungs model-side: each now rides the part it is
+    // fastened to. A merge REAPPEARING as its own group means the re-parent was
+    // undone in the export.
+    for (const n of [
+      "PCB_Components",
+      "Mount_Contacts",
+      "Mount_Screws",
+      "Mount_ScrewCounterbores",
+      "Mount_FlangeScrews",
+    ])
+      expect(groups, `${n} rides its host`).not.toContain(n);
+  });
+
+  it("keeps the front pair on Barrel_Inner's rung through Optics_G1", () => {
+    // The nested group empty is NOT a `Grp_`, so topmost-wins still lands
+    // Element_01/02 on Barrel_Inner — which is what makes the count 26, not 27.
+    expect(groups).not.toContain("Optics_G1");
+    expect(groups).not.toContain("Element_01");
+    expect(groups).toContain("Barrel_Inner");
   });
 });
 
@@ -334,6 +609,131 @@ describe("a seat may live in the vertices or on the node", () => {
       expect(max, "explode displacement").toBeGreaterThan(1);
     } finally {
       recipeChannel("explode").value = 0;
+    }
+  });
+});
+
+describe("the lead screw's pivot, now that it has a real parent", () => {
+  // lens_work MIGRATION STEP 5 put `Focus_LeadScrew` under `Grp_FocusDrive`, so
+  // createMechanism's runtime `Focus_LeadScrew_Pivot` is INSERTED between the
+  // two for the first time — a code path it had never taken while the screw was
+  // a scene-root node. The empty is identity in the shipped file; these tests
+  // pin both that case and a transformed holder, because the whole `Grp_` design
+  // rests on the insertion composing with whatever is already above it.
+
+  /** An off-axis rod, like the lead screw: away from the axis, along it. */
+  function rodGeo(): THREE.BufferGeometry {
+    const pos: number[] = [];
+    const idx: number[] = [];
+    for (let i = 0; i <= 4; i++) {
+      const y = -6 + 3 * i;
+      pos.push(8, y, -0.6, 8.6, y, 0.6);
+    }
+    for (let i = 0; i < 4; i++) {
+      const b = i * 2;
+      idx.push(b, b + 1, b + 2, b + 1, b + 3, b + 2);
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute(
+      "position",
+      new THREE.BufferAttribute(new Float32Array(pos), 3),
+    );
+    geo.setIndex(idx);
+    return geo;
+  }
+
+  /** A lens root whose lead screw hangs under `holder` (null = at the root, the
+   *  pre-STEP-5 shape), with the screw seated at `seat`. */
+  function rig(holder: string | null, seat: THREE.Vector3, holderAt = 0) {
+    const root = new THREE.Object3D();
+    root.name = "lens";
+    shell(root, "Chassis_Fixed", 24);
+    const screw = new THREE.Mesh(rodGeo());
+    screw.name = "Focus_LeadScrew";
+    let parent: THREE.Object3D = root;
+    if (holder) {
+      const grp = new THREE.Object3D();
+      grp.name = holder;
+      grp.position.set(0, holderAt, 0);
+      root.add(grp);
+      parent = grp;
+    }
+    screw.position.copy(seat);
+    parent.add(screw);
+    root.updateWorldMatrix(true, true);
+    return { root, screw, holder: parent };
+  }
+
+  /** Every vertex of a mesh in ROOT space. */
+  function verts(root: THREE.Object3D, mesh: THREE.Mesh): number[] {
+    root.updateWorldMatrix(true, true);
+    const inv = new THREE.Matrix4().copy(root.matrixWorld).invert();
+    const m = new THREE.Matrix4().multiplyMatrices(inv, mesh.matrixWorld);
+    const a = mesh.geometry.getAttribute("position");
+    const v = new THREE.Vector3();
+    const out: number[] = [];
+    for (let i = 0; i < a.count; i++) {
+      v.fromBufferAttribute(a, i).applyMatrix4(m);
+      out.push(v.x, v.y, v.z);
+    }
+    return out;
+  }
+
+  it("inserts the pivot BETWEEN the screw and the group empty", () => {
+    const { root, screw, holder } = rig("Grp_FocusDrive", new THREE.Vector3());
+    const before = verts(root, screw);
+    createMechanism(root);
+    const pivot = screw.parent!;
+    expect(pivot.name).toBe("Focus_LeadScrew_Pivot");
+    expect(pivot.parent, "the pivot took the screw's place").toBe(holder);
+    expect(holder.children).not.toContain(screw);
+    // …and the screw has not moved a micron: the insertion is a re-frame, not a
+    // transform.
+    const after = verts(root, screw);
+    for (let i = 0; i < before.length; i++)
+      expect(after[i], `vertex comp ${i}`).toBeCloseTo(before[i], 6);
+  });
+
+  it("spins the screw about its OWN axis, not the lens's", () => {
+    const { root, screw } = rig("Grp_FocusDrive", new THREE.Vector3());
+    const mech = createMechanism(root);
+    mech.update({ zoom: 0, focus: 0, aperture: 0 });
+    const rest = verts(root, screw);
+    const centre = (v: number[]) => {
+      const c = [0, 0, 0];
+      for (let i = 0; i < v.length; i += 3)
+        for (const k of [0, 1, 2]) c[k] += (v[i + k] * 3) / v.length;
+      return c;
+    };
+    mech.update({ zoom: 0, focus: 1, aperture: 0 });
+    const spun = verts(root, screw);
+    // the rod really turned…
+    let max = 0;
+    for (let i = 0; i < rest.length; i++)
+      max = Math.max(max, Math.abs(rest[i] - spun[i]));
+    expect(max, "a real spin").toBeGreaterThan(0.1);
+    // …about its own centre, which stayed where it was (an orbit about the lens
+    // axis would have thrown the centre metres across the model)
+    const [a, b] = [centre(rest), centre(spun)];
+    for (const k of [0, 1, 2]) expect(b[k], `centre ${k}`).toBeCloseTo(a[k], 4);
+  });
+
+  it("composes with a holder that CARRIES a transform", () => {
+    // The shipped `Grp_FocusDrive` is identity, so this is the guard rather than
+    // the case: the pivot is measured in its holder's space, so a screw seated
+    // at the same place through a translated empty must end up identical to one
+    // parented at the root.
+    const flat = rig(null, new THREE.Vector3(0, 9, 0));
+    const nested = rig("Grp_FocusDrive", new THREE.Vector3(0, 2, 0), 7);
+    const mechFlat = createMechanism(flat.root);
+    const mechNested = createMechanism(nested.root);
+    for (const focus of [0, 0.4, 1]) {
+      mechFlat.update({ zoom: 0, focus, aperture: 0 });
+      mechNested.update({ zoom: 0, focus, aperture: 0 });
+      const a = verts(flat.root, flat.screw);
+      const b = verts(nested.root, nested.screw);
+      for (let i = 0; i < a.length; i++)
+        expect(b[i], `focus ${focus}, comp ${i}`).toBeCloseTo(a[i], 5);
     }
   });
 });

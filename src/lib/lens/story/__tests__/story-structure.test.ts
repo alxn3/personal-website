@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { STORY, rangeOf } from "../story";
+import { STORY } from "../story";
 
 // The ring (docs/superpowers/specs/2026-08-08-story-rework-design.md): scene
 // order IS the story — a reorder is a story change, not a refactor.
@@ -21,16 +21,16 @@ describe("story structure (the ring)", () => {
     expect(STORY.map((s) => s.id)).toEqual(ORDER);
   });
 
-  it("fuses rewrap into capsOn (one continuous ending move)", () => {
-    expect(STORY.find((s) => s.id === "rewrap")?.linkNext).toBe(true);
-  });
-
-  it("keeps the sky chapter contiguous", () => {
-    expect(rangeOf("constellations").p0).toBeCloseTo(
-      rangeOf("flythrough").p1,
-      10,
-    );
-    expect(rangeOf("trails").p0).toBeCloseTo(rangeOf("constellations").p1, 10);
+  it("fuses rewrap into capsOn, and that pair ONLY", () => {
+    // A fused pair is one continuous camera move across a scene boundary. The
+    // ending needs one; nothing else does, and a linked head pays for it by
+    // being in motion for its whole range — it cannot park, so it cannot HOLD a
+    // pose. That is why the peel→cards seam, which wants continuity as much as
+    // any boundary in the story, is shaped with transits and waypoints instead:
+    // the peel's nose-up settle is its scene's subject.
+    expect(STORY.filter((s) => s.linkNext).map((s) => s.id)).toEqual([
+      "rewrap",
+    ]);
   });
 
   it("holds the parked pose through the sky chapter (transit 0 must not snap)", () => {

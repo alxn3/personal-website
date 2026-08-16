@@ -1,23 +1,20 @@
 import * as THREE from "three/webgpu";
-import { traceChannelsFor } from "../optics/warp";
 
 // ============================================================================
 // `?diag` — the phone-readable status card (DEV only, the `?webgl` / `?story`
-// param mould). A device that shows the lens but no stars cannot be attached to
-// a console, so the four numbers that decide whether the background warp can
-// run are printed on the glass instead and read aloud.
+// param mould). A device that shows the lens but no sky cannot be attached to a
+// console, so the numbers that decide whether the dive's render path can run are
+// printed on the glass instead and read aloud.
 //
-// core/scene.ts owns the state object and writes `warp` from enableLensWarp;
-// this module only paints. It is imported dynamically so optics/warp.ts (the
-// TSL graph) stays out of the eager bundle, exactly as the warp's own lazy
-// import intends.
+// core/scene.ts owns the state object and writes `post` from
+// enableWormholePost; this module only paints. It is imported dynamically so
+// none of it reaches the eager bundle.
 // ============================================================================
 
 /** The fields the scene keeps live; everything else is read off the renderer. */
 export interface LensDiag {
-  /** `unmounted` | `mounted` | `FAILED: <message>` */
-  warp: string;
-  /** the screen-space wormhole's render path, same three states */
+  /** the screen-space wormhole's render path:
+   *  `unmounted` | `mounted` | `FAILED: <message>` */
   post: string;
 }
 
@@ -38,9 +35,7 @@ export function mountLensDiag(
   const draw = () => {
     el.textContent =
       `backend: ${backend}\n` +
-      `warp: ${state.warp}\n` +
       `post: ${state.post}\n` +
-      `channels: ${traceChannelsFor(renderer)}\n` +
       `three: r${THREE.REVISION}`;
   };
   draw();

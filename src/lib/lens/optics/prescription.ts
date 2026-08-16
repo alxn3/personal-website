@@ -64,7 +64,9 @@ export const IRIS = {
 };
 
 /** The physics knobs (spec §2), all live-tunable through `window.__lensOptics`
- *  once optics/warp.ts is mounted. These are the DEFAULTS the uniforms boot at. */
+ *  ORPHANED: the per-pixel refraction trace that read them is gone (cleanup
+ *  wave 1), so nothing consumes this table today — kept with the measured
+ *  prescription it belongs to. */
 export const OPTICS_KNOBS = {
   /** exaggerates bend angles: 0 = glass is vacuum, 1 = honest physics, >1 = drama */
   warpGain: 1,

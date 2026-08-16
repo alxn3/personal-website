@@ -93,7 +93,9 @@ export const ss01 = (t: number) => smoothstep(0, 1, t);
  *  lie inside the barrel run. */
 export const FLY = {
   /** shading with NO depth fade. The technical looks (ink/blueprint/flat) fold
-   *  depthFadeFactor into their fills and lines (materials/shading.ts:505,529)
+   *  depthFadeFactor into their fills and lines (the story's ink in
+   *  materials/unified.ts — `mergedMaterial`'s opacityNode and `lineMaterial`;
+   *  the bench's in materials/shading-bench.ts's technical branch)
    *  and core/scene rewrites the uFade* planes from the camera distance every
    *  rendered frame (core/scene.ts:1031), so a demo cannot park them — an
    *  interior camera would dissolve the barrel it is flying through. "realistic"
@@ -114,7 +116,7 @@ export const FLY = {
    *  p = 0 the frame is the mount face (flange screws, brass contacts, rear
    *  baffle) with the barrel behind it; the internals stream past mid-dive; by
    *  p ≈ 0.85 the lens is behind the camera and out of frame; p = 1 is open
-   *  starfield with "The Keyhole" (optics/sky.ts, az ≈ 0) on axis. */
+   *  starfield, with optics/sky.ts's field at its densest on axis (az ≈ 0). */
   azRear: -Math.PI / 2,
   /** THE PARK IS DEAD-ON: elevation 0, so the flight is a pure axial shot from
    *  frame one — the camera on the optical axis, the mount face square to it,
@@ -166,9 +168,8 @@ export const FLY = {
    *  so the stars come UP THROUGH the glass rather than being the backdrop the
    *  lens was always sitting on. Either way the window fades the STARS ONLY,
    *  never the ground behind them: on the drawn path it is an opacity ramp over
-   *  the flat backdrop the starfield mounts, and on `?tracesky` it is uSkyMix
-   *  fading the opaque sky sphere toward black — the right colour for the
-   *  inside of a barrel in both. */
+   *  the flat backdrop the starfield mounts — the right colour for the inside of
+   *  a barrel. */
   pSkyIn: [0.18, 0.36] as [number, number],
   /** THE IRIS OPENS ON THE APPROACH: [start, end] over which the aperture
    *  channel runs from `apertureShut` to 0 (f/2.8, wide open). The lens is not a
@@ -179,10 +180,8 @@ export const FLY = {
    *  hard ordering, not a taste: pEnter (0.22) is where the camera arrives at the
    *  mount and the passage through the stack begins, and a stop still closing in
    *  there is a shut door in the frame the dive flies through. It should also be
-   *  open before the sky is fully up (pSkyIn[1]) — the trace clips every ray
-   *  outside the iris clear radius (optics/trace.ts, the LIVE channel value), so
-   *  on `?tracesky` a shut stop meters the stars. Tripwired in
-   *  __tests__/flythrough.test.ts. Owner-tuned LATE ("it's opening way too
+   *  open before the sky is fully up (pSkyIn[1]). Tripwired in
+   *  optics/__tests__/flythrough.test.ts. Owner-tuned LATE ("it's opening way too
    *  early"): the open lands just before glass entry, when the iris fills the
    *  frame and the blades actually read. */
   pAperture: [0.1, 0.2] as [number, number],
@@ -220,7 +219,7 @@ export const FLY = {
    *  STARTS AT THE MOUTH, not at 0.16. It used to open only once the camera was
    *  already INSIDE the mount — and from there the only sky on screen is the
    *  disc through the aperture, because the barrel's own meshes cover the rest.
-   *  So the wormhole could not be seen until it was framed by a keyhole, and it
+   *  So the wormhole could not be seen until the aperture framed it, and it
    *  read as arriving late. The whole opening approach — the lens hanging in
    *  open sky, a full frame of stars around it — was spent at pinch 0.
    *
@@ -313,7 +312,7 @@ export function passageFade(
 }
 
 /** World X of the camera under a spherical pose — the same expression
- *  core/scene's applyCameraPose writes into camera.position.x, and the only way
+ *  a CameraPose puts into camera.position.x, and the only way
  *  the dive knows where it is. */
 export function poseCamX(pose: CameraPose): number {
   return (

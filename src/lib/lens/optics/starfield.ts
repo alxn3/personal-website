@@ -38,13 +38,13 @@ import {
 // equirect texture, drawn instead as REAL BILLBOARDED QUADS on a sphere around
 // the camera. Two draw calls: the star discs, and the constellation strokes.
 //
-// WHY IT EXISTS. The baked sky can only be seen through optics/warp.ts, which
-// traces 21 lens surfaces PER PIXEL of a full-screen background sphere to decide
-// which texel to read. That trace is the fly-through's frame-rate killer, and
-// every pixel of it pays whether or not a star lands there. Drawn quads cost the
-// stars themselves and nothing else, and they need no background node at all —
-// so with this mounted `scene.backgroundNode` stays null and the trace does not
-// run. The traced path is still reachable behind `?tracesky` (explore/demos.ts).
+// WHY IT EXISTS. The baked sky could only be seen through a per-pixel refraction
+// trace that walked 21 lens surfaces for EVERY pixel of a full-screen background
+// sphere to decide which texel to read — the fly-through's frame-rate killer,
+// paid whether or not a star landed there. Drawn quads cost the stars themselves
+// and nothing else, and they need no background node at all, so with this
+// mounted `scene.backgroundNode` stays null. (The traced path is gone: it was
+// retired with the /lens demo bench it was an A/B reference for.)
 //
 // NOT POINTS — the repo law, and it has not moved: three r185's WebGPU backend
 // clamps `THREE.Points` to one pixel and ignores PointsNodeMaterial's `size`
@@ -100,43 +100,76 @@ export const STARFIELD_LOOK = {
    *  to work with. */
   radius: 200,
   /** THE SIZE KNOB. Angular radius of a mag-1 star disc, radians; every disc in
-   *  the field is this times `mag^magRhoGain`, and `uStarSize` scales the lot
-   *  live. Turn this one number for "the stars are too big / too small".
+   *  the field is this times `mag^magRhoGain`, floored by `minRhoRad`, and
+   *  `uStarSize` scales the lot live. Turn this one number for "the stars are
+   *  too big / too small".
    *
-   *  0.004, DOWN FROM 0.011, and the arithmetic is the reason. The finale holds
-   *  fov 70 (explore/demos.ts FLY.fovOut), i.e. 1.22 rad across the frame's
-   *  height, so on an 800 px-tall canvas one radian is ~655 px. The old number
-   *  put the brightest star in the catalog (mag 3.1) at 0.0217 rad = a 28 px
-   *  disc — and at the OLD fovOut of 38 that was a 52 px disc, which is the
-   *  "handful of huge discs" the owner read as being zoomed in. At 0.004 the
-   *  same star is 0.0099 rad ≈ a 13 px disc, a mag-1 authored star is ~5 px and
-   *  the faint background (mag 0.3) is a ~2 px point: a field with a hierarchy
-   *  in it rather than a row of blobs.
+   *  THE ARITHMETIC EVERY NUMBER HERE IS JUDGED BY: the finale holds fov 70
+   *  (explore/demos.ts FLY.fovOut), i.e. 1.22 rad across the frame's height, so
+   *  on an 800 px-tall canvas one radian is ~655 px.
    *
-   *  NOT the bake's number any more. SKY_LOOK.starRhoRad stays at 0.011 because
-   *  a disc there is drawn in TEXELS of a 2048×1024 equirect and 0.004 rad is
-   *  barely one across; `?tracesky` therefore reads bigger than the shipped
-   *  path by design (see the note on SKY_LOOK.starRhoRad). */
-  starRhoRad: 0.004,
+   *  0.0022, down from 0.0026 (and from 0.011 before the sprite path existed) —
+   *  the owner has asked for smaller three times, so this errs small. With the
+   *  exponent below it puts the brightest star in the catalog (mag 3.1) at
+   *  0.0041 rad — a disc ~5.4 px ACROSS — a mag-1 star at ~2.9 px and the 500
+   *  backdrop stars pinned to the floor at ~2.4 px: a chart of fine points,
+   *  which is what the owner asked for ("the stars are still a bit too big like
+   *  the ones that have lines been drawn between them", then "even smaller
+   *  stars").
+   *
+   *  NOT the bake's number. SKY_LOOK.starRhoRad stays at 0.011 because a disc
+   *  there is drawn in TEXELS of a 2048×1024 equirect and anything this small is
+   *  barely one across; the retired bake therefore read bigger than this path
+   *  by design (see the note on SKY_LOOK.starRhoRad). */
+  starRhoRad: 0.0022,
   /** angular radius scales as starRhoRad × mag^magRhoGain — the exponent that
    *  sets how far apart the bright and faint ends of the catalog read.
    *
-   *  0.85, UP FROM 0.6, because the catalog now has two populations in it
-   *  (optics/sky.ts BACKGROUND_LOOK): ~220 generated background stars at mag
-   *  0.3…1.15 under the 82 authored ones at 0.8…3.1. A flat exponent squashes
-   *  them together — at 0.6 the whole catalog spans only 4× in radius and the
-   *  background reads as more of the same rather than as depth behind it. At
-   *  0.85 the span is 9×: the authored stars stay marks and the background sits
-   *  clearly under them, which is the deep-field look. The bake keeps 0.6 for
-   *  the same reason it keeps its own starRhoRad — one exponent cannot serve a
+   *  0.55, DOWN FROM 0.85. The exponent is what makes the AUTHORED stars bloom:
+   *  they carry mags up to 3.1 against a field whose median magnitude is ~0.55,
+   *  so at 0.85 the stars the strokes are drawn between came out 5× the radius of
+   *  the field around them and read as blobs with lines between them. At 0.55
+   *  that ratio is 2.8× — the hierarchy survives, the subjects stop shouting —
+   *  and the DEPTH the old exponent was bought for now comes from ink instead:
+   *  the catalog's exponential brightness law and the floor's compensation below
+   *  (optics/sky.ts BRIGHTNESS_LAW, Star.ink). The bake keeps 0.6 for the same
+   *  reason it keeps its own starRhoRad — one exponent cannot serve a
    *  texel-bound texture and a resolution-free sprite at once. */
-  magRhoGain: 0.85,
+  magRhoGain: 0.55,
+  /** THE SMALLEST DISC THAT MAY BE DRAWN, radians — ~1.2 px of radius on the
+   *  arithmetic above. A quad under a pixel wide does not get fainter as it
+   *  shrinks: it either lands on a pixel centre at nearly full ink or misses it
+   *  entirely, so a sub-pixel field crawls and twinkles the moment the sky turns
+   *  (the `trails` scene). Stars under the floor are drawn AT the floor and
+   *  dimmed by exactly the ratio they gained (buildStarQuads), which spends the
+   *  same light honestly — optics/star-trails.ts `minHalfRad` does this for the
+   *  arcs, and this is the same law for the discs.
+   *
+   *  ITS KNEE IS A CATALOG BOUNDARY. At the size above the floor bites at
+   *  mag 0.694, and optics/sky.ts cuts its bright/backdrop split just over that
+   *  (BRIGHTNESS_LAW.brightMag) so the pool a stroke or a name may be hung on is
+   *  exactly the stars drawn at their honest size. __tests__ (f4) pins the two
+   *  numbers together. */
+  minRhoRad: 0.0018,
   /** fraction of the disc radius that stays at FULL ink before the rim starts
    *  feathering. 0 = a pure cone of alpha (reads grey and small); 1 = a hard
    *  chip (aliases). The rim is what makes a flat disc read as a glow. */
   discCore: 0.35,
-  /** angular HALF-thickness of a constellation stroke, radians. Held in ANGLE,
-   *  not pixels: both ends of a stroke sit on the same sphere, so a fixed
+  /** MOUNT THE STATIC ASTERISM STROKES? No — and the sky has none.
+   *
+   *  These are the pre-drawn strokes: every authored line, at full ink, from the
+   *  first frame the field is visible. The story's sky DRAWS its strokes instead
+   *  (optics/constellation-lines.ts), and the two ran together — same ink, two
+   *  different widths, one of them arriving under a pen and the other simply
+   *  there. That disagreement is what the owner read as wrong, and the pre-drawn
+   *  half is the one with no scene behind it.
+   *
+   *  A GATE, NOT A DELETION: the packing and its graph are the reference the
+   *  drawn engine's own vertex math was written from, and the tests below pin
+   *  them. Flip this to true and the strokes come back exactly as they were. */
+  staticLines: false,
+  /** angular HALF-thickness of a static constellation stroke, radians. Held in
+   *  ANGLE, not pixels: both ends of a stroke sit on the same sphere, so a fixed
    *  view-space offset there is a fixed screen width at any fov. */
   lineWidthRad: 0.0016,
   /** the strokes' equivalent of discCore, across the stroke's width. */
@@ -177,10 +210,21 @@ export const STARFIELD_LOOK = {
    *  ringHalfWidthRad — half the band's width. The weight is 1 at the centre and
    *  falls smoothly to 0 at ±this, so there is no edge to see.
    *  ringArcGain — how much longer a band star's mark is than its radial streak
-   *  would have been. Arcs want length to read as arcs. */
+   *  would have been. Arcs want length to read as arcs.
+   *  ringWidthGain — and how much THICKER, over the same band weight. A mark
+   *  that is only lengthened is a mark whose aspect ratio is stretched, and at
+   *  the rim — where the radial streaks are longest to begin with — the arcs
+   *  came out as hairlines: fixed width at any radius, which is the owner's
+   *  note on the ring ("the streaks stay the same width however big the effect
+   *  gets"). Equal to ringArcGain, so a LONG mark grows in both directions at
+   *  one rate and reads as the same smear, larger — exactly one rate only once
+   *  the tail dominates the disc, since the mark is `2·halfW + gain·tail` along
+   *  and `2·gain·halfW` across: at a short streak the head is thickened into a
+   *  1 : gain ellipse rather than scaled. */
   ringCentreRad: 0.45,
   ringHalfWidthRad: 0.25,
   ringArcGain: 1.6,
+  ringWidthGain: 1.6,
 };
 
 /** THE FADE-IN, 0..1, BOOTS 0 — the sprite path's `uSkyMix`: a straight opacity
@@ -207,22 +251,33 @@ export const uStarSize = uniform(1);
 export const uStreakGain = uniform(1);
 
 // ── THE SKY TURNS ───────────────────────────────────────────────────────────
-// The `trails` scene rotates the whole field about a pole low in the frame, and
+// The `trails` scene rotates the whole field about a pole ON THE VIEW AXIS, and
 // it does so IN THE SHADER: one angle uniform, applied to every star's and every
 // stroke's direction before anything else reads it. Not on the group transform,
 // because the group is also what story/constellations.ts's type rides
 // (SceneHandle.starfieldAttach) and the typography must stay put while the stars
 // go round it. optics/star-trails.ts draws the arcs off the same two uniforms.
 
-/** How far BELOW the view axis the pole sits, radians (~24°). The held fly pose
- *  looks down world +X with +Y up, so a negative Y component puts the pole low
- *  in the frame — the stars wheel around a point near the bottom of the screen,
- *  which is where the front element's crown arrives at the reveal. */
-const SKY_SPIN_ELEV_RAD = 0.42;
+/** How far BELOW the view axis the pole sits, radians. ZERO — the pole is ON the
+ *  axis, and that is a look requirement, not a simplification.
+ *
+ *  A star turning about the pole traces a cone about it, and a rectilinear
+ *  camera projects a cone about its OWN axis to a circle centred on the frame's
+ *  centre — but a cone about any other axis to a CONIC SECTION. At the finale's
+ *  fov 70 the old 0.42 rad tilt was enough to see: the owner read the arcs off a
+ *  screenshot as "not a perfect circle… is it due to the camera fov?" — it was,
+ *  and putting the pole on the axis is the fix. Every arc in the field is now a
+ *  true circle concentric with the frame's centre at any fov.
+ *
+ *  KEPT AS A NUMBER, and the rodrigues path with it, so the axis stays tunable:
+ *  the cost of an off-axis pole is a look decision, not a thing the code should
+ *  make impossible. */
+const SKY_SPIN_ELEV_RAD = 0;
 
 /** THE POLE, as a unit direction. Unit by construction (cos² + sin² = 1), and
  *  the ONE place it is defined: the starfield's spin, the trail arcs and the
- *  driver all read this. */
+ *  driver all read this. At the shipped elevation it is world +X — the held fly
+ *  pose's own heading. */
 export const SKY_SPIN_AXIS: [number, number, number] = [
   Math.cos(SKY_SPIN_ELEV_RAD),
   -Math.sin(SKY_SPIN_ELEV_RAD),
@@ -365,8 +420,14 @@ export interface StarQuads {
   position: Float32Array;
   /** unit direction of this vertex's star */
   dir: Float32Array;
-  /** angular disc radius of this vertex's star */
+  /** angular disc radius of this vertex's star, floored by `minRhoRad` */
   rho: Float32Array;
+  /** this vertex's star's ink multiplier: its own `Star.ink` times whatever the
+   *  disc floor gained it back (see buildStarQuads) */
+  ink: Float32Array;
+  /** this vertex's star's temperature tint, a linear RGB multiplier on the
+   *  theme's star ink (optics/sky.ts `Star.tint`) */
+  tint: Float32Array;
   /** unit great-circle tangent toward the throat */
   tan: Float32Array;
   /** angular streak length at uStarStreak = 1 */
@@ -386,14 +447,21 @@ const CORNERS: [number, number][] = [
 const QUAD_TRIS = [0, 1, 2, 0, 2, 3];
 
 /** Catalog → one merged quad soup: 4 vertices and 2 triangles per star, every
- *  per-star quantity repeated across its four corners. NOT instanced — ~300
- *  stars is ~1200 vertices, and a plain merged geometry is one draw call either
- *  way with none of the instancing bookkeeping. */
+ *  per-star quantity repeated across its four corners. NOT instanced — ~800
+ *  stars is ~3200 vertices, and a plain merged geometry is one draw call either
+ *  way with none of the instancing bookkeeping.
+ *
+ *  THE DISC FLOOR IS PAID FOR IN INK (STARFIELD_LOOK.minRhoRad): a star whose
+ *  honest radius falls under the floor is drawn at the floor and dimmed by
+ *  exactly the ratio, so the faint end spreads its light over a drawable disc
+ *  instead of gaining weight for being too small to rasterize. */
 export function buildStarQuads(stars: Star[]): StarQuads {
   const n = stars.length;
   const position = new Float32Array(n * 4 * 3);
   const dir = new Float32Array(n * 4 * 3);
   const rho = new Float32Array(n * 4);
+  const ink = new Float32Array(n * 4);
+  const tint = new Float32Array(n * 4 * 3);
   const tan = new Float32Array(n * 4 * 3);
   const len = new Float32Array(n * 4);
   const ring = new Float32Array(n * 4);
@@ -402,7 +470,11 @@ export function buildStarQuads(stars: Star[]): StarQuads {
     const star = stars[s];
     const d = dirOf(star.az, star.alt);
     const streak = streakOf(d);
-    const r = starRho(star.mag);
+    const wanted = starRho(star.mag);
+    const r = Math.max(STARFIELD_LOOK.minRhoRad, wanted);
+    // `r` is never under `wanted`, so the ratio is already ≤ 1: a star at or
+    // over the floor keeps its full ink and one under it pays the whole gain.
+    const a = (star.ink ?? 1) * (wanted / r);
     const w = ringWeight(throatAngle(d));
     for (let c = 0; c < 4; c++) {
       const v = s * 4 + c;
@@ -412,16 +484,20 @@ export function buildStarQuads(stars: Star[]): StarQuads {
       dir[v * 3] = d[0];
       dir[v * 3 + 1] = d[1];
       dir[v * 3 + 2] = d[2];
+      tint[v * 3] = star.tint[0];
+      tint[v * 3 + 1] = star.tint[1];
+      tint[v * 3 + 2] = star.tint[2];
       tan[v * 3] = streak.tan[0];
       tan[v * 3 + 1] = streak.tan[1];
       tan[v * 3 + 2] = streak.tan[2];
       rho[v] = r;
+      ink[v] = a;
       len[v] = streak.len;
       ring[v] = w;
     }
     for (let t = 0; t < 6; t++) index[s * 6 + t] = s * 4 + QUAD_TRIS[t];
   }
-  return { position, dir, rho, tan, len, ring, index };
+  return { position, dir, rho, ink, tint, tan, len, ring, index };
 }
 
 export interface LineQuads {
@@ -533,6 +609,8 @@ function starMark(ink: TslNode, opacity: TslNode): THREE.MeshBasicNodeMaterial {
   // never overlap, so a second rotation here would be nodes spent on nothing.
   const aDir: TslNode = spun(attribute("aDir", "vec3"));
   const aRho: TslNode = attribute("aRho", "float");
+  const aInk: TslNode = attribute("aInk", "float");
+  const aTint: TslNode = attribute("aTint", "vec3");
   const aTan: TslNode = attribute("aTan", "vec3");
   const aLen: TslNode = attribute("aLen", "float");
   const aRing: TslNode = attribute("aRing", "float");
@@ -563,11 +641,28 @@ function starMark(ink: TslNode, opacity: TslNode): THREE.MeshBasicNodeMaterial {
     // arcs read as arcs only if they are long enough to curve with the ring
     .mul(mix(float(1), float(STARFIELD_LOOK.ringArcGain), ringAmt));
 
+  // …and THE SAME SWING THICKENS IT (STARFIELD_LOOK.ringWidthGain): the mark's
+  // half-width across, in disc radii, so the whole shape below stays one
+  // expression. Exactly 1 wherever ringAmt is 0 — `mix(a, b, 0)` is `a` bit for
+  // bit — so every star outside the band, and every star at all once the ring
+  // ramp is down, is drawn from the identical numbers it was before this
+  // existed. THE RAMP IS DOWN LATER THAN IT USED TO BE: `uStarRing` is
+  // story/fly.ts's sustained warp envelope, which is still live across the
+  // first third of `constellations` (≈ 0.20 at that scene's local 0.2) and only
+  // exactly 0 from its local 0.35 on — so the whole of `trails`, not the whole
+  // of the sky, is the stretch this term provably cannot touch.
+  const wide: TslNode = mix(
+    float(1),
+    float(STARFIELD_LOOK.ringWidthGain),
+    ringAmt,
+  );
+
   // The corner, mapped so the quad spans [−halfW, halfW + tail] along the
-  // tangent and [−halfW, halfW] across it: at streak 0 that is exactly the disc.
+  // tangent and [−halfW·wide, halfW·wide] across it: at streak 0 and ring 0
+  // that is exactly the disc.
   const q: TslNode = positionGeometry.xy;
   const sx: TslNode = q.x.mul(halfW).add(q.x.mul(0.5).add(0.5).mul(tail));
-  const sy: TslNode = q.y.mul(halfW);
+  const sy: TslNode = q.y.mul(halfW).mul(wide);
 
   m.vertexNode = cameraProjectionMatrix.mul(
     vec4(
@@ -581,8 +676,13 @@ function starMark(ink: TslNode, opacity: TslNode): THREE.MeshBasicNodeMaterial {
   // Everything the fragment needs, in DISC-RADIUS units so the shape below is
   // one expression whatever the star's size.
   const vX: TslNode = varying(sx.div(halfW));
-  const vY: TslNode = varying(sy.div(halfW));
+  // ACROSS is normalized by the mark's OWN half-width (`wide`), not by the
+  // disc's, so the capsule below is solved once and the thickening is carried
+  // entirely in the quad's geometry. A divide by exactly 1 at ringAmt 0.
+  const vY: TslNode = varying(sy.div(halfW).div(wide));
   const vT: TslNode = varying(tail.div(halfW));
+  const vInk: TslNode = varying(aInk);
+  const vTint: TslNode = varying(aTint);
 
   // THE SHAPE: a capsule whose spine runs 0 → vT, radius 1, tapering across.
   // `t` is 0 through the whole HEAD (|vX| ≤ 1) and 1 at the tip, so the disc
@@ -593,10 +693,17 @@ function starMark(ink: TslNode, opacity: TslNode): THREE.MeshBasicNodeMaterial {
   const dx: TslNode = vX.sub(clamp(vX, 0, vT));
   const d: TslNode = length(vec2(dx, vY.div(w)));
 
-  m.colorNode = ink;
+  // THE STAR'S OWN COLOUR: the theme's ink, tinted by this star's temperature.
+  // A tint's channels are all ≤ 1 (optics/sky.ts STAR_TINTS), so this can only
+  // ever take light out of the ink — it cannot blow a channel past the palette
+  // on the dark stage, and on paper it only darkens.
+  m.colorNode = ink.mul(vTint);
   m.opacityNode = float(1)
     .sub(smoothstep(float(STARFIELD_LOOK.discCore), float(1), d))
     .mul(pow(float(1).sub(t), STARFIELD_LOOK.streakFadePow))
+    // the per-star ink: the catalog's own (optics/sky.ts `inkOf`) times the
+    // floor's compensation
+    .mul(vInk)
     .mul(uStarMix)
     .mul(opacity);
   return m;
@@ -694,6 +801,8 @@ export function createStarfield(
   );
   starGeo.setAttribute("aDir", new THREE.BufferAttribute(quads.dir, 3));
   starGeo.setAttribute("aRho", new THREE.BufferAttribute(quads.rho, 1));
+  starGeo.setAttribute("aInk", new THREE.BufferAttribute(quads.ink, 1));
+  starGeo.setAttribute("aTint", new THREE.BufferAttribute(quads.tint, 3));
   starGeo.setAttribute("aTan", new THREE.BufferAttribute(quads.tan, 3));
   starGeo.setAttribute("aLen", new THREE.BufferAttribute(quads.len, 1));
   starGeo.setAttribute("aRing", new THREE.BufferAttribute(quads.ring, 1));
@@ -714,10 +823,17 @@ export function createStarfield(
 
   const group = new THREE.Group();
   group.name = "Lens_Starfield";
-  for (const [geo, mat] of [
-    [lineGeo, lineMat],
-    [starGeo, starMat],
-  ] as const) {
+  // The strokes go in FIRST when they go in at all — see STARFIELD_LOOK
+  // .staticLines. Built either way: two small buffers and a material that never
+  // reaches the GPU unless they are mounted, which is the price of keeping the
+  // gate a one-line flip instead of a conditional construction.
+  const draws = STARFIELD_LOOK.staticLines
+    ? ([
+        [lineGeo, lineMat],
+        [starGeo, starMat],
+      ] as const)
+    : ([[starGeo, starMat]] as const);
+  for (const [geo, mat] of draws) {
     const mesh = new THREE.Mesh(geo, mat);
     // The `position` attribute holds quad CORNERS, so three's bounding sphere
     // is a 1.5-unit ball at the object's origin and means nothing. Culling is
@@ -739,6 +855,8 @@ export function createStarfield(
       ring: { u: uStarRing, boot: 0 },
       size: { u: uStarSize, boot: 1 },
       streakGain: { u: uStreakGain, boot: 1 },
+      // lineWidth/lineOpacity feed the static-line material, which is inert
+      // while STARFIELD_LOOK.staticLines is false (nothing mounted to redraw)
       lineWidth: { u: uLineWidth, boot: STARFIELD_LOOK.lineWidthRad },
       starOpacity: { u: uStarOpacity, boot: palette().starOpacity },
       lineOpacity: { u: uLineOpacity, boot: palette().lineOpacity },

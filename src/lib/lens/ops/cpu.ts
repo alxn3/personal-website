@@ -53,8 +53,10 @@ const RECIPES = makeRecipes<number>(A);
 // Mirrors of host.ts's fold() constants — same names, same values.
 const TAU = 6.283185307179586;
 const HOUSE_FROM = -1;
-/** host.ts's hard idle gate is `step(1e-6, channel)`. */
-const IDLE_EPS = 1e-6;
+/** host.ts's hard idle gate is `step(1e-6, channel)`. Exported so a second
+ *  caller assembling a live set (story/flow.ts) skips an idle recipe by THIS
+ *  number rather than by a copy of it. */
+export const IDLE_EPS = 1e-6;
 
 const wrapPi = (x: number) => x - TAU * Math.floor((x + Math.PI) / TAU);
 
@@ -106,7 +108,7 @@ export type PieceField = (
 ) => Delta;
 
 /** The packed `_op*` lanes of one piece, as ops/frames.ts wrote them. */
-interface Lanes {
+export interface PieceLanes {
   t0: number;
   R: number;
   halfSpan: number;
@@ -121,7 +123,17 @@ interface Lanes {
   adopted: number;
 }
 
-function makeField(lanes: Lanes, live: LiveRecipe[]): PieceField {
+/** THE FIELD OF ONE PIECE, from its lanes alone — the whole of host.ts's
+ *  `fold()` preamble, bound to a piece and a live recipe set. Pure: same lanes,
+ *  same live set, same point ⇒ same delta.
+ *
+ *  Exported for story/flow.ts, which measures the pose of every piece of the
+ *  model at a scroll position and has no geometry to read lanes off: it builds
+ *  them from the frame attributes itself and probes points that are not
+ *  vertices. One field law, three callers (this file's per-vertex binding, the
+ *  seated-point displacer below, the flow instrument) — the mirror this module's
+ *  header justifies is written ONCE. */
+export function pieceField(lanes: PieceLanes, live: LiveRecipe[]): PieceField {
   const {
     t0,
     R,
@@ -227,7 +239,7 @@ export function pieceFields(
   const fy = geo.getAttribute("_opY");
   if (!fa || !fb || !fy) return null;
   return (i) =>
-    makeField(
+    pieceField(
       {
         t0: fa.getX(i),
         R: fa.getY(i),

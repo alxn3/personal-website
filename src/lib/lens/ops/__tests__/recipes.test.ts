@@ -61,11 +61,10 @@ type Vert = (typeof VERTS)[number];
 
 // Real wedges OVERRUN the nominal half-span on both edges, and a bend chain's
 // first/last segments are unbounded for exactly that reason — so the identity
-// has to hold outside [0, L] too. The one exception is the travelling-front
-// chains' negative overrun (rollout and peel): both lead with a non-seated arc
-// by construction — rollout's is q = 0, a tangent line and a verbatim port of
-// the classic; peel's is the inverted curl — so seam overrun there leaves the
-// barrel instead of following it.
+// has to hold outside [0, L] too. The one exception is `peel`'s negative
+// overrun: the travelling-front chain leads with a non-seated arc by
+// construction (the inverted curl), so seam overrun there leaves the barrel
+// instead of following it.
 const OVERRUN = [
   { frac: -0.2, yN: 0.15, off: 0 },
   { frac: 1.2, yN: -0.35, off: 0.25 },
@@ -189,7 +188,7 @@ function runAt(
 describe("every recipe is the seated identity at channel 0", () => {
   for (const recipe of Object.values(RECIPES)) {
     const probes =
-      recipe.name === "rollout" || recipe.name === "peel"
+      recipe.name === "peel"
         ? [...VERTS, OVERRUN[1]] // see OVERRUN: negative overrun is by design
         : [...VERTS, ...OVERRUN];
     it(`(a) ${recipe.name} leaves every probe vertex seated`, () => {
@@ -712,7 +711,7 @@ describe("explode's default selection", () => {
 });
 
 // ── (f) peel's DEFAULT SELECTION: the story's SCOPED unroll ─────────────────
-// `peel` is rollout's roll step under two participation selectors, so the
+// `peel` is the sticker roll step under two participation selectors, so the
 // recipe's whole content is WHO unrolls: the sheet cast (selSheet) intersected
 // with the outer rank band (selRank at the [0.93, 1] default). Everything below
 // probes that admission, at every channel — the story drives this channel over
@@ -755,7 +754,7 @@ describe("peel's scoped selection", () => {
   });
 
   it("(f′) glass, the iris mechanism, accessories and bodies of revolution NEVER unroll", () => {
-    // The reason the story needs its own recipe rather than rollout: these are
+    // The reason the story needs a SCOPED recipe: these are
     // in the outer ranks too (the front element sits at rank 1 with the front
     // shell), so the rank band alone would admit them. Probed at rank01 1 on
     // purpose — the band is wide open here, and selSheet is the only thing
@@ -810,17 +809,17 @@ describe("peel's scoped selection", () => {
     }
   });
 
-  it("(f‴) the freed run CURLS BACK — the sticker law, and what parts it from rollout", () => {
-    // The one thing peel's chain does that rollout's does not: over the freed
+  it("(f‴) the freed run CURLS BACK — the sticker law", () => {
+    // What the sticker chain does that a FLAT unroll does not: over the freed
     // material it turns the OTHER WAY from the seated barrel, by exactly q·d/R
-    // with q = −curl. Rollout's freed run is q = 0 — it adds no turn at all
-    // beyond the anchor's own seam-to-here seed (d/R), which is the flatten the
-    // scene rejected. So the DIFFERENCE between the two is the back-roll itself.
-    // Probed at channel 1, where flight is 1 for every piece and the whole sheet
-    // is therefore freed.
+    // with q = −curl. A flat unroll's freed run is q = 0 — it adds no turn at
+    // all beyond the anchor's own seam-to-here seed (d/R), which is the flatten
+    // the scene rejected. So the freed run's total rot is (1 + curl)·d/R and
+    // the back-roll is the `curl·d/R` term. Probed at channel 1, where flight
+    // is 1 for every piece and the whole sheet is therefore freed.
     //
-    // The rank band is opened so the comparison is about the CHAIN, not about
-    // who is admitted — (f)…(f″) above are the scope's own statements.
+    // The rank band is opened so the law is about the CHAIN, not about who is
+    // admitted — (f)…(f″) above are the scope's own statements.
     const open: Recipe<number> = {
       ...recipe,
       knobDefaults: { ...knobs, rankLo: 0, rankHi: 1 },
@@ -828,16 +827,11 @@ describe("peel's scoped selection", () => {
     for (const p of PIECES) {
       for (const v of VERTS) {
         const a = runAt(open, p, v, 1);
-        const b = runAt(RECIPES.rollout, p, v, 1);
         const at = `rank ${p.rank01} frac=${v.frac}`;
         const d = v.frac * a.ctx.L;
         expect(a.flight, `${at}: fully freed`).toBe(1);
-        expect(b.out.rot, `${at}: rollout's freed run stays flat`).toBeCloseTo(
-          d / p.R,
-          12,
-        );
-        expect(a.out.rot - b.out.rot, `${at}: the back-roll`).toBeCloseTo(
-          (knobs.curl * d) / p.R,
+        expect(a.out.rot, `${at}: flat seed + back-roll`).toBeCloseTo(
+          ((1 + knobs.curl) * d) / p.R,
           12,
         );
       }
@@ -848,46 +842,21 @@ describe("peel's scoped selection", () => {
   });
 });
 
-// ── (c) non-identity smoke for the other stick/bend recipes ─────────────────
+// ── (c) non-identity smoke ─────────────────────────────────────────────────
 
 describe("channel-1 non-identity", () => {
-  for (const name of ["helix", "rollout", "bend", "explode"] as const) {
-    it(`(c) ${name} actually deforms at channel 1`, () => {
-      const moved = PIECES.flatMap((p) =>
-        VERTS.map((v) => {
-          const r = runAt(RECIPES[name], p, v, 1);
-          return (
-            dist(xz(r.out), xz(r.seated)) +
-            Math.abs(r.out.axial - r.seated.axial)
-          );
-        }),
-      );
-      expect(Math.max(...moved)).toBeGreaterThan(1e-2);
-      // …and the deformation is finite everywhere on the grid.
-      for (const m of moved) expect(Number.isFinite(m)).toBe(true);
-    });
-  }
-
-  it("(c′) helix's `turns` knob is TURNS — the orbit is turns·2π, signed by wrapDir", () => {
-    const p = PIECES[0];
-    const knobs = RECIPES.helix.knobDefaults;
-    const phase = gate(NUM, RECIPES.helix.gateSpec(knobs), 1, {
-      rank01: p.rank01,
-      layerPhase: p.layerPhase,
-    });
-    const ctx = ctxOf(p, VERTS[2], phase);
-    // The first two ops are the axial approach and the orbit, so the frame's
-    // theta after them carries the whole winding and nothing else.
-    const f = runPipeline(
-      RECIPES.helix.build(ctx, knobs).slice(0, 2),
-      seatedAt(ctx),
-      frameAt(p),
-      ctx,
-    ).f;
-    expect(f.theta - p.t0).toBeCloseTo(
-      phase.flight * knobs.turns * 2 * Math.PI * WRAP_DIR,
-      12,
+  it("(c) explode actually deforms at channel 1", () => {
+    const moved = PIECES.flatMap((p) =>
+      VERTS.map((v) => {
+        const r = runAt(RECIPES.explode, p, v, 1);
+        return (
+          dist(xz(r.out), xz(r.seated)) + Math.abs(r.out.axial - r.seated.axial)
+        );
+      }),
     );
+    expect(Math.max(...moved)).toBeGreaterThan(1e-2);
+    // …and the deformation is finite everywhere on the grid.
+    for (const m of moved) expect(Number.isFinite(m)).toBe(true);
   });
 });
 

@@ -28,8 +28,10 @@
 import type { SceneHandle } from "../core/scene";
 import { clamp01, smoothstep } from "../core/math";
 import { rangeOf, atFrac } from "./story";
+import { preShutAt } from "./envelopes";
 
 const inR = rangeOf("internals");
+const caR = rangeOf("cards");
 
 /** Lead-in slack: the ambient starts writing a touch before the scene, while
  *  hero-driver still owns the span. Both laws are 0 there, so the two writers
@@ -57,7 +59,13 @@ export interface InternalsEnv {
  *  (story/fly.ts owns focus only past flythrough.p0, and its own rack does not
  *  start until 0.72 of the dive). Zero everywhere outside the scene. */
 export const internalsEnvAt = (p: number): InternalsEnv => {
-  const wake = smoothstep(atFrac(inR, 0.06), atFrac(inR, 0.2), p);
+  // The ambient WAKES IN THE CARDS SCENE, not at the internals boundary: the
+  // peel bares the whole mechanism one scene early, and a glass column that
+  // sits dead while the cards orbit reads as a prop (owner: "there isn't
+  // enough movement there"). The rack and the breath both run from a fifth of
+  // the way into cards; everything still winds down on the internals-side
+  // windows unchanged.
+  const wake = smoothstep(atFrac(caR, 0.15), atFrac(caR, 0.35), p);
   return {
     breath: wake * (1 - smoothstep(atFrac(inR, 0.5), atFrac(inR, 0.6), p)),
     rack: wake * (1 - smoothstep(atFrac(inR, 0.8), atFrac(inR, 0.95), p)),
@@ -82,22 +90,29 @@ export const internalsBreathAt = (t: number, p: number): number =>
  *  the ambient breath. The two never overlap — the breath envelope is 0 by
  *  local 0.6, which is exactly where the ramp starts — so the sum never exceeds
  *  either law's own intent, and the clamp is belt-and-braces. */
-export const internalsApertureAt = (t: number, p: number): number => {
-  // PAIRED with hero-driver.ts's `preShut`, which runs this identical
-  // expression OUTSIDE this span. Keep the two textually identical: together
-  // they are one continuous law across both edges of the scene.
-  const preShut = smoothstep(atFrac(inR, 0.6), atFrac(inR, 0.95), p);
-  return clamp01(preShut + internalsBreathAt(t, p));
-};
+export const internalsApertureAt = (t: number, p: number): number =>
+  // ONE ramp, not two. story/envelopes.ts's `preShutAt` is what hero-driver
+  // writes OUTSIDE this span; calling it here is what makes "one continuous law
+  // across both edges of the scene" a fact rather than a pair of expressions
+  // kept textually identical by a comment.
+  clamp01(preShutAt(p) + internalsBreathAt(t, p));
 
 /** Start the ambient. Registers a scene.onFrame callback for the life of the
  *  page — there is no teardown because the hero's scene is never disposed. */
 export function createInternalsAmbient(scene: SceneHandle): void {
+  /** the PHASE clock: accumulates only while the span is active and RESETS on
+   *  every re-entry, so both loops always start from their zero (focus home,
+   *  iris open). A free-running clock let a fast fling land mid-stroke — the
+   *  focus group teleported to wherever the 7s loop happened to be (the
+   *  owner's "gearbox moves then snaps back"). The p-envelopes can't help
+   *  there: they are functions of scroll, and a fling crosses their whole
+   *  rise in one frame. */
   let tAcc = 0;
+  let inside = false;
   let last = performance.now();
   scene.onFrame(() => {
     const now = performance.now();
-    tAcc += Math.min(100, now - last);
+    const dt = Math.min(100, now - last);
     last = now;
     // THE SCROLL p, NOT THE EASED CHANNEL. `storyTarget` is exactly what
     // hero-driver's frame() was handed, so all three writers of these channels
@@ -108,7 +123,15 @@ export function createInternalsAmbient(scene: SceneHandle): void {
     // the span with no scroll left to correct it, and the last write before it
     // converged on inR.p1 would strand the iris shut into the dive approach.
     const p = scene.state.storyTarget;
-    if (p < inR.p0 - LEAD_IN || p > inR.p1) return;
+    if (p < caR.p0 - LEAD_IN || p > inR.p1) {
+      inside = false;
+      return;
+    }
+    if (!inside) {
+      inside = true;
+      tAcc = 0; // re-entry: both loops restart from home
+    }
+    tAcc += dt;
     const f = internalsFocusAt(tAcc, internalsEnvAt(p).rack);
     scene.state.focus = f;
     scene.state.focusTarget = f;

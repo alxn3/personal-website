@@ -1,6 +1,14 @@
 import * as THREE from "three/webgpu";
 import { describe, expect, it } from "vitest";
-import { AUTHORED_COUNT, SKY, THROAT_ALT, THROAT_AZ, dirOf } from "../sky";
+import {
+  AUTHORED_COUNT,
+  BRIGHTNESS_LAW,
+  BRIGHT_COUNT,
+  SKY,
+  THROAT_ALT,
+  THROAT_AZ,
+  dirOf,
+} from "../sky";
 import {
   STARFIELD_LOOK,
   buildLineQuads,
@@ -17,7 +25,7 @@ import {
 // shader itself needs a GPU and is verified in the demo.
 //
 // Nothing here touches optics/sky.ts's bake — that path still ships behind
-// `?tracesky` and keeps its own tests.
+// the retired sky trace and keeps its own tests.
 
 const THROAT = dirOf(THROAT_AZ, THROAT_ALT);
 const dot = (a: number[], b: number[]) =>
@@ -71,6 +79,7 @@ describe("starfield", () => {
     expect(q.dir.length).toBe(n * 4 * 3);
     expect(q.tan.length).toBe(n * 4 * 3);
     expect(q.rho.length).toBe(n * 4);
+    expect(q.tint.length).toBe(n * 4 * 3);
     expect(q.len.length).toBe(n * 4);
     expect(q.index.length).toBe(n * 6);
     // every index addresses a real vertex
@@ -87,7 +96,7 @@ describe("starfield", () => {
     for (const [s, star] of SKY.stars.entries()) {
       const d = dirOf(star.az, star.alt);
       const streak = streakOf(d);
-      const rho = starRho(star.mag);
+      const rho = Math.max(STARFIELD_LOOK.minRhoRad, starRho(star.mag));
       for (let c = 0; c < 4; c++) {
         const v = s * 4 + c;
         // float32 storage — 6 places is all the attribute buffer carries
@@ -97,6 +106,12 @@ describe("starfield", () => {
           expect(q.dir[v * 3 + k], `star ${s} dir[${k}]`).toBeCloseTo(d[k], 6);
           expect(q.tan[v * 3 + k], `star ${s} tan[${k}]`).toBeCloseTo(
             streak.tan[k],
+            6,
+          );
+          // the temperature the fragment multiplies the theme's ink by — the
+          // SAME triple optics/star-trails.ts draws this star's arc with
+          expect(q.tint[v * 3 + k], `star ${s} tint[${k}]`).toBeCloseTo(
+            star.tint[k],
             6,
           );
         }
@@ -156,8 +171,8 @@ describe("starfield", () => {
     expect(starRho(0.5)).toBeLessThan(starRho(1));
   });
 
-  it("(f2) draws the generated background clearly UNDER the authored stars", () => {
-    // The deep-field contract: the background is texture, the authored table is
+  it("(f2) draws the generated field clearly UNDER the authored stars", () => {
+    // The deep-field contract: the field is texture, the authored table is
     // shape. If the exponent ever flattens far enough to close that gap the
     // finale goes back to reading as one undifferentiated sheet of dots.
     const authored = SKY.stars.slice(0, AUTHORED_COUNT);
@@ -166,9 +181,76 @@ describe("starfield", () => {
       stars.map((s) => starRho(s.mag)).sort((p, q) => p - q)[
         Math.floor(stars.length / 2)
       ];
-    expect(median(bg)).toBeLessThan(median(authored) * 0.5);
-    // and the hierarchy across the whole catalog is wide, not flat
-    expect(starRho(3.1) / starRho(0.3)).toBeGreaterThan(6);
+    // 0.61× today: the field's median disc against the authored table's.
+    expect(median(bg)).toBeLessThan(median(authored) * 0.7);
+    // The hierarchy is DELIBERATELY COMPRESSED in size — the owner read the
+    // authored stars as too big beside the field — so what carries the depth is
+    // INK, not radius: the catalog's exponential law and the floor's
+    // compensation. Both ends of that are pinned in (f3).
+    expect(starRho(3.1) / starRho(BRIGHTNESS_LAW.magDark)).toBeGreaterThan(3);
+  });
+
+  it("(f4) cuts the catalog's bright pool exactly at the disc floor's knee", () => {
+    // optics/sky.ts writes BRIGHTNESS_LAW.brightMag as a NUMBER (it cannot
+    // import this file — this file imports it), so this is the tripwire that
+    // keeps the two in step: every star in the stroke/name pool is drawn at its
+    // own honest size, and the first magnitude below the cut is not.
+    expect(starRho(BRIGHTNESS_LAW.brightMag)).toBeGreaterThanOrEqual(
+      STARFIELD_LOOK.minRhoRad,
+    );
+    expect(starRho(BRIGHTNESS_LAW.brightMag * 0.95)).toBeLessThan(
+      STARFIELD_LOOK.minRhoRad,
+    );
+    for (const [i, s] of SKY.stars
+      .slice(AUTHORED_COUNT, BRIGHT_COUNT)
+      .entries())
+      expect(starRho(s.mag), `pool ${i} is a real disc`).toBeGreaterThanOrEqual(
+        STARFIELD_LOOK.minRhoRad,
+      );
+  });
+
+  it("(f3) spends the disc floor's gain on ink, and dims the backdrop tail", () => {
+    const q = buildStarQuads(SKY.stars);
+    const inkOf = (s: number) => q.ink[s * 4];
+    for (const [s, star] of SKY.stars.entries()) {
+      const wanted = starRho(star.mag);
+      // a star ABOVE the floor is drawn at its honest size and its own ink…
+      if (wanted >= STARFIELD_LOOK.minRhoRad) {
+        expect(q.rho[s * 4], `star ${s}`).toBeCloseTo(wanted, 6);
+        expect(inkOf(s), `star ${s} ink`).toBeCloseTo(star.ink ?? 1, 6);
+      } else {
+        // …and one below it at the floor, dimmed by exactly what it gained, so
+        // half the honest width is half the ink
+        expect(q.rho[s * 4], `star ${s}`).toBeCloseTo(
+          STARFIELD_LOOK.minRhoRad,
+          6,
+        );
+        expect(inkOf(s), `star ${s} ink`).toBeCloseTo(
+          (star.ink ?? 1) * (wanted / STARFIELD_LOOK.minRhoRad),
+          6,
+        );
+      }
+      expect(inkOf(s), `star ${s} ink`).toBeGreaterThan(0);
+      expect(inkOf(s), `star ${s} ink`).toBeLessThanOrEqual(1);
+    }
+    // THE FIELD, AS DRAWN. The bright prefix (authored + pool) averages 0.47 of
+    // full ink and the backdrop tail 0.18 — and the ONLY thing that can go under
+    // BRIGHTNESS_LAW.inkMin is a floored star paying its width back, which is
+    // where the drawn field's 0.10 bottom comes from.
+    const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
+    const inks = (from: number, to: number) =>
+      SKY.stars.slice(from, to).map((_, i) => inkOf(from + i));
+    expect(mean(inks(BRIGHT_COUNT, SKY.stars.length))).toBeLessThan(
+      mean(inks(0, BRIGHT_COUNT)) * 0.5,
+    );
+    // the authored table is the sky's bright end, but NOT a flat clump of 75
+    expect(Math.max(...inks(0, AUTHORED_COUNT))).toBe(1);
+    expect(Math.min(...inks(0, AUTHORED_COUNT))).toBeLessThan(0.4);
+    // and the whole catalog spans a wide, continuous ink range
+    const all = inks(0, SKY.stars.length);
+    expect(Math.min(...all)).toBeLessThan(0.12);
+    expect(Math.min(...all)).toBeGreaterThan(0.05);
+    expect(Math.max(...all)).toBe(1);
   });
 
   it("(g) draws EVERY authored constellation line — no seam to skip", () => {
@@ -214,7 +296,9 @@ describe("starfield", () => {
     field.object.traverse((o) => {
       if (o instanceof THREE.Mesh) mats.push(o.material as THREE.Material);
     });
-    expect(mats.length).toBe(2); // the discs and the strokes, one draw each
+    // the discs, one draw — plus the static strokes' draw only while they are
+    // mounted (STARFIELD_LOOK.staticLines, off: the story draws its own)
+    expect(mats.length).toBe(STARFIELD_LOOK.staticLines ? 2 : 1);
     for (const raw of mats) {
       const m = raw as THREE.Material & {
         transmission?: number;

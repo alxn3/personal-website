@@ -5,7 +5,7 @@ import { attribute, pow } from "three/tsl";
 // THE STARFIELD — an AUTHORED table of star directions and constellation lines,
 // baked into an equirect render target the background warp samples. TWO bakes
 // now: the plain sky, and the SAME sky with a real line streak drawn behind
-// every star (see STREAK_LOOK and `streaked` below). The warp crossfades
+// every star (see STREAK_LOOK and `streaked` below). The retired warp crossfaded
 // between them, which is why the streak is geometry here rather than a fan of
 // re-reads in the shader.
 //
@@ -37,12 +37,18 @@ import { attribute, pow } from "three/tsl";
 // disc authored within its own `ru` of az = ±π would be CLIPPED at the texture
 // edge rather than continued on the far side. Keep stars a disc-radius clear of
 // az = ±π (the placeholder table's extreme is 3.11 rad, ~0.03 clear); the
-// generated background obeys the same rule through BACKGROUND_LOOK.seamMarginRad.
+// generated field obeys the same rule through FIELD_LOOK.seamMarginRad.
 //
-// TWO POPULATIONS, ONE CATALOG. `SKY.stars` is the AUTHORED table (the four
-// constellations and their scatter) followed by a GENERATED background field —
-// see BACKGROUND_LOOK. The authored rows come first and never move, so every
-// constellation index addresses the same star it always did.
+// ONE BRIGHTNESS LAW, TWO POPULATIONS. `SKY.stars` is the AUTHORED table (the
+// three constellations and their scatter) followed by ONE generated field
+// (FIELD_LOOK), and every star in both — authored or drawn — takes its size and
+// its ink from the same magnitude (BRIGHTNESS_LAW, `inkOf`). The field is split
+// where that law crosses the starfield's disc floor: the stars above it are
+// emitted first, so `SKY.stars` reads authored ++ bright field ++ backdrop
+// field. The order is the contract: the authored rows never move, so every
+// constellation index addresses the same star it always did, and the first
+// `BRIGHT_COUNT` rows are the stars anything else may draw ink to (names,
+// strokes).
 // ============================================================================
 
 export interface Star {
@@ -50,11 +56,24 @@ export interface Star {
   az: number;
   /** altitude, radians, = asin(dir.y); +π/2 is world +Y */
   alt: number;
-  /** apparent size driver; bigger = brighter/larger disc (note: inverse of the
-   *  astronomical convention — bigger = brighter here) */
+  /** THE ONE BRIGHTNESS QUANTITY: bigger = brighter (note: inverse of the
+   *  astronomical convention). It drives the disc's angular radius
+   *  (optics/starfield.ts `starRho`), the trail arc's half-width
+   *  (optics/star-trails.ts) and — through `inkOf` — the ink both are drawn at,
+   *  so a star is one number and everything that draws it agrees. */
   mag: number;
-  /** reserved for a future per-star tint; NOT read by the current bake */
+  /** PER-STAR INK MULTIPLIER, 0..1 — 1 when absent; every row of the shipped
+   *  catalog carries one, `inkOf(mag)`. This is what spreads the field's
+   *  brightness once the discs are down at a pixel or two, where size alone can
+   *  buy nothing. Read by optics/starfield.ts (`aInk`) and by the arcs
+   *  (optics/star-trails.ts); the dev-only bake below ignores it. */
   ink?: number;
+  /** THE TEMPERATURE TINT — a LINEAR RGB multiplier on the theme's star ink, not
+   *  a colour of its own (see STAR_TINTS). Every star carries one; both things
+   *  that draw a star read it, the discs (optics/starfield.ts `aTint`) and the
+   *  long-exposure arcs (optics/star-trails.ts), so a trail is its star's
+   *  colour by construction. The dev-only bake below ignores it. */
+  tint: readonly [number, number, number];
 }
 
 export interface Constellation {
@@ -96,12 +115,12 @@ export const SKY_LOOK = {
    *  rather than guessed at.
    *
    *  NO LONGER THE SPRITE PATH'S NUMBER. optics/starfield.ts used to hold the
-   *  same value so the two paths matched under `?tracesky`; its discs are now
+   *  same value so the two paths matched under the retired trace; its discs are now
    *  much smaller (the finale wants a deep field, not a handful of blobs) and
    *  this one CANNOT follow: a disc is drawn here in TEXELS of a 2048×1024
    *  equirect, and at the sprites' 0.004 rad it would be barely a texel across
    *  and the dev-only bake would lose its stars. The two sizes are now separate
-   *  numbers for separate media, and `?tracesky` reads bigger by design. */
+   *  numbers for separate media, and the bake read bigger by design. */
   starRhoRad: 0.011,
   /** angular radius scales as starRhoRad × mag^magRhoGain. Flatter than it
    *  looks it should be: ONE bake serves both the traced disc and the un-warped
@@ -150,7 +169,7 @@ export const SKY_LOOK = {
  * THIS TABLE BAKES THE WORMHOLE'S GEOMETRY INTO THE SKY. Every streak runs
  * along the great circle from its star toward THE THROAT — the fly-through's
  * exit/view axis, world +X, which is sky az = 0 / alt = 0 (see `THROAT_AZ`) —
- * because that is the one direction optics/warp.ts's pinch draws the field
+ * because that is the one direction the wormhole's pinch draws the field
  * into. A different exit axis would need a different bake, not a different
  * uniform: this is content, not a knob the shader can turn.
  *
@@ -211,7 +230,7 @@ export const STREAK_LOOK = {
 
 /** THE THROAT, in sky coordinates: the fly-through's exit/view axis is world
  *  +X, which is az = 0, alt = 0 (`dirOf(0, 0)` = (1, 0, 0)). Hard-coded for the
- *  same reason optics/warp.ts hard-codes the pinch axis: nothing else flies.
+ *  same reason optics/wormhole-post.ts hard-codes the pinch axis: nothing else flies.
  *  EXPORTED so optics/starfield.ts — which draws the same streaks as geometry
  *  instead of baking them — aims at the same axis from one definition. */
 export const THROAT_AZ = 0;
@@ -224,33 +243,197 @@ export const SKY_INK: { dark: SkyPalette; light: SkyPalette } = {
   dark: {
     backdrop: 0x0b0d12,
     star: 0xf2ecd9,
-    line: 0xdd8a4c,
-    lineOpacity: 0.42,
+    // THE STROKES ARE THE STARS' OWN INK (owner: "the lines should be white").
+    // Not 0xffffff: pure white beside the cream discs reads as a second, colder
+    // light source on a sky that has exactly one, and at these widths it blooms
+    // against the near-black ground. The star ink IS the white of this stage.
+    line: 0xf2ecd9,
+    // UP from 0.42, with the width nearly halved at the same time
+    // (CONST_LINES_LOOK.halfWidthRad): a hairline has to be BRIGHT to stay a
+    // line — spend the alpha on the two pixels it has rather than on width.
+    lineOpacity: 0.45,
     starOpacity: 0.95,
   },
   light: {
     backdrop: 0xf4efe2,
     star: 0x3a352b,
-    line: 0xb5671f,
+    // PAPER CANNOT TAKE THE DARK STAGE'S ANSWER: white on a warm near-white is
+    // no mark at all. The light side takes the same decision the dark one does —
+    // the strokes are drawn in the stars' own ink — which here is the dark
+    // neutral, and the contrast comes back from the other side.
+    line: 0x3a352b,
+    // held at 0.5 while the dark side went up: dark ink on paper starts with the
+    // contrast the dark stage had to buy with alpha, and a hairline any heavier
+    // here reads as pencil rather than as light.
     lineOpacity: 0.5,
     // full ink on paper: at 0.9 the dark discs washed toward the warm ground
     starOpacity: 1,
   },
 };
 
+// ── STAR TEMPERATURES ────────────────────────────────────────────────────────
+//
+// Owner: "Stars also have different temperatures and colors — we should reflect
+// those details too." They are drawn as a TINT ON THE THEME'S OWN STAR INK, not
+// as absolute colours, which is the only form that can serve both stages: the
+// dark one inks stars in cream and the light one in a near-black, and a table of
+// absolute RGB would be right on one and wrong on the other.
+//
+// EVERY STOP PEAKS AT 0xff, so a tint can only ever take light OUT of a channel.
+// The theme's ink IS what a white star looks like, and a temperature is what a
+// star lacks — which also settles the light stage: on paper the tint only ever
+// darkens the ink, so contrast can only go up.
+
+/** The ramp, cool → warm, as authored sRGB hex. */
+const TEMP_HEX = [
+  0xdceaff, // blue-white
+  0xf0f6ff, // white, faintly cool
+  0xffffff, // white — the theme's ink, untinted
+  0xfff6ea, // warm white
+  0xfff0d8, // yellow
+  0xffe4c0, // orange
+];
+
+/** …and how often each is drawn. MOSTLY WHITES: a real sky reads white with the
+ *  occasional blue or orange accent, so the colour is seasoning and not a
+ *  rainbow. Sums to 1; `tintAt` clamps to the last stop against float slop. */
+const TEMP_WEIGHTS = [0.05, 0.14, 0.3, 0.28, 0.16, 0.07];
+
+/** The ramp as LINEAR RGB multipliers — the space the shaders' colours are
+ *  multiplied in, so a stop reads on screen as the hex it is authored as
+ *  (three's own sRGB decode, the same one `Color.setHex` gives the palette). */
+export const STAR_TINTS: readonly (readonly [number, number, number])[] =
+  TEMP_HEX.map((h) => {
+    const c = new THREE.Color().setHex(h, THREE.SRGBColorSpace);
+    return [c.r, c.g, c.b] as const;
+  });
+
+/**
+ * A star's tint, from its index within its population and that population's
+ * stream key.
+ *
+ * A HASH, NOT A DRAW. A generated population's identity is its per-sample draw
+ * COUNT (`buildField`), so pulling a colour out of the same LCG would shift
+ * every star after the first — a recolour that silently moves the whole sky.
+ * This reads the index instead, so temperature is orthogonal to position: the
+ * catalog's az/alt/mag are bit-for-bit what they were before colour existed.
+ */
+export function tintAt(i: number, key = 0): readonly [number, number, number] {
+  let h = Math.imul(i ^ key ^ 0x9e3779b9, 2654435761) >>> 0;
+  h = Math.imul(h ^ (h >>> 15), 2246822519) >>> 0;
+  const u = ((h ^ (h >>> 13)) >>> 0) / 4294967296;
+  let acc = 0;
+  for (let k = 0; k < TEMP_WEIGHTS.length; k++) {
+    acc += TEMP_WEIGHTS[k];
+    if (u < acc) return STAR_TINTS[k];
+  }
+  return STAR_TINTS[STAR_TINTS.length - 1];
+}
+
+// ── THE BRIGHTNESS LAW ───────────────────────────────────────────────────────
+//
+// Owner: "even smaller stars and more varying opacities/brightnesses. lets make
+// the distribution of bright stars exponentially decrease."
+//
+// ONE RANK, TWO OUTPUTS. A star's `mag` is a linear map of a BRIGHTNESS RANK in
+// 0..1 (`magAt`), and its ink is the same rank mapped back onto `inkMin`..1
+// (`inkOf`) — so size and ink are two readings of one number and can never
+// disagree. Authored rows go through `inkOf` too: they were typed as a
+// hierarchy of magnitudes and this is what turns that hierarchy into ink instead
+// of leaving 75 rows sitting at full strength in front of a field that varies.
+//
+// EXPONENTIAL IN THE RANK. `magAt` is the inverse CDF of a truncated
+// exponential: the density of stars falls as e^(−decay·rank), so each step up in
+// brightness costs an e-fold in count — a handful of anchors over an
+// exponentially growing mass of faint texture. That is the whole fix for the
+// trails scene, where all 795 stars draw a 180° arc at their own star's ink: a
+// field of one brightness reads as a rope-field however small the discs are, and
+// a field whose brightnesses fall off exponentially reads as depth.
+export const BRIGHTNESS_LAW = {
+  /** rank 0 — the faint end of the drawn field. UNDER the disc floor's knee
+   *  (see `brightMag`): these stars are drawn at the floor's size and pay the
+   *  difference back in ink, so the bottom of the field falls further than
+   *  `inkMin` alone (0.10 as drawn, against 0.15 authored here). */
+  magDark: 0.35,
+  /** rank 1 — full ink. Set at the top of the authored table's own useful range
+   *  rather than at its maximum (3.1), so the nine authored rows above it are
+   *  the sky's unambiguous anchors and the drawn field can still reach 1 in
+   *  principle. At the shipped decay and count it does not: the brightest star
+   *  the field rolls is rank ~0.93. */
+  magBright: 2.4,
+  /** the exponential's decay CONSTANT, per unit rank: the count of stars above a
+   *  rank falls as e^(−decay·rank), so the field spans decay/ln(10) ≈ 3 decades
+   *  of count end to end. 7 leaves the shipped catalog with 16 stars of 795 AS
+   *  DRAWN at ink ≥ 0.9, 53 at ≥ 0.6 and 477 at ≥ 0.2, median 0.235 — measured
+   *  over the shipped seed, and pinned by __tests__/sky.test.ts (h3). Lower
+   *  flattens the field back toward the uniform sheet this replaced; higher
+   *  empties it. */
+  decay: 7,
+  /** the ink of a rank-0 star before the disc floor's payback. Not 0: a star
+   *  drawn at nothing is a star not worth the quad and the arc it costs. */
+  inkMin: 0.15,
+  /** THE BRIGHT/BACKDROP CUT, in magnitude — where `SKY.stars` splits the drawn
+   *  field, and therefore where `BRIGHT_COUNT` lands.
+   *
+   *  IT IS THE DISC FLOOR'S KNEE. optics/starfield.ts draws nothing smaller than
+   *  `minRhoRad`, which at the shipped sizes bites at mag 0.694; a star at or
+   *  above this is drawn as a real disc at its own honest size, and one below it
+   *  is a speck at the floor. That is exactly the line a stroke or a name may be
+   *  hung on (story/constellations.ts reads the prefix), so the boundary is the
+   *  drawing law's rather than a second taste. Written as a number because
+   *  optics/starfield.ts imports THIS file — __tests__/starfield.test.ts (f4)
+   *  is the tripwire that keeps the two in step. */
+  brightMag: 0.7,
+};
+
+/**
+ * THE MAGNITUDE DRAW: a uniform u in [0, 1) → a magnitude, through the inverse
+ * CDF of a truncated exponential on the rank.
+ *
+ *     rank = −ln(1 − u·(1 − e^(−decay))) / decay      ∈ [0, 1]
+ *     mag  = magDark + (magBright − magDark) · rank
+ *
+ * so the DENSITY in rank is ∝ e^(−decay·rank): rank 0 is the commonest draw and
+ * every e-fold up the brightness costs a factor e in count.
+ */
+export function magAt(u: number): number {
+  const k = BRIGHTNESS_LAW.decay;
+  const rank = -Math.log(1 - u * (1 - Math.exp(-k))) / k;
+  return (
+    BRIGHTNESS_LAW.magDark +
+    (BRIGHTNESS_LAW.magBright - BRIGHTNESS_LAW.magDark) * rank
+  );
+}
+
+/**
+ * A STAR'S INK FROM ITS MAGNITUDE — the exact inverse of `magAt`'s linear half,
+ * clamped, so `inkOf(magAt(u))` is `inkMin + (1 − inkMin)·rank` and the ink
+ * inherits the magnitude's exponential distribution unchanged.
+ *
+ * Authored rows brighter than `magBright` clamp to 1; nothing can go under
+ * `inkMin`. This is the CATALOG's ink — optics/starfield.ts multiplies the disc
+ * floor's payback into it on top (`buildStarQuads`), and optics/star-trails.ts
+ * does the same for the arcs, which is why the drawn field reaches below 0.15.
+ */
+export function inkOf(mag: number): number {
+  const { magDark, magBright, inkMin } = BRIGHTNESS_LAW;
+  const rank = (mag - magDark) / (magBright - magDark);
+  return Math.min(1, Math.max(inkMin, inkMin + (1 - inkMin) * rank));
+}
+
 // PLACEHOLDER CONTENT (spec §4: "machinery ships before content firms up").
-// 82 stars in four loose groups plus two scatter blocks; four constellations
-// wired over the first nineteen and over indices 42..48. Real content lands
-// later without touching a line of code.
+// 75 stars in three loose groups plus two scatter blocks; three constellations
+// wired over the first nineteen. Real content lands later without touching a
+// line of code.
 /* prettier-ignore */
 const STAR_TABLE: [az: number, alt: number, mag: number][] = [
   // — "The Barrel" (group 0, indices 0..6). Lives at az ≈ ±π — the sky BEHIND
   //   the fly-through, never in frame during the demo: the dive no longer turns
   //   around, it faces world +X (sky az ≈ 0) from p = 0 to p = 1. It was moved
   //   here to dress an exit framing that looked back down −X — a framing since
-  //   deleted — and it stays put: it fills a patch left thin when "The Keyhole"
-  //   took the through-glass axis at az ≈ 0, and the bench/table sky reads it
-  //   from every angle. Alts, mags, shape and line wiring untouched.
+  //   deleted — and it stays put: the bench/table sky reads it from every angle,
+  //   and az ≈ 0 is dressed by the throat scatter and the generated field
+  //   instead. Alts, mags, shape and line wiring untouched.
   //   SEAM: the cluster spans 0.76 rad and straddled az = 0, so a clean −π
   //   shift would straddle az = ±π instead (2.52…3.03 on one side, −3.00…−3.05
   //   on the other). Discs would survive that, but the bake SILENTLY DROPS the
@@ -276,36 +459,20 @@ const STAR_TABLE: [az: number, alt: number, mag: number][] = [
   [-1.44, -0.66, 1.3], [ 0.66,  0.21, 1.0], [-0.71,  0.15, 1.2],
   [ 2.16,  0.71, 1.5], [-2.44, -0.72, 1.1], [ 1.88,  0.58, 1.3],
   [-0.31, -0.35, 1.6], [ 3.11, -0.63, 1.4],
-  // — "The Keyhole" (group 3, indices 42..48). Sits ON THE DIVE'S ONE AXIS
-  //   (world +X, az ≈ 0, alt ≈ 0): the fly-through parks off the BAYONET MOUNT
-  //   at world −X and looks down +X for the approach, the whole dive AND the
-  //   flight out, so az ≈ 0 is the backdrop of the opening framings, the cone
-  //   the traced disc shows, and the finale — this cluster owns the last frame.
-  //   The placeholder scatter left that direction thin — without something
-  //   authored here the disc is blank paper. The cluster is the old az ≈ π ring
-  //   shifted by −π (rounded to this table's 2 dp), alts and lines untouched;
-  //   it has this patch of sky to itself now that "The Barrel" — authored
-  //   around az ≈ 0 — has moved to the ±π side. Ring of five with a two-star
-  //   stem. Still a disc-radius clear of the seam.
-  [-0.25,  0.10, 2.6], [-0.16,  0.16, 3.0], [-0.07,  0.09, 2.4],
-  [-0.09, -0.01, 2.2], [-0.23, -0.02, 2.0], [-0.16, -0.10, 1.8],
-  [-0.17, -0.18, 1.4],
-  // — THROAT SCATTER (indices 49..80). Faint background texture, not shape:
-  //   the WORMHOLE pinch (optics/warp.ts) draws the whole forward hemisphere
+  // — THROAT SCATTER (indices 42..74). Faint background texture, not shape:
+  //   the WORMHOLE pinch draws the whole forward hemisphere
   //   into the exit axis on radial ribbons, and one ribbon per star means the
   //   throat is only as dense as the sky it has to pull. The first table gave
   //   the az ≈ 0 hemisphere ~9 stars, so the peak read as nine wires rather
   //   than a torrent. These 33 sit mostly in az ∈ (−1.2, 1.2) — the exit/view
   //   axis region the dive actually frames — at mags 0.8..1.8 (two at ~2.1–2.2)
-  //   so they stay UNDER "The Keyhole", which remains the anchor the eye
-  //   reads; alts spread over (−0.8, 0.8) in loose knots with stragglers
-  //   between, because an even lattice reads as a screen door once the pinch
-  //   combs it into parallel lines.
-  //   APPENDED, not merged into the scatter block above, so "The Keyhole"
-  //   keeps indices 42..48 and no constellation wiring moves.
+  //   so they stay a wash rather than shapes the eye tries to join; alts spread
+  //   over (−0.8, 0.8) in loose knots with stragglers between, because an even
+  //   lattice reads as a screen door once the pinch combs it into parallel
+  //   lines.
   //   SEAM: trivially safe — every az here is inside ±1.7, i.e. more than a
   //   radian from ±π (test (g) still checks it).
-  // a drift trailing off the Keyhole's stem
+  // a drift up and left of the axis
   [-0.52,  0.31, 1.3], [-0.44,  0.38, 0.9], [-0.36,  0.27, 1.6],
   [-0.47,  0.19, 1.0],
   // a knot just below the axis
@@ -330,17 +497,20 @@ const STAR_TABLE: [az: number, alt: number, mag: number][] = [
 ];
 
 /** The authored half of the catalog: THESE ROWS NEVER MOVE. Every constellation
- *  index below addresses this array, and the generated background is appended
- *  after it precisely so that stays true. */
-const AUTHORED: Star[] = STAR_TABLE.map(([az, alt, mag]) => ({ az, alt, mag }));
+ *  index below addresses this array, and the generated field is appended after
+ *  it precisely so that stays true. `ink` is derived, not authored — the table's
+ *  own magnitude hierarchy read through the one brightness law. */
+const AUTHORED: Star[] = STAR_TABLE.map(([az, alt, mag], i) => ({
+  az,
+  alt,
+  mag,
+  ink: inkOf(mag),
+  tint: tintAt(i),
+}));
 
-/** How many stars are AUTHORED — the prefix of `SKY.stars` the four
+/** How many stars are AUTHORED — the prefix of `SKY.stars` the three
  *  constellations wire over, and the boundary the background begins at. */
 export const AUTHORED_COUNT = AUTHORED.length;
-
-/** "The Keyhole"'s indices, named because TWO things need them: the
- *  constellation wiring below, and the background generator's exclusion cap. */
-const KEYHOLE_STARS = [42, 43, 44, 45, 46, 47, 48];
 
 const CONSTELLATIONS: Constellation[] = [
   {
@@ -382,21 +552,6 @@ const CONSTELLATIONS: Constellation[] = [
       [17, 18],
     ],
   },
-  {
-    id: "keyhole",
-    label: "The Keyhole",
-    stars: KEYHOLE_STARS,
-    lines: [
-      [42, 43],
-      [43, 44],
-      [44, 45],
-      [45, 46],
-      [46, 42],
-      [45, 47],
-      [46, 47],
-      [47, 48],
-    ],
-  },
 ];
 
 /** (az, alt) → equirect uv. The forward form of three's `equirectUV`. */
@@ -410,54 +565,66 @@ export function dirOf(az: number, alt: number): [number, number, number] {
   return [c * Math.cos(az), Math.sin(alt), c * Math.sin(az)];
 }
 
-// ── THE BACKGROUND FIELD ─────────────────────────────────────────────────────
+// ── THE GENERATED FIELD ──────────────────────────────────────────────────────
 //
-// The authored table is SHAPE — four constellations and the scatter that keeps
-// the exit axis from being blank paper. It is not a SKY: at 82 stars the finale
+// The authored table is SHAPE — three constellations and the scatter that keeps
+// the exit axis from being blank paper. It is not a SKY: at 75 stars the finale
 // read as a handful of discs rather than as depth, which is the owner's note
 // ("let's add more stars", "the end state is too zoomed in on the stars"). The
-// answer is a background population — many, faint, small — generated rather than
-// authored, because typing three hundred rows by hand buys nothing a seeded
-// generator does not.
+// answer is a generated population, because typing seven hundred rows by hand
+// buys nothing a seeded generator does not.
+//
+// ONE POPULATION, NOT THREE. This used to be two tables — a "background" tier at
+// one ink and a "dim" tier at 0.45 of it — which drew the sky as two flat bands
+// of brightness with nothing in between, and that is precisely what the trails
+// scene exposed. BRIGHTNESS_LAW replaced both: one continuous exponential, one
+// set of placement knobs, and the only thing left to split is WHERE the array is
+// cut for the stroke/name pool (`brightMag`).
 //
 // GENERATED, NOT RANDOM. The repo forbids `Math.random` anywhere a frame can see
 // it, and a catalog that changes between two loads would make every golden and
 // every screenshot comparison meaningless. A 32-bit LCG with a fixed seed gives
-// the same three hundred stars on every machine, every reload and every test
+// the same seven hundred stars on every machine, every reload and every test
 // run; changing `seed` is how you roll a different sky, deliberately.
 //
 // APPENDED, NEVER MERGED. The generated stars land AFTER the authored ones, so
-// the four constellations' indices — and the exact az/alt/mag of the 82 rows
+// the three constellations' indices — and the exact az/alt/mag of the 75 rows
 // above — are untouched by anything here.
-export const BACKGROUND_LOOK = {
-  /** how many background stars are appended to the authored table. With the 82
-   *  authored rows this is the catalog's total, and ~300 is the number at which
-   *  the finale reads as a field rather than as a constellation on empty paper. */
-  count: 220,
+export const FIELD_LOOK = {
+  /** how many stars are generated. Bounded on BOTH sides: every star costs a
+   *  quad in the starfield draw and a segmented arc in the trail draw
+   *  (`count × (TRAIL_LOOK.segments + 1) × 2` vertices, ~129k at 795 stars), and
+   *  under a few hundred the finale is discs on paper rather than a field. */
+  count: 720,
   /** the LCG's seed — THE knob for "same sky, different draw". Any 32-bit value
    *  gives a different but equally deterministic field. */
-  seed: 20260805,
-  /** the background's magnitude range. `mag` here is the disc-size driver, not
-   *  the astronomical convention (bigger = brighter/larger — see Star.mag), and
-   *  the whole range sits UNDER the authored stars' 0.8…3.1: this population is
-   *  texture, and the authored shapes must stay the marks the eye reads. */
-  magMin: 0.3,
-  magMax: 1.15,
-  /** the distribution's skew: mag = magMin + (magMax − magMin)·u^magSkew for u
-   *  uniform, so above 1 the field crowds toward magMin and only a few stars
-   *  reach the top of the range. At 2.6 the median lands near 0.44 — a faint
-   *  wash — with roughly one star in eight bright enough to read as an accent. */
-  magSkew: 2.6,
-  /** KEEP OFF THE KEYHOLE'S FACE, radians: no background star lands within this
-   *  angle of the finale constellation's mean direction. The Keyhole owns the
-   *  last frame and its strokes have to stay legible; the cluster itself spans
-   *  ~0.2 rad, so this leaves a thin margin of clear sky around it rather than a
-   *  visible hole. */
-  guardRad: 0.34,
-  /** and off the equirect SEAM (the header's authoring rule): |az| is capped at
-   *  π − this, which at any magnitude in the range above is more than a disc
-   *  radius clear of az = ±π. Only the dev-only bake cares — the sprite path has
-   *  no seam — but the catalog is shared, so the rule is enforced at the source. */
+  seed: 20260812,
+  /** THE CONCENTRATION, and the peripheral remainder. The field used to be
+   *  uniform over the whole sphere, which is astronomically honest and reads as
+   *  thin: the frame the story actually holds is a ~0.7 rad cone about the view
+   *  axis, and a uniform sphere puts only its share of the stars in there.
+   *  `coreFraction` of the draws are therefore CONCENTRATED about the throat and
+   *  the rest keep the old uniform draw — the periphery still has to be dressed,
+   *  because the dive arrives through it and the trails scene spins it past. */
+  coreFraction: 0.7,
+  /** the concentration's WIDTH, radians: γ (the angle off the throat) is drawn
+   *  Rayleigh-distributed with this σ, which is a round 2D Gaussian in the
+   *  tangent plane at the axis. Chosen over "uniform inside a cap" for the two
+   *  things a cap cannot do — the density is FLAT at the very centre, so the
+   *  middle of the frame fills like the rest of it rather than spiking or
+   *  clearing, and it has NO EDGE anywhere, so the field thins toward the
+   *  frame's corners instead of ending on a visible circle. At 0.55 about 57% of
+   *  the core lands inside the frame and a residual ~1.3% still reaches the far
+   *  hemisphere; over the whole field 42% of the stars sit inside it. */
+  coreSigmaRad: 0.55,
+  /** off the equirect SEAM (the header's authoring rule): |az| is capped at
+   *  π − this, which at any magnitude BRIGHTNESS_LAW can draw is more than a
+   *  disc radius clear of az = ±π. Only the dev-only bake cares — the sprite has
+   *  no seam — but the catalog is shared, so the rule is enforced at the source.
+   *
+   *  The dev-only bake does not read `ink` either, so the bake draws the
+   *  whole field at full strength — one more way that path reads heavier than
+   *  the shipped one by design (see SKY_LOOK.starRhoRad). */
   seamMarginRad: 0.15,
 };
 
@@ -474,66 +641,90 @@ function lcg(seed: number): () => number {
   };
 }
 
-/** The mean direction of a set of stars, normalized — the axis the background
- *  keeps clear of. */
-export function meanDir(stars: Star[]): [number, number, number] {
-  let x = 0;
-  let y = 0;
-  let z = 0;
-  for (const s of stars) {
-    const [dx, dy, dz] = dirOf(s.az, s.alt);
-    x += dx;
-    y += dy;
-    z += dz;
-  }
-  const l = Math.hypot(x, y, z) || 1;
-  return [x / l, y / l, z / l];
-}
-
 /**
- * The background population, from the seed alone: uniform over the whole sphere
- * (`alt = asin(uniform)` — sampling `alt` uniformly would bunch the field at the
- * poles), skewed faint, off the seam, and clear of `guard`.
+ * The generated field, from the seed alone: TWO PLACEMENT DRAWS mixed by
+ * `coreFraction` — one concentrated about the throat, one uniform over the whole
+ * sphere (`alt = asin(uniform)` — sampling `alt` uniformly would bunch the field
+ * at the poles) — both off the seam, and one magnitude draw through
+ * BRIGHTNESS_LAW.
  *
- * REJECTION, WITH A CEILING. A rejected sample consumes its three draws and the
- * loop tries again, so the stream — and therefore the catalog — depends only on
- * the seed. The attempt ceiling is a tripwire for a guard so wide it excludes
- * the sky rather than a hole in the finale: at the shipped knobs the cap
- * excludes under 3% of the sphere and the loop rejects a handful of samples.
+ * FOUR DRAWS EITHER WAY. The branch selector, two shape draws and the magnitude
+ * are the same four calls on both sides, so which branch a sample took does not
+ * shift the stream for the ones after it.
+ *
+ * REJECTION, WITH A CEILING. A rejected sample consumes its draws and the loop
+ * tries again, so the stream — and therefore the catalog — depends only on the
+ * seed. The seam is the only rejection there is, and it is narrow enough that at
+ * the shipped seed the field loses not a single sample to it (720 attempts for
+ * FIELD_LOOK's 720) — so the ceiling is a tripwire for a future rejection wide
+ * enough to exclude the sky, not a live limit.
  */
-export function buildBackground(
-  guard: [number, number, number],
-  look = BACKGROUND_LOOK,
-): Star[] {
+export function buildField(look = FIELD_LOOK): Star[] {
   const rand = lcg(look.seed);
   const azLimit = Math.PI - look.seamMarginRad;
-  const cosGuard = Math.cos(look.guardRad);
   const out: Star[] = [];
   for (let i = 0; out.length < look.count && i < look.count * 100; i++) {
-    const az = (rand() * 2 - 1) * azLimit;
-    const alt = Math.asin(rand() * 2 - 1);
+    let az: number;
+    let alt: number;
+    if (rand() < look.coreFraction) {
+      // CONCENTRATED, in polar form about the throat: γ off the axis, Rayleigh
+      // at σ = coreSigmaRad (the radius of a round 2D Gaussian), and a uniform
+      // roll around it. The axis is world +X — az = alt = 0, hard-coded here for
+      // the same reason THROAT_AZ/THROAT_ALT are — so the roll turns in the
+      // (Y, Z) plane and the direction goes back to sky coordinates directly.
+      const gam = Math.min(
+        Math.PI,
+        look.coreSigmaRad * Math.sqrt(-2 * Math.log(1 - rand())),
+      );
+      const roll = rand() * Math.PI * 2;
+      const s = Math.sin(gam);
+      alt = Math.asin(s * Math.sin(roll));
+      az = Math.atan2(s * Math.cos(roll), Math.cos(gam));
+    } else {
+      az = (rand() * 2 - 1) * azLimit;
+      alt = Math.asin(rand() * 2 - 1);
+    }
     const u = rand();
-    const [x, y, z] = dirOf(az, alt);
-    if (x * guard[0] + y * guard[1] + z * guard[2] > cosGuard) continue;
+    // THE SEAM, for both branches. The uniform draw cannot break the rule (its
+    // az is clamped); the core draw can, because a sample more than a right
+    // angle off the axis lands at az ≈ ±π when its roll puts it near the Y axis.
+    if (Math.PI - Math.abs(az) < look.seamMarginRad) continue;
+    const mag = magAt(u);
     out.push({
       az,
       alt,
-      mag:
-        look.magMin + (look.magMax - look.magMin) * Math.pow(u, look.magSkew),
+      mag,
+      ink: inkOf(mag),
+      // keyed by the field's own seed, so a re-seed re-rolls the colours with
+      // the positions rather than replaying the same run over a new sky
+      tint: tintAt(out.length, look.seed),
     });
   }
   return out;
 }
 
-/** THE FINALE'S SUBJECT, as a direction: "The Keyhole"'s mean heading, which the
- *  background field is generated around rather than over. */
-export const KEYHOLE_DIR = meanDir(KEYHOLE_STARS.map((i) => AUTHORED[i]));
+/** The generated field, split at BRIGHTNESS_LAW.brightMag: the stars drawn as
+ *  real discs first, the backdrop specks after. A STABLE PARTITION, not a sort —
+ *  each half keeps the generator's own order, so the two halves are still the
+ *  seeded stream read in sequence and a re-seed cannot silently reorder one of
+ *  them against the other. */
+const FIELD = buildField();
+const FIELD_BRIGHT = FIELD.filter((s) => s.mag >= BRIGHTNESS_LAW.brightMag);
+const FIELD_BACKDROP = FIELD.filter((s) => s.mag < BRIGHTNESS_LAW.brightMag);
 
-/** THE CATALOG: the authored table first, then the generated background. Both
- *  the dev-only equirect bake and the shipped sprite starfield draw exactly
- *  this. */
+/** HOW MANY STARS MAY CARRY A STROKE OR A NAME: the authored table plus the
+ *  field's bright half, i.e. the prefix of `SKY.stars` before the backdrop. The
+ *  boundary anything that draws TO a star reads — the line pool and the names
+ *  (story/constellations.ts) — because a stroke or a label on a backdrop speck
+ *  would read as a mistake. 295 at the shipped knobs: 75 authored + 220 of the
+ *  720 drawn. */
+export const BRIGHT_COUNT = AUTHORED_COUNT + FIELD_BRIGHT.length;
+
+/** THE CATALOG: the authored table first, then the field's bright half, then its
+ *  backdrop half. Both the dev-only equirect bake and the shipped sprite
+ *  starfield draw exactly this. */
 export const SKY: { stars: Star[]; constellations: Constellation[] } = {
-  stars: [...AUTHORED, ...buildBackground(KEYHOLE_DIR)],
+  stars: [...AUTHORED, ...FIELD_BRIGHT, ...FIELD_BACKDROP],
   constellations: CONSTELLATIONS,
 };
 
@@ -576,7 +767,7 @@ export interface BakedSky {
 export interface BakeSkyOptions {
   /** Draw a real LINE STREAK behind every star, running toward the throat —
    *  the second product this file exists to make (see STREAK_LOOK). Everything
-   *  else about the bake is identical, which is what lets optics/warp.ts
+   *  else about the bake is identical, which is what let the retired warp
    *  crossfade the two targets and get motion out of the difference. */
   streaked?: boolean;
 }
@@ -588,7 +779,7 @@ export interface BakeSkyOptions {
  * star, running toward the throat (STREAK_LOOK); everything else — the
  * backdrop, the constellation strokes, the discs, the palette, the mapping — is
  * bit-for-bit the same code. That is the whole reason it is a flag rather than
- * a sibling function: optics/warp.ts crossfades the two targets, so any
+ * a sibling function: the retired warp crossfaded the two targets, so any
  * divergence between them would show up as a pop in the mix, and a shared body
  * is the only way to be sure there is none.
  *

@@ -1,25 +1,22 @@
 import * as THREE from "three/webgpu";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-import {
-  DRACOLoader,
-  DRACO_GLTF_CONFIG,
-} from "three/examples/jsm/loaders/DRACOLoader.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { isOpticalGlass } from "./parts";
 
 // Shared loading + material setup for the Sigma 18-50mm GLB (produced by the
-// lens_work/ pipeline, `lens_web_segmented.glb`: de-branded, Draco-compressed,
-// with each circular part split into `<Part>_SegN` wedges under an empty of the
-// same name). See core/scene.ts for the full axis-mapping notes.
+// lens_work/ pipeline, `lens_web_segmented.glb`: de-branded, uncompressed, with
+// each circular part split into `<Part>_SegN` wedges under an empty of the same
+// name). See core/scene.ts for the full axis-mapping notes.
 export const MODEL_URL = "/models/lens_web_segmented.glb";
 // Removable accessories ship in their own GLB (hood / UV filter / caps); merged
 // into the body scene at load so the accessory toggles find them by name.
 export const ACCESSORIES_URL = "/models/lens_web_accessories.glb";
-// The web GLBs are Draco-compressed, so a decoder is required. three ships one:
-// DRACO_GLTF_CONFIG points at the glTF decoder assets the bundler emits (hashed,
-// same-origin — no external CDN, and no hand-copied public/draco/ to drift out
-// of sync with the three version). The pages preload the same two assets via
-// `?url` imports of the identical files, which dedupe to the same hashed URLs.
+// The web GLBs carry plain accessors and no glTF extensions at all, so a bare
+// GLTFLoader reads them. Draco was dropped upstream (lens_work N.15): it saved
+// transfer bytes on the first visit only, while its wasm decoder was fetched,
+// instantiated and run on EVERY page load. Brotli on the wire buys most of the
+// same bytes with none of the recurring cost — which makes serving `.glb` with
+// `Content-Encoding: br` a hosting requirement, not an optimization.
 
 // Front accessories ride the extending zoom barrel; the rear cap sits at root.
 const FRONT_ACCESSORIES = new Set([
@@ -98,12 +95,32 @@ function lensMaterialSpec(name: string): LensMaterialSpec {
   return { color: 0x191919, roughness: 0.55, metalness: 0.28 };
 }
 
+/** HOW MUCH THE ELEMENTS REFLECT — a scale on the dielectric Fresnel at both
+ *  ends (three r185 reads `specularIntensity` into F0 and IS specularF90 at
+ *  metalness 0), i.e. the ONE number for the strength of everything the glass
+ *  bounces back: the environment, the studio key, the rim.
+ *
+ *  IT IS A COATING NUMBER, NOT A DEFAULT. three's 1.0 is bare glass — ~4% per
+ *  surface — and the elements are a stack of THIRTEEN of them, each drawn in
+ *  the transmission pass over the last: shot dead down the bore, where the
+ *  story's fly-through approach leaves the camera, that stack composited to a
+ *  milky white disc across the whole bore, swallowing the shut iris behind it
+ *  (the owner: "the aperture blades turn white during the transition"). At 0.15
+ *  each surface returns ~0.6%, which is what a real multicoated element does,
+ *  and the bore reads as glass with the blades visible through it.
+ *
+ *  The dive already knew this: its transmissive clones (core/scene.ts
+ *  GLASS_TRANSMISSIVE_SPECULAR) are built at exactly this number, and matching
+ *  it here is also what makes the clones' hand-BACK at the end of the span a
+ *  no-op instead of a pop. */
+export const GLASS_SPECULAR = 0.15;
+
 /** Build one material from a spec. Glass is the only kind that needs more than
  *  the three PBR params: transmission + IOR (the crown glass the elements used
  *  to carry as KHR_materials_transmission) and the iridescent thin-film
  *  multicoating — the green/amber/purple sheen of real lens coatings — over a
- *  faint green specular tint. DoubleSide because light crosses both surfaces of
- *  an element. */
+ *  faint green specular tint, at coating strength (GLASS_SPECULAR).
+ *  DoubleSide because light crosses both surfaces of an element. */
 function buildLensMaterial(spec: LensMaterialSpec): THREE.Material {
   const { color, roughness, metalness, glass } = spec;
   if (!glass)
@@ -119,23 +136,23 @@ function buildLensMaterial(spec: LensMaterialSpec): THREE.Material {
     iridescenceIOR: 1.3,
     iridescenceThicknessRange: [140, 400],
     specularColor: new THREE.Color(0xb9e0c6),
+    specularIntensity: GLASS_SPECULAR,
   });
-}
-
-/** A fresh stylized material for a mesh (the name → spec decision above).
- *  loadLensModel shares instances by signature; this stays for standalone use. */
-export function lensMaterialFor(name: string): THREE.Material {
-  return buildLensMaterial(lensMaterialSpec(name));
 }
 
 export interface LensModel {
   /** The body scene — ready to render on its own. */
   scene: THREE.Group;
+  /** Whether this load asked for the accessories GLB at all (see `accessories`
+   *  in loadLensModel's options). False on the hero, where nothing downstream
+   *  may expect hood/caps/filter nodes to exist. */
+  hasAccessories: boolean;
   /** Resolves once the accessories GLB has been fetched, decoded, stylized and
    *  merged into `scene` (front group under Barrel_Inner). Loaded in the
    *  BACKGROUND after the body so the first frame never waits on it; consumers
-   *  (accessory toggles, the caps-on finale) await this before touching the
-   *  hood/caps/filter nodes. Rejections are the caller's to handle. */
+   *  (the /lens accessory toggles) await this before touching the hood/caps/
+   *  filter nodes. Rejections are the caller's to handle. Resolves immediately
+   *  when `hasAccessories` is false — the toggles' await stays valid either way. */
   accessoriesReady: Promise<void>;
 }
 
@@ -144,19 +161,19 @@ export interface LensModel {
  * (hood / UV filter / caps) off in the BACKGROUND, merging it into the body
  * scene (front group parented to the zoom barrel so they ride the extension)
  * once decoded. Stylized materials are applied to every mesh of each.
- * The accessories are hidden by default on /lens and unused by the hero until
- * the late caps-on finale, so keeping their fetch+decode+merge off the
- * first-frame critical path costs nothing visible and speeds the model in.
+ * The accessories are hidden by default on /lens and never shown by the hero at
+ * all (the story's ending is the rose alone), so `accessories: false` skips that
+ * second GLB outright — the hero used to download 855 KB it never drew.
  */
-export async function loadLensModel(): Promise<LensModel> {
+export async function loadLensModel({
+  accessories = true,
+}: { accessories?: boolean } = {}): Promise<LensModel> {
   const loader = new GLTFLoader();
-  const draco = new DRACOLoader();
-  draco.setDecoderPath(DRACO_GLTF_CONFIG);
-  loader.setDRACOLoader(draco);
 
   // Per-LOAD material cache keyed by the name→spec decision signature: meshes that
-  // resolve to identical params share ONE source material, so applyOps's per-
-  // source WeakMap then yields ONE deform material per look (~10 instead of ~168).
+  // resolve to identical params share ONE source material, so the per-source
+  // material caches downstream (materials/unified.ts, the bench looks) then
+  // yield ONE deform material per look (~10 instead of ~168).
   // Scoped to this call (not module-global) so disposeLensModel frees it cleanly.
   // Shared across the body + accessories: the accessory specs don't collide with
   // the body's, so they simply get their own instances (their own ~8 materials).
@@ -188,25 +205,24 @@ export async function loadLensModel(): Promise<LensModel> {
   const scene = body.scene;
   stylize(scene);
 
-  // Accessories in the BACKGROUND: fetch+decode+merge off the critical path. Not
-  // awaited here — the caller renders on the body alone and awaits accessoriesReady
-  // before touching hood/caps/filter. The Draco decoder is disposed only once BOTH
-  // loads have settled (it decodes the accessories too, so an early dispose would
-  // strand their worker pool).
-  const accessoriesReady = loader
-    .loadAsync(ACCESSORIES_URL)
-    .then((accessories) => {
-      // Both GLBs share the same rest-pose space; Barrel_Inner is at the origin
-      // at load, so plain .add() keeps each accessory's world position.
-      const barrel = scene.getObjectByName("Barrel_Inner");
-      for (const acc of [...accessories.scene.children]) {
-        (FRONT_ACCESSORIES.has(acc.name) && barrel ? barrel : scene).add(acc);
-        stylize(acc);
-      }
-    })
-    .finally(() => draco.dispose());
+  // Accessories in the BACKGROUND: fetch+parse+merge off the critical path. Not
+  // awaited here — the caller renders on the body alone and awaits
+  // accessoriesReady before touching hood/caps/filter.
+  const accessoriesReady = accessories
+    ? loader.loadAsync(ACCESSORIES_URL).then((acc) => {
+        // Both GLBs share the same rest-pose space; Barrel_Inner is at the
+        // origin at load, so plain .add() keeps each accessory's world position.
+        const barrel = scene.getObjectByName("Barrel_Inner");
+        for (const child of [...acc.scene.children]) {
+          (FRONT_ACCESSORIES.has(child.name) && barrel ? barrel : scene).add(
+            child,
+          );
+          stylize(child);
+        }
+      })
+    : Promise.resolve();
 
-  return { scene, accessoriesReady };
+  return { scene, hasAccessories: accessories, accessoriesReady };
 }
 
 /**

@@ -707,13 +707,25 @@ describe("deriveFrames — part classes", () => {
       ["Element_05", PART_CLASS.glass],
       ["Iris_Blade_01", PART_CLASS.iris],
       ["DecalT_Brand", PART_CLASS.decal],
-      ["Acc_Hood", PART_CLASS.accessory],
       ["Cam_Barrel_Seg0", PART_CLASS.structure],
     ];
     for (const [name] of parts) root.add(box(name, 0));
     deriveFrames(root);
     for (const [name, cls] of parts)
       expect(constFrame(named(root, name), "cls")).toBe(cls);
+  });
+
+  it("skips accessories in a body pass — their radii must not enter the census", () => {
+    // Accessories merge in the BACKGROUND whenever their fetch lands, so a body
+    // pass that swept them made the rank span (and every body rank) depend on a
+    // load race. They are framed only by their own scoped pass (root = the
+    // accessory), never by the body's.
+    const root = new THREE.Object3D();
+    root.add(box("Cam_Barrel_Seg0", 0));
+    root.add(box("Acc_Hood", 0));
+    deriveFrames(root);
+    expect(frameOf(named(root, "Cam_Barrel_Seg0").geometry)).not.toBeNull();
+    expect(frameOf(named(root, "Acc_Hood").geometry)).toBeNull();
   });
 
   it("classes a LEAF MESH ROOT from its own name", () => {

@@ -64,7 +64,12 @@ const heroBand = bandOf("hero");
       </div>
     </div>
 
-    {/* Pinned stage */}
+    {
+      /* Pinned stage — the ONE dvh box on this page (see the unit law in
+         story.ts): the canvas must fill the VISIBLE screen with no bottom gap
+         while an iOS toolbar animates, and sticky inside a fixed-height svh
+         track its height changes nothing else. */
+    }
     <div
       id="lens-stage"
       class="bg-bg sticky top-0 flex h-dvh items-center justify-center overflow-hidden"
@@ -222,9 +227,9 @@ const heroBand = bandOf("hero");
 
     <LensSceneContent scene="capsOn" pos="right">
       <span class="cap-ghost" aria-hidden="true">09</span>
-      <span class="cap-tag">CAPS ON</span>
+      <span class="cap-tag">BLOOM</span>
       <h2 class="cap-title">That's the tour. The rest is the work.</h2>
-      <p class="cap-body">Caps on. Demos and writing below — keep scrolling.</p>
+      <p class="cap-body">Demos and writing below — keep scrolling.</p>
     </LensSceneContent>
   </div>
 </section>
@@ -311,8 +316,10 @@ const heroBand = bandOf("hero");
      Layout decides WHERE a caption is; this decides WHEN it is lit. Each band is
      a view-timeline, and both windows are anchored to a band EDGE crossing the
      matching viewport edge — which, with the scroll-space geometry above, are
-     exactly the band's own p range (story.ts): `cover 100dvh` is p = a and
-     `cover (100% − 100dvh)` is p = b. Since a/b are the scene's range padded by
+     exactly the band's own p range (story.ts): `cover 100dvh` is p = a (the
+     live viewport top — see the IN-anchor note below) and
+     `cover (100% − 100svh)` is p = b (exact and viewport-free: the 100svh here
+     cancels the band height's own +100svh). Since a/b are the scene's range padded by
      CAPTION_PAD, a window one --cap-fade long (two pads) at each end lights the
      caption over precisely its scene and cross-dissolves with its neighbour over
      the shared pad — the schedule the old driver's band() ran, now in layout.
@@ -333,14 +340,21 @@ const heroBand = bandOf("hero");
   :global(#lens-track .cap-band) {
     animation: lens-cap-out linear both;
     animation-timeline: view(block);
-    animation-range: cover calc(100% - 100dvh - var(--cap-fade)) cover
-      calc(100% - 100dvh);
+    animation-range: cover calc(100% - 100svh - var(--cap-fade)) cover
+      calc(100% - 100svh);
     view-timeline-name: --cap-band;
     view-timeline-axis: block;
   }
   :global(#lens-track [data-cap-fade]) {
     animation: lens-cap-in linear both;
     animation-timeline: --cap-band;
+    /* the IN anchor is the band's TOP edge crossing the LIVE viewport top, so
+       it must be dvh — the band height carries its own +100svh, which the OUT
+       anchor's `100% − 100svh` cancels exactly, but the IN side has nothing to
+       cancel: an svh anchor here fires (100dvh − 100svh) early when the iOS
+       toolbar hides, which on the mobile split would overlap the two
+       half-windows it exists to keep apart. Timing-only — a dvh change here
+       moves no box and costs no re-layout. */
     animation-range: cover 100dvh cover calc(100dvh + var(--cap-fade));
   }
   /* the mobile split (see above): each half-window keeps the same total
@@ -349,8 +363,8 @@ const heroBand = bandOf("hero");
      midpoint shows no caption at all, which is the point. */
   @media (max-width: 760px) {
     :global(#lens-track .cap-band) {
-      animation-range: cover calc(100% - 100dvh - var(--cap-fade)) cover
-        calc(100% - 100dvh - var(--cap-fade) / 2);
+      animation-range: cover calc(100% - 100svh - var(--cap-fade)) cover
+        calc(100% - 100svh - var(--cap-fade) / 2);
     }
     :global(#lens-track [data-cap-fade]) {
       animation-range: cover calc(100dvh + var(--cap-fade) / 2) cover
@@ -427,15 +441,17 @@ const heroBand = bandOf("hero");
      sticky SLOT, exactly what the pinned stage used to give it, with
      .hero-intro-inner keeping its placement unchanged.
      STICKY LAW: a sticky box stays pinned for (band height − its own height). A
-     100dvh caption therefore needs a band one whole viewport TALLER than its
+     100svh caption therefore needs a band one whole viewport TALLER than its
      scene's scroll span, which is precisely the pin room the scroll-space band
      geometry adds (story.ts). Sized as a percentage of the track instead, this
-     band cleared 100dvh by only ~87px and the title drifted up under the navbar
-     a fifth of the way into the hero scene. */
+     band cleared the viewport by only ~87px (measured pre-migration) and the title drifted up under the navbar
+     a fifth of the way into the hero scene.
+     svh, not dvh, for the same reason as every other slot — see the unit law in
+     story.ts. (The STAGE below is the one dvh box on the page.) */
   #hero-intro {
     position: sticky;
     top: 0;
-    height: 100dvh;
+    height: 100svh;
   }
   .hero-intro-inner {
     position: absolute;
@@ -542,7 +558,7 @@ const heroBand = bandOf("hero");
     /* type anchored near the top so it clears the centred lens instead of sitting
        on top of it */
     .hero-intro-inner {
-      top: 13vh;
+      top: 13svh;
       transform: none;
       left: 1.25rem;
       right: 1.25rem;
@@ -658,14 +674,25 @@ const heroBand = bandOf("hero");
     let scene;
     try {
       // The op recipes the hero's deform folds in — EXACTLY the channels
-      // story/hero-driver.ts drives (explode = the teardown fan, assemble =
-      // the peel-flat/wrap-back-on pair, peel = the peel scene's scoped shell
-      // unroll). Anything else the bench offers (helix, rollout, bend) is left
-      // out on purpose: an unfolded recipe contributes literally nothing to the
-      // graph, so the hero's shader stays as small as the story needs.
+      // story/hero-driver.ts drives (explode = the teardown fan AND the
+      // ending's spiral arrival, assemble = the peel-flat/wrap-back-on pair,
+      // played TWICE — the cards scene's transition and the sky chapter's
+      // return, peel = the peel scene's scoped shell unroll, rose = the
+      // ending's origami bloom). Anything else the bench
+      // offers (helix, rollout, bend) is left out on purpose: an unfolded
+      // recipe contributes literally nothing to the graph, so the hero's shader
+      // stays as small as the story needs. story/cost.ts DEFORM_RECIPES mirrors
+      // this list and a test byte-compares the two.
+      //
+      // IT IS A SET, NOT A CHAIN. Each recipe is evaluated from the SAME seated
+      // vertex and its displacement is ADDED (ops/host.ts law 2 — the delta
+      // form — inside one loop over this list), so two recipes running at once
+      // compose by superposition and this order changes nothing. That is what
+      // lets the ending run `explode` and `rose` together: a piece sits at
+      // (seat + its radius + its petal), flying in as the flower grows.
       scene = await initScene(canvas, {
         story: true,
-        recipes: ["assemble", "explode", "peel"],
+        recipes: ["assemble", "explode", "peel", "rose"],
       });
     } catch (err) {
       // Captions are layout + CSS, so a dead scene costs nothing but the lens:
@@ -689,16 +716,16 @@ const heroBand = bandOf("hero");
       driver?.onThemeChange(light);
     });
 
-    // Story mode renders every frame (dust/rays keep animating), so once the
-    // user scrolls past the hero the loop would burn GPU forever. Pause it once
-    // the pinned stage has (almost) left the viewport. The margin must be
-    // NEGATIVE: the page ends with ~100px of the stage still geometrically under
-    // the viewport top (covered by the sections painted over it), so a plain
-    // isIntersecting never goes false at max scroll. Shrinking the root by 15%
-    // counts a <15%-visible stage as gone — safe, because the stage only starts
-    // exiting after the scroll track ends, i.e. the story is already complete.
-    // Wired BEFORE the reduced-motion return so the parked scene stops
-    // rendering below the fold too.
+    // Story mode keeps drawing with nothing dirty (dust/rays keep animating), so
+    // once the user scrolls past the hero the loop would burn GPU forever
+    // regardless. Pause it once the pinned stage has (almost) left the
+    // viewport. The margin must be NEGATIVE: the page ends with ~100px of the
+    // stage still geometrically under the viewport top (covered by the sections
+    // painted over it), so a plain isIntersecting never goes false at max
+    // scroll. Shrinking the root by 15% counts a <15%-visible stage as gone —
+    // safe, because the stage only starts exiting after the scroll track ends,
+    // i.e. the story is already complete. Wired BEFORE the reduced-motion
+    // return so the parked scene stops rendering below the fold too.
     const stage = document.getElementById("lens-stage")!;
     new IntersectionObserver(
       ([entry]) => scene!.setPaused(!entry.isIntersecting),

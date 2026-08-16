@@ -5,9 +5,26 @@
 // single, documented home so consumers can't drift into subtly different
 // regexes. The sets below are DELIBERATELY different from each other — each
 // doc comment states the semantic, so keep them distinct on purpose.
+//
+// How a name is SPELLED is `core/names.ts`'s business, not this file's: the
+// rosters a predicate shares with a `story/peelcards.ts` departure table live
+// there so a model-side rename touches one line. What a match MEANS still lives
+// here, in the doc comments.
 // ============================================================================
 
 import { PART_CLASS } from "../ops/ops";
+import {
+  BAFFLE_KEEP,
+  PEEL_BAFFLES,
+  PEEL_SINGLES,
+  PEEL_TUBES,
+  prefixRe,
+} from "./names";
+
+// Built once, not per call: every predicate below runs per mesh, per load.
+const PEEL_TUBE_RE = prefixRe(PEEL_TUBES);
+const PEEL_BAFFLE_RE = prefixRe(PEEL_BAFFLES);
+const PEEL_SINGLE_RE = prefixRe(PEEL_SINGLES);
 
 /** True optical glass only — the 13 lens elements and the accessory UV filter.
  *  NOT the iris blades: they're metal, and an earlier `Iris_` prefix match
@@ -15,20 +32,12 @@ import { PART_CLASS } from "../ops/ops";
 export const isOpticalGlass = (name: string): boolean =>
   /^Element_|^Acc_Filter_Glass$/.test(name);
 
-/** The OPTICS isolate group (`/lens` Demos → "optics"): the true glass PLUS the
- *  whole iris assembly — the light path and the mechanism that shapes it. Wider
- *  than isOpticalGlass on purpose. Nothing to do with materials any more: the
- *  web GLBs ship bare geometry (lens_work MIGRATION §1) and core/model.ts
- *  authors every look site-side, glass and blades included. */
-export const isOpticsIsolate = (name: string): boolean =>
-  /^(Element|Iris)_|^Acc_Filter_Glass$/.test(name);
-
 /** The optical elements alone (no filter glass) — the light path the
- *  refraction rays thread and the isolate preserves. */
+ *  refraction rays thread. */
 export const isGlassElement = (name: string): boolean => /^Element_/.test(name);
 
 /** Removable accessories (hood, caps, UV filter) — excluded from the bare-lens
- *  bounding box, the teardown, and the isolate. */
+ *  bounding box and the teardown. */
 export const isAccessory = (name: string): boolean => name.startsWith("Acc_");
 
 /** Printed markings (focal scale, name ring, badge…). Unanchored on purpose:
@@ -56,28 +65,16 @@ export const isIrisMechanism = (name: string): boolean =>
  *  deform host, so object-space rigs must leave it alone. */
 export const isSegWedge = (name: string): boolean => /_Seg\d+$/.test(name);
 
-/** "Greeble" detail hidden at the SILHOUETTE detail level (LOD phase 1 —
- *  core/scene setIsolate("silhouette")): the small mechanical clutter that
- *  reads as noise at illustration scale — screws & mount hardware, electrical
- *  contacts/encoder, decals/plates, the iris MECHANISM (blades, cam plate,
- *  actuator gear — but NOT the iris HOUSING shell), the PCB,
- *  baffles, shim rings, the focus lead-screw/motor/guide-rods/carrier/arms, the
- *  optics element cells/collars/flanges, and stray cam followers. NOT hidden
- *  (they draw the lens silhouette): the barrel/cam SHELL wedges, the major
- *  rings, the iris housing shell, and the glass elements. Still checked up the
- *  ANCESTOR chain by the isolate, because a greeble's `_SegN` wedges carry the
- *  part's name with a suffix rather than classifying on their own.
- *  Accessories are left to the isolate's per-mesh snapshot, not matched here. */
-export const isSilhouetteGreeble = (name: string): boolean =>
-  isDecal(name) ||
-  /^(Baffle_|Optics_Baffle_|PCB_|Shim_Ring_)/.test(name) ||
-  /^Mount_(Screws|FlangeScrews|ScrewBores|Notch|Contacts|ContactShelf|EncoderStrip)/.test(
-    name,
-  ) ||
-  /^Iris_(Blade_|CamPlate|ActuatorGear)/.test(name) ||
-  /^Focus_(LeadScrew|Motor|GuideRods|Carrier|Arms)/.test(name) ||
-  /^Optics_Cell/.test(name) ||
-  name.startsWith("Cam_Followers");
+/** A PURE-IDENTITY GRAPH GROUP (`Grp_*`) — an empty that tidies the node graph
+ *  and nothing else. lens_work MIGRATION STEP 5 added `Grp_FocusDrive` and
+ *  `Grp_MountRear`: both export with no translation/rotation/scale key at all,
+ *  and — unlike the five real re-parents that shipped with them — their members
+ *  KEEP their own explode rungs. So every ancestor walk that reads a name as a
+ *  part identity (ops/frames `nameChain` for the ladder group, dev/inspect's
+ *  hover label) must step straight past them; without the skip, nine parts
+ *  collapse onto two rungs. Naming, not geometry: a `Grp_` node carries no mesh,
+ *  so nothing gated on class or visibility ever sees one. */
+export const isGraphGroup = (name: string): boolean => name.startsWith("Grp_");
 
 /** THE PEEL'S CAST — what leaves with the shell and returns in the rewrap.
  *  The lens's OUTER SKIN: the barrel sections (`Barrel_Base`, `Barrel_Inner`),
@@ -101,11 +98,11 @@ export const isSilhouetteGreeble = (name: string): boolean =>
 export const isShellPart = (name: string): boolean =>
   /^(Barrel_|Band_Mid|Ring_)/.test(name) || isDecal(name);
 
-/** THE PEEL'S SECOND CAST — the internal light-trap baffles, which leave with
- *  the peel and return with it, but are NOT shell: `Baffle_Rear` (the rear
- *  aperture plate, y ≈ −1.6) and the two optics traps `Optics_Baffle_Front`
- *  (y ≈ 50.3) and `Optics_Baffle_G2` (y ≈ 54.8), each cut into the same five
- *  sectors as the shell.
+/** THE PEEL'S SECOND CAST — the two OPTICS light traps, which leave with the
+ *  peel and return with it, but are NOT shell: `Baffle_Front` (y ≈ 50.3)
+ *  and `Baffle_G2` (y ≈ 54.8), each cut into the same five sectors as
+ *  the shell. (`Baffle_Rear`, the rear aperture plate at the mount face, is in
+ *  the KEEP-set with the rest of the back — owner's call.)
  *
  *  WHY THEY GO. With the skin off, the card scene looks down a lens whose BORE
  *  is the subject — and these three plates are exactly what closes it: the rear
@@ -120,9 +117,15 @@ export const isShellPart = (name: string): boolean =>
  *  shell is the visibility gate: core/scene.ts's shell fade takes this predicate
  *  as well, in its own late band, so they wink out after the skin and are
  *  restored by the same rewrap. Matched on the piece's OWN name, `_SegN` wedges
- *  included, exactly as isShellPart is. */
-export const isPeelExtra = (name: string): boolean =>
-  /^(Baffle_|Optics_Baffle_)/.test(name);
+ *  included, exactly as isShellPart is.
+ *
+ *  NAMED PAIR, NOT THE `Baffle_` PREFIX: lens_work MIGRATION STEP 4b unified the
+ *  three plates under one prefix (`Optics_Baffle_Front` → `Baffle_Front`,
+ *  `Optics_Baffle_G2` → `Baffle_G2`, `Baffle_Rear` unchanged), so a prefix test
+ *  here would silently drag the rear plate out of the KEEP-set and undo the
+ *  owner's "a bit too much is coming off of the back part" ruling. The two are
+ *  spelled out for exactly that reason. */
+export const isPeelExtra = (name: string): boolean => PEEL_BAFFLE_RE.test(name);
 
 /** THE PEEL'S THIRD CAST — the two CLOSED INNER TUBES the skin was wrapped
  *  around: `Chassis_Fixed` (r ≈ 29.4, y ≈ 1.5-65) and `Cam_Barrel` (r ≈ 28.6,
@@ -141,25 +144,63 @@ export const isPeelExtra = (name: string): boolean =>
  *  (the shell's own cut) and seven for `Cam_Barrel` — so they fly out radially
  *  like strips rather than sliding out of an end like a baffle plate. They
  *  cannot ride the peel RECIPE with the shell even so: the sticker unroll is
- *  scoped to the outer rank band (ops/recipes peel, rankLo 0.93) and these sit
- *  below it at rank ≈ 0.919, which is exactly what keeps the inner structure
- *  seated while the skin curls. Their departure is rigid, like the baffles'.
+ *  scoped to the outer rank band (ops/recipes peel, rankLo 0.97) and these sit
+ *  below it — `Chassis_Fixed` at rank 0.9377 and `Cam_Barrel` at 0.8927-0.9190,
+ *  MEASURED off the shipped model's baked `_opA.w` — which is exactly what keeps
+ *  the inner structure seated while the skin curls. Their departure is rigid,
+ *  like the baffles'. (`Cam_Barrel`'s band INTERLEAVES with `Barrel_Inner`'s
+ *  0.8827-0.8997, a shell family whose median radius sits inside the cladding —
+ *  ops/recipes carries the whole measured table and what follows from it.)
  *
- *  WHERE THIS STOPS, and why it is not one family further in. `Cam_OpticsCage`
- *  (r ≈ 22, y 17.5-55.7) is the next closed layer and was tried here: it takes
- *  the body away without buying the glass. The elements it covers are 03-06,
- *  and 07-13 are wrapped in their own `Optics_Cell_G3`/`Cam_LightTrap` at
- *  r ≈ 9-14 either way — so the column stays as hidden as before while the lens
- *  loses the cam slots that are the last thing making it read as a lens rather
- *  than as a mount ring with glass in front of it. The cage is mechanism, not
- *  cladding; it stays.
+ *  AND THE INNER CLADDING GOES WITH THEM — `OpticsCage` (r ≈ 22,
+ *  y 17.5-55.7, covers elements 03-06) and the sleeves around 07-13:
+ *  `Cell_G3`, `Cell_Collar`, `Cell_Flange` and
+ *  `LightTrap` (r ≈ 9-14). An earlier pass kept the cage as "mechanism,
+ *  not cladding"; the owner overruled it twice — the card scene's subject is
+ *  the BARE GLASS COLUMN, and these were the last layers hiding it. All are
+ *  wedge-cut (5 or 7 segs) and take the same rigid radial departure. What
+ *  STAYS is the working mechanism itself: the iris assembly, the focus train
+ *  (`Optics_G4_Focus` carries a moving element), the mount and the PCB.
  *
  *  Matched on the piece's OWN name, `_SegN` wedges included, as both casts above
  *  are. `Chassis_Fixed` ADOPTS `Focus_Motor`/`Focus_GuideRods` as children
  *  (ops/frames.ts) — they carry their own names, so they are not matched here
- *  and stay behind with the rest of the mechanism. */
-export const isPeelTube = (name: string): boolean =>
-  /^(Chassis_Fixed|Cam_Barrel)/.test(name);
+ *  and stay behind with the rest of the mechanism.
+ *
+ *  THE ROSTER IS `core/names.ts` `PEEL_TUBES`, which is also `peelcards.ts`'s
+ *  `TUBE_CUT` key set: this cast is the one place where the predicate and a
+ *  departure table have to agree piece for piece, since a part that matches here
+ *  but has no `TUBE_CUT` row would fade with the tubes and never drift out. The
+ *  cells used to be matched by an `Optics_Cell` STEM rather than by name, which
+ *  left exactly that gap open. */
+export const isPeelTube = (name: string): boolean => PEEL_TUBE_RE.test(name);
+
+/** THE PEEL'S KEEP-SET — the card scene's subject, stated as a WHITELIST
+ *  (owner: "maybe we should whitelist instead of blacklist? We want to keep
+ *  the parts that make up the back like the connector and the glass elements
+ *  and aperture assembly"): the glass, the iris assembly, and the whole rear
+ *  connector block (mount, contacts, PCB, the rear tube and the shim rings —
+ *  the back keeps its rings; owner: "a bit too much is coming off of the back
+ *  part"). Everything else that is not an
+ *  accessory leaves during the cards/internals span — the fourth cast below
+ *  sweeps up whatever the named casts miss, and the partition test asserts
+ *  the five casts + this keep-set cover the model exactly. */
+export const isPeelKeep = (name: string): boolean =>
+  /^(Element_|Iris_(Blade_|ActuatorGear)|Mount_|PCB_|Shim_Ring_|Focus_)/.test(
+    name,
+  ) || name.startsWith(BAFFLE_KEEP);
+
+/** THE PEEL'S FOURTH CAST — the REST: every mesh the whitelist leaves out that
+ *  no other cast names. Successive owner rulings have moved almost all of it
+ *  into the keep-set or onto the tube roster, and the roster this reads
+ *  (`core/names.ts` PEEL_SINGLES) is now a single name — `Cam_Followers`, the
+ *  followers riding the cam barrel's slots, which have nothing left to ride once
+ *  the barrel goes. It hides with the interior (the tubes' fade channel) and
+ *  RETURNS over the fly-through's approach with it — the dive flies through the
+ *  full interior (owner: "don't remove the back elements that are part of the
+ *  fly-through transition"); only the shell and the baffles stay off until the
+ *  rewrap. */
+export const isPeelRest = (name: string): boolean => PEEL_SINGLE_RE.test(name);
 
 /** The ops `PART_CLASS` id a node name belongs to — the ONE bridge from these
  *  name predicates to the integer `ops/ops.ts` selectors match on (`selClass`),

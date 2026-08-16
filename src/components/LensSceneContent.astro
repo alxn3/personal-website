@@ -83,14 +83,17 @@ const band = bandOf(scene);
      bottom. So every slot below only has to satisfy one inequality to be dark
      for the whole of its travel, at every viewport, with no per-slot tuning:
 
-         slot offset + caption height ≤ 100dvh
+         slot offset + caption height ≤ 100svh
 
-     A `top: T` caption rides its band's top edge for the first (100dvh − T) of
+     A `top: T` caption rides its band's top edge for the first (100svh − T) of
      travel and unpins (T + h) before the band's view range ends; a `bottom: X`
-     one parks after (X + h) and unpins (100dvh − X) before the end — both
+     one parks after (X + h) and unpins (100svh − X) before the end — both
      within the windows exactly when the inequality holds. Worst case here is a
-     desktop left/right block: 50dvh + h, so a caption taller than half the
-     viewport would start lighting up mid-travel. */
+     desktop left/right block: 50svh + h, so a caption taller than half the
+     viewport would start lighting up mid-travel.
+
+     Every offset below is svh, matching the bands they stick inside — see the
+     unit law in story.ts. */
   .cap-band {
     display: flex;
     flex-direction: column;
@@ -119,7 +122,7 @@ const band = bandOf(scene);
      the old .cap-frame column, so 1.5rem/2rem land where they always did —
      `left`/`right` would be sticky offsets here, not placement). */
   .lens-cap[data-pos="left"] {
-    top: 50dvh;
+    top: 50svh;
     transform: translateY(-50%);
     margin-left: 1.5rem;
     margin-right: auto;
@@ -127,7 +130,7 @@ const band = bandOf(scene);
     align-items: flex-start;
   }
   .lens-cap[data-pos="right"] {
-    top: 50dvh;
+    top: 50svh;
     transform: translateY(-50%);
     margin-left: auto;
     margin-right: 1.5rem;
@@ -143,14 +146,14 @@ const band = bandOf(scene);
     }
   }
   .lens-cap[data-pos="top"] {
-    top: 11dvh;
+    top: 11svh;
     margin-inline: auto;
     text-align: center;
     align-items: center;
     max-width: 620px;
   }
   .lens-cap[data-pos="bottom"] {
-    bottom: 12dvh;
+    bottom: 12svh;
     margin-inline: auto;
     text-align: center;
     align-items: center;
@@ -190,7 +193,7 @@ const band = bandOf(scene);
       /* every block shares the ONE bottom slot here, so consecutive captions
          hand over IN PLACE — a cross-dissolve rather than one sliding out past
          the other. The windows are the same as everywhere else: the slot law
-         above holds with room to spare (11dvh + a phone caption's ≤250px). */
+         above holds with room to spare (11svh + a phone caption's ≤250px). */
       justify-content: flex-end;
     }
     .cap-band[data-pos="top"] {
@@ -202,7 +205,7 @@ const band = bandOf(scene);
     .lens-cap,
     .lens-cap[data-pos] {
       top: auto !important;
-      bottom: 11dvh;
+      bottom: 11svh;
       transform: none !important;
       margin-inline: auto !important;
       text-align: center;
@@ -213,7 +216,7 @@ const band = bandOf(scene);
       max-width: min(88vw, 460px, 50%);
     }
     .lens-cap[data-pos="top"] {
-      top: 12dvh !important;
+      top: 12svh !important;
       bottom: auto;
     }
     /* the desktop-only ghost numerals eat half the band on a phone */

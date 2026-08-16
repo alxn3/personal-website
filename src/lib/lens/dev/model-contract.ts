@@ -45,12 +45,21 @@ const ACCESSORY_PARTS = [
 const GLASS_ELEMENT_MESHES = 13;
 /** Floor on the DERIVED explode ladder's group count. Nothing here re-authors
  *  the tier names (that is exactly the hand-list frames.ts replaced) — it only
- *  asserts the derivation still found a ladder's worth of them. The shipped body
- *  derives 31 groups (one per top-level node; it was 32 before `Iris_FlexTrunk`
- *  was cut model-side — lens_work MIGRATION §7b). A re-export that drops whole
- *  part groups (a renamed prefix, a collapsed hierarchy) shows up as a COUNT
- *  collapse long before it shows up as a visibly wrong explode. */
-const LADDER_GROUPS_MIN = 25;
+ *  asserts the derivation still found a ladder's worth of them. A re-export that
+ *  drops whole part groups (a renamed prefix, a collapsed hierarchy) shows up as
+ *  a COUNT collapse long before it shows up as a visibly wrong explode.
+ *
+ *  2026-08-12, lens_work MIGRATION STEP 5: the shipped body derives 26 groups,
+ *  down from 31 — five parts were re-parented onto the hosts they are fastened
+ *  to (PCB_Components → PCB_Rear, Mount_Contacts → Mount_ContactShelf, the three
+ *  screw sets → Mount_Bayonet) and now ride those rungs. The floor moves 25 → 20
+ *  rather than to 25 again: a floor one below the count fails on the next
+ *  intended merge, and this tripwire is for a COLLAPSE (a whole family losing
+ *  its names), not for the model's ordinary consolidation. 20 still catches
+ *  anything that halves the ladder. The derivation is measured against the
+ *  actual file in ops/__tests__/frames.test.ts, which is where an exact count
+ *  belongs. */
+const LADDER_GROUPS_MIN = 20;
 /** Cap on how many same-kind offenders get named before the report summarizes:
  *  a systematic break (a whole pass that didn't run) would otherwise print one
  *  line per mesh and bury everything else. */
@@ -143,8 +152,9 @@ function frameViolations(
 ): string[] {
   // ACCESSORIES ARE NOT THIS SCOPE'S BUSINESS — and checking them here is a
   // RACE. They load in the background and merge into the same scene graph, then
-  // get their own scoped deriveFrames + applyOps pass (core/scene.ts's
-  // accessoriesReady handler). This report runs off a DYNAMIC IMPORT, so its
+  // get their own scoped deriveFrames + material pass (core/scene.ts's
+  // accessoriesReady handler, which re-runs deriveFrames and unified.integrate).
+  // This report runs off a DYNAMIC IMPORT, so its
   // resolution can land after the merge but before that pass, and every
   // accessory mesh would then read as "carries no derived frame" — a false
   // alarm on a healthy model. The accessory scope below checks them instead: it
@@ -180,6 +190,9 @@ export function reportModelContract(
     ...bodyViolations(model.scene),
     ...frameViolations(model.scene, frames),
   ]);
+  // A load that never asked for the accessories GLB (the hero) has no accessory
+  // scope to check — the parts are legitimately absent.
+  if (!model.hasAccessories) return;
   void model.accessoriesReady.then(() => {
     const missing = ACCESSORY_PARTS.filter(
       (n) => !model.scene.getObjectByName(n),
@@ -187,7 +200,8 @@ export function reportModelContract(
     // The frame half of the accessory contract, deferred to here for the
     // ordering reason in frameViolations: by now core/scene's own
     // accessoriesReady handler has run each accessory root through deriveFrames
-    // + applyOps, so an unframed accessory mesh is a real derivation failure.
+    // and folded it into the merged material (unified.integrate), so an unframed
+    // accessory mesh is a real derivation failure.
     const roots = ACCESSORY_PARTS.map((n) => model.scene.getObjectByName(n));
     report("accessories", [
       ...missing.map((n) => `accessory missing: ${n}`),

@@ -5,7 +5,6 @@ import {
   float,
   mix,
   positionGeometry,
-  pow,
   screenSize,
   sin,
   smoothstep,
@@ -30,16 +29,24 @@ import { SKY_INK, type SkyPalette } from "./sky";
 // the trail soup: a physics-true circumpolar trail about `SKY_SPIN_AXIS`. That
 // cannot ever register with the lens, for two structural reasons.
 //
-//   1. THE POLE IS IN THE WRONG PLACE. A trail's circle is centred on the spin
-//      pole, which sits ~290 px BELOW frame centre, while the front element's
-//      crown lands ~5 px above it. Any arc tight enough to read as a crown was
-//      necessarily 200-290 px low, and moving the pole is not on the table —
-//      the whole field wheels about it.
-//   2. THE CAMERA IS FLYING. Through the reveal the camera reverses back
-//      through the lens (world x ≈ +16 → −12 across rewrap-local [0, 0.25]),
-//      which drags any fixed sky direction clear across the frame and off it.
-//      Measured: the old crown's head went (823, 545) → (41, 587) → off screen
-//      over p .78 → .84.
+//   1. A TRAIL'S CIRCLE IS FIXED, and the lens's is not. The spin pole is on
+//      the view axis (optics/starfield.ts), so a trail is a circle centred on
+//      the frame's centre — the family's centre is not a knob, the whole field
+//      wheels about it — and its RADIUS is its one free number, set once by how
+//      far its star sits off the pole. The front element's drawn disc has to be
+//      MET, not chosen: it tightens to ~0.041 frame heights at the hand-off
+//      (`lens` below), then more than doubles and walks a fifth of a frame
+//      height left as the lens seats and the ending's camera swings. No star
+//      does that; no member of the family can be re-pointed to follow it.
+//   2. THE SKY DOES NOT STAY WHERE THE LENS IS. The crown has to hold its
+//      registration from the trails all the way to the end of the reveal, and
+//      over that stretch the fly's fov ramp SCALES every sky direction about the
+//      frame's centre while the lens's own disc is doing something else
+//      entirely; past the reveal the story's camera chain is released and swings
+//      off the optical axis, which drags a fixed sky direction clear across the
+//      frame and off it. (Under the old two-camera dive the same argument was
+//      even blunter: the camera reversed back through the lens, and the old
+//      crown's head went (823, 545) → (41, 587) → off screen over p .78 → .84.)
 //
 // So the crown is drawn where it is WANTED instead: a circle segment in SCREEN
 // space, straight to clip space, with no camera and no sphere in the graph at
@@ -60,27 +67,56 @@ import { SKY_INK, type SkyPalette } from "./sky";
 
 /** The crown's look and its two authored positions.
  *
- *  MEASURED, NOT GUESSED (1425×900, dark theme, live scene). `trail` is where
- *  the crown's old circumpolar circle actually projected at the held fly pose —
- *  centre (712.5, 776), radius ~248 px on a 900 px canvas — so the arc opens the
- *  scene sitting exactly where a trail of its old geometry sat, and reads as one
- *  of them. `lens` is WHERE THE LENS WILL BE: the front element's drawn disc at
- *  rewrap-local 0.25 — centre (532, 452), radius 87 — which is the beat the
- *  shading hands back and the element starts being drawn at all. The arc parks
- *  on those numbers for the whole blind stretch before that (the element is
- *  behind the camera through the trails scene and invisible glass after it, so
- *  there is nothing to ask), and story/trails.ts starts tracking the live disc
- *  from exactly there — so the hand-off begins on numbers that already agree and
- *  has nothing to jump. */
+ *  `trail` IS A MEMBER OF THE FAMILY, and that is all it has to be. The spin
+ *  pole is on the view axis (optics/starfield.ts SKY_SPIN_ELEV_RAD), so a star
+ *  trail projects to a circle centred on the FRAME'S CENTRE whatever the fov —
+ *  hence cx = cy = 0, which is not a placement but the geometry. The radius is
+ *  the one free number, the same way a real trail's radius is just how far its
+ *  star sits off the pole: 0.2 frame heights is the circle of a star ~0.27 rad
+ *  off the axis at the finale's fov 70, well inside the field's own spread, so
+ *  the crown reads as one of its neighbours (owner: "further away from the
+ *  camera so it's a smaller arc").
+ *  `lens` is WHERE THE LENS WILL BE, and it is MEASURED, not derived — read off
+ *  the live scene with `SceneHandle.projectDrawn("Element_01")` at rewrap-local
+ *  0.14, which is where story/trails.ts's `crownLiveAt` takes over and starts
+ *  tracking the real disc. (Measured through the dev probe rather than off a
+ *  screenshot: the same function the tracker reads, so the parked number and the
+ *  first live one are the same quantity by construction. It is also
+ *  resolution-free — frame heights — and was re-checked identical to five
+ *  decimals at 1280×820 and 1425×900.)
+ *
+ *  IT IS CONCENTRIC NOW, and that is the reveal's whole geometry rather than a
+ *  coincidence: the camera holds the dive's parked pose dead on the optical axis
+ *  for the whole reveal (story/story.ts REVEAL_END), and the front element sits
+ *  ON that axis, so its drawn disc is centred on the frame — measured
+ *  (−0.0001, −0.0001), a tenth of a pixel. So the resolve is a pure tightening
+ *  now, not the walk-left it was when the story camera had already swung off
+ *  axis by 0.14. It also makes the hand-over EXACT: nothing moves between 0.14
+ *  and 0.22, so the parked circle and the first live one are the same circle.
+ *
+ *  IT IS SMALL, and that is the pose, not a mistake: at 0.14 the lens has just
+ *  been uncovered under the fly's own fov (70°) at the reveal's overshoot (12.5
+ *  units from the parked camera — story/fly.ts REVEAL_X), so the front element
+ *  is a ~0.041-frame-height disc. It more than doubles over the next fifth of
+ *  the scene as the lens seats and the framing is handed back to the story
+ *  (story/fly.ts flySeatAt, flyFovBackAt) — which the crown follows, because
+ *  from 0.14 on it is reading the live disc rather than this. The arc parks on
+ *  these numbers only for the blind stretch before that, where the element is
+ *  behind the camera or fully faded glass and there is nothing to ask. */
 export const CROWN_LOOK = {
-  /** the arc while it is still one of the trails — frame heights from centre */
-  trail: { cx: 0, cy: 0.362, r: 0.275 },
+  /** the arc while it is still one of the trails — frame heights from centre,
+   *  and the centre is where every trail's is */
+  trail: { cx: 0, cy: 0, r: 0.2 },
   /** …and where it waits for the lens */
-  lens: { cx: -0.2, cy: 0.002, r: 0.096 },
-  /** the arc's HALF-width, frame heights. The old sky-space crown drew at 0.01
-   *  rad, which at the finale's fov 70 is ~0.008 of the frame height — kept, so
-   *  the mark's weight does not change with its geometry. */
-  half: 0.008,
+  lens: { cx: 0, cy: 0, r: 0.0406 },
+  /** the arc's HALF-width, frame heights — a 0.6%-of-height band, ~5 px on a
+   *  900 px stage, feathered from `core` outward. Owner, twice: thinner, and
+   *  then "way too thick" again at 0.005 (~9 px). The gauge is the FIELD: the
+   *  trails around it are 1–2 px arcs, and the crown has to pass for one of them
+   *  for a whole scene before it resolves — at 9 px it read as a ring highlight
+   *  laid over the sky rather than as kin to the marks beside it. Nothing
+   *  derives from it; the mark's weight is its own decision. */
+  half: 0.003,
   /** how much of the circle the crown inks at the reveal, radians. Wide enough
    *  to read as the top of a round thing, short enough not to close into a ring
    *  the element would have to fill. */
@@ -89,22 +125,25 @@ export const CROWN_LOOK = {
    *  of the circle, which is both where the old crown's tail sat and where a
    *  crown belongs. */
   phi0: -Math.PI / 2,
-  /** rungs along the arc − 1. The arc is at most ~250 px of radius, so 24
-   *  segments keeps the chord error well under a pixel. */
-  segments: 24,
+  /** rungs along the arc − 1. Sized on the LONGEST span the arc ever draws,
+   *  which is its trail phase: story/trails.ts hands it the sky's own sweep
+   *  there, now a half revolution (optics/star-trails.ts TRAIL_SWEEP_MAX). π
+   *  over 48 rungs on a ~180 px radius is under a tenth of a pixel of chord sag;
+   *  at the old 24 it would have been a third of one. */
+  segments: 48,
   /** fraction of the half-width at full ink before the edge feathers —
    *  optics/constellation-lines.ts's `core`, and star-trails' too. */
   core: 0.4,
-  /** the TRAIL end of the along-arc fade: alpha ∝ (1 − s)^this, matching
-   *  optics/star-trails.ts's `fadePow` so the crown dies away toward its tail
-   *  exactly like its neighbours while it is still pretending to be one. */
-  fadePow: 1.5,
-  /** …and the CROWN end of it: an even stroke with both ends feathered over this
-   *  fraction of the arc, because a lens edge has no head and no tail. */
+  /** the CROWN end of the along-arc ink: an even stroke with both ends feathered
+   *  over this fraction of the arc, because a lens edge has no head and no tail.
+   *  The TRAIL end is a flat 1 and needs no knob — a star trail carries its
+   *  star's ink from head to tail (optics/star-trails.ts), so anything else here
+   *  would give the crown away while it is still pretending to be one. */
   endFeather: 0.16,
-  /** a multiplier on SKY_INK's `starOpacity`. Above the field's 0.55: this is
-   *  the one arc the eye is meant to follow. */
-  inkGain: 0.88,
+  /** a multiplier on SKY_INK's `starOpacity`. 1 — the same ink a trail is drawn
+   *  at, which is what lets it hide in the field; it becomes the one arc the eye
+   *  follows by OUTLIVING the field, not by being brighter than it. */
+  inkGain: 1,
 };
 
 /** Where a point of the arc lands, in frame heights from the frame's centre
@@ -130,7 +169,8 @@ export interface CrownArc {
   object: THREE.Object3D;
   /** re-author the arc: the circle (frame heights from centre), the head's
    *  screen angle and the arc's length in radians, and `morph` — 0 draws it as
-   *  a trail (bright head, dying tail), 1 as an even edge feathered both ends. */
+   *  a trail (flat ink, like the field's arcs), 1 as an even edge feathered
+   *  both ends. */
   setShape(
     cx: number,
     cy: number,
@@ -224,13 +264,12 @@ export function createCrownArc(opts: { light: boolean }): CrownArc {
   const across: TslNode = float(1).sub(
     smoothstep(float(CROWN_LOOK.core), float(1), abs(vSide)),
   );
-  // and along it: a trail's dying tail, or an edge's even stroke
-  const asTrail: TslNode = pow(float(1).sub(vS), float(CROWN_LOOK.fadePow));
+  // and along it: a trail's flat ink, or an edge's stroke feathered at both ends
   const feather = float(CROWN_LOOK.endFeather);
   const asEdge: TslNode = smoothstep(float(0), feather, vS).mul(
     smoothstep(float(0), feather, float(1).sub(vS)),
   );
-  const along: TslNode = mix(asTrail, asEdge, uMorph);
+  const along: TslNode = mix(float(1), asEdge, uMorph);
 
   mat.colorNode = uInk;
   mat.opacityNode = across.mul(along).mul(uEnvelope).mul(uInkOpacity);

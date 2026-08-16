@@ -130,8 +130,9 @@ export interface MechanismDrive {
  *
  * MUST RUN BEFORE THE MATERIALS ARE BUILT, which is why it is split out of
  * `createMechanism` (that one waits for the recentre): the counter-rotation is
- * baked into the node graph, so a tag arriving after `applyOps` would do
- * nothing. core/scene.ts's `prepareModelMaterials` is the one caller.
+ * baked into the node graph, so a tag arriving after the materials are built
+ * (materials/unified.ts's createUnified) would do nothing. core/scene.ts's
+ * `prepareModelMaterials` is the one caller.
  */
 export function tagMechanismSpins(root: THREE.Object3D): void {
   const screw = root.getObjectByName(SCREW_NODE);
@@ -230,11 +231,19 @@ export function createMechanism(root: THREE.Object3D): {
     if (!screw) return null;
     const worldC = new THREE.Vector3();
     new THREE.Box3().setFromObject(screw).getCenter(worldC);
-    const c = root.worldToLocal(worldC.clone()); // screw axis in model space
+    // The pivot is INSERTED between the screw and whatever already held it, so
+    // the axis is measured in THAT parent's space — the space both the pivot's
+    // position and the screw's own then live in. Since lens_work MIGRATION
+    // STEP 5 the parent is really `Grp_FocusDrive` rather than the model root
+    // (identity, so the two agree today); reading the holder rather than the
+    // root is what keeps that true if a group empty ever carries a transform.
+    const holder = screw.parent ?? root;
+    holder.updateWorldMatrix(true, false);
+    const c = holder.worldToLocal(worldC.clone());
     const pivot = new THREE.Group();
     pivot.name = "Focus_LeadScrew_Pivot";
     pivot.position.copy(c);
-    (screw.parent ?? root).add(pivot);
+    holder.add(pivot);
     pivot.add(screw);
     screw.position.sub(c); // keep the screw geometry where it was
     return pivot;

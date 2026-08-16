@@ -7,7 +7,6 @@ import {
   float,
   modelViewMatrix,
   positionGeometry,
-  pow,
   smoothstep,
   uniform,
   varying,
@@ -29,17 +28,29 @@ import {
 
 // ============================================================================
 // STAR TRAILS — the long-exposure look. While the sky turns (optics/starfield's
-// `uSkySpin`, driven by story/trails.ts), every bright star drags an arc of ink
-// behind it, brightest at the disc and fading away toward where the star was
-// when the rotation began.
+// `uSkySpin`, driven by story/trails.ts), EVERY star in the catalog drags an arc
+// of ink behind it, back to where it stood when the rotation began.
+//
+// EVERY STAR, AND AT ITS OWN BRIGHTNESS. Owner: "let's have all stars create
+// trails that have the same opacity or brightness as their corresponding star."
+// So there is no selection and no along-arc decay: an arc's ink is its star's
+// ink, held constant from head to tail, and its width is its star's disc radius
+// times `widthK`. The hierarchy in the frame is the CATALOG's — an arc is faint
+// because its star is (optics/sky.ts BRIGHTNESS_LAW, whose exponential falloff
+// is what keeps a sky of 180° arcs from reading as a rope-field) — and the only
+// thing that fades the field as a whole is the scene envelope.
+//
+// TRUE CIRCLES. The pole is on the view axis (optics/starfield.ts
+// SKY_SPIN_ELEV_RAD), so every arc is a cone about the camera's own axis and
+// projects to a circle concentric with the frame's centre, at any fov.
 //
 // ONE DRAW CALL, AND NOTHING MOVES ON THE CPU. The geometry is a fixed strip of
 // quads per star, built once; each VERTEX carries its star's direction and its
 // own position `s` along the trail (0 at the head, 1 at the tail), and the
 // vertex graph rotates that direction BACKWARD by `s × uTrailSweep` about the
-// same pole the starfield spins about. So the arcs grow, curve and fade purely
-// as a function of two uniforms — the CPU writes a sweep and an envelope and
-// never touches a buffer again.
+// same pole the starfield spins about. So the arcs grow and turn purely as a
+// function of two uniforms — the CPU writes a sweep and an envelope and never
+// touches a buffer again.
 //
 // HEADS ARE GLUED TO DISCS BY CONSTRUCTION. At s = 0 the backward rotation is
 // zero, so the head sits at `rodrigues(aDir, axis, uSkySpin)` — exactly where
@@ -61,10 +72,12 @@ import {
 // ============================================================================
 
 /** THE SWEEP, radians: how far the sky has turned by the time the trails scene
- *  is done. Small on purpose — this is a long exposure of a few minutes, not a
- *  star-trail circle of a whole night, and it has to read as a turn rather than
- *  as a smear. story/trails.ts owns the law that ramps up to it. */
-export const TRAIL_SWEEP_MAX = 0.55;
+ *  is done. HALF A REVOLUTION (owner: "around a 180deg revolution before moving
+ *  to the next scene") — the exposure is hours, not minutes, and every arc is a
+ *  semicircle about the pole. story/trails.ts owns the law that ramps up to it,
+ *  and the scene's `hold` is sized so that ramp reads as a turn rather than a
+ *  spin: a π sweep crammed into the old 1.2 screenfuls was a smear. */
+export const TRAIL_SWEEP_MAX = Math.PI;
 
 /** How much of the rotation history the tail spans. 1 = all of it: the tail end
  *  of every arc sits at the star's UNROTATED direction, so the trail is a
@@ -79,17 +92,20 @@ export const TRAIL_LOOK = {
    *  Nothing optical depends on it (this material neither tests nor writes
    *  depth) — it is one number so the radii cannot drift apart. */
   radius: STARFIELD_LOOK.radius * 0.995,
-  /** how many stars get a trail. ~90 arcs of 14 segments is ~2700 vertices in
-   *  one indexed draw — the same order as the starfield itself. */
-  count: 90,
-  /** the half-angle about the view axis (world +X, the held fly pose's heading)
-   *  a star must be inside to be worth an arc, radians. 1.05 ≈ 60°, which is a
-   *  shade past the frame's corner at fov 70 on a 16:10 canvas: everything that
-   *  can be seen, and nothing that can only be seen from behind. */
-  coneRad: 1.05,
-  /** rungs per arc − 1. At the shipped sweep the chord error of 14 segments is
-   *  a fraction of a pixel even on the arc furthest from the pole. */
-  segments: 14,
+  /** rungs per arc − 1. TIED TO THE SWEEP, not to a taste: an arc is drawn as
+   *  chords, so what has to stay small is the ANGLE PER SEGMENT. 80 over the π
+   *  sweep is 0.039 rad a rung, and a chord's sag off its circle is
+   *  R·(1 − cos(θ/2)) = 1.9e-4·R — a fifth of a pixel on an arc whose SCREEN
+   *  radius is a thousand pixels, which is already outside a 820 px frame.
+   *  Raise the sweep, raise this with it.
+   *
+   *  IT IS ALSO THE COST KNOB. Every star in the catalog gets an arc, so the
+   *  draw is `stars × (segments + 1) × 2` vertices — at 795 stars that is 129k
+   *  in one indexed draw, ~40× the starfield's own 3.2k. Still cheap (no
+   *  texture, no depth, one uniform-driven vertex graph, and arcs are a pixel or
+   *  two wide so there is nearly no fill), but this is the number to cut first
+   *  if a frame budget ever needs it. */
+  segments: 80,
   /** the arc's angular HALF-width as a fraction of the star's own disc radius
    *  (optics/starfield.ts `starRho`) — under 1, so the disc stays the widest
    *  part of the mark and the trail reads as something the star LEFT. */
@@ -104,41 +120,16 @@ export const TRAIL_LOOK = {
   /** the fraction of the half-width at full ink before the edge feathers —
    *  optics/constellation-lines.ts's `core`. */
   core: 0.4,
-  /** a multiplier on SKY_INK's `starOpacity` for the whole field of arcs. Well
-   *  under 1: a trail is the faint record of a star, never a competitor to it. */
-  inkGain: 0.55,
-  /** the along-arc fade's exponent: alpha ∝ (1 − s)^this. Above 1 so the ink
-   *  concentrates near the head and the tail dies away rather than ending. */
-  fadePow: 1.5,
 };
 
 // THE CROWN IS NOT HERE ANY MORE. It used to be one last arc appended to this
-// soup, anchored near the spin pole so its circle would be tight — a physics-
-// true trail asked to register with the front element's top edge at the reveal,
-// which it structurally could not (the pole is ~290 px below frame centre; the
-// element's crown lands on it). It is now an AUTHORED SCREEN-SPACE arc with its
-// own mesh and its own placement — optics/crown-arc.ts, driven alongside these
-// by story/trails.ts. This file draws the sky's own record and nothing else.
-
-/**
- * WHICH STARS GET A TRAIL: the brightest inside the visible cone, ties broken by
- * catalog index so the answer is a function of the catalog alone — no rng, no
- * build-order luck. Both populations are eligible (optics/sky.ts appends ~220
- * generated background stars after the 82 authored ones); a long exposure is a
- * FIELD of arcs, and cutting it to the authored table would leave four
- * constellations' worth of lines on empty sky.
- */
-export function pickTrailStars(
-  stars: readonly Star[],
-  look = TRAIL_LOOK,
-): number[] {
-  const cosCone = Math.cos(look.coneRad);
-  return stars
-    .map((_, i) => i)
-    .filter((i) => dirOf(stars[i].az, stars[i].alt)[0] >= cosCone) // dot with +X
-    .sort((a, b) => stars[b].mag - stars[a].mag || a - b)
-    .slice(0, look.count);
-}
+// soup — a physics-true circumpolar trail asked to register with the front
+// element's top edge at the reveal, which it structurally could not: the camera
+// reverses back through the lens over the reveal and drags any fixed sky
+// direction clear across the frame. It is now an AUTHORED SCREEN-SPACE arc with
+// its own mesh and its own placement — optics/crown-arc.ts, driven alongside
+// these by story/trails.ts. This file draws the sky's own record and nothing
+// else.
 
 /**
  * THE ARC LAW, on the CPU — the exact expression the vertex graph evaluates, so
@@ -162,12 +153,19 @@ export interface TrailArc {
   dir: [number, number, number];
   /** angular half-width, radians */
   half: number;
-  /** per-arc ink multiplier, 0..1 */
+  /** per-arc ink multiplier, 0..1 — THE STAR'S OWN, held along the whole arc */
   ink: number;
+  /** the star's temperature tint (optics/sky.ts `Star.tint`) */
+  tint: readonly [number, number, number];
 }
 
 /**
- * The arcs the geometry is built over: exactly one per picked star.
+ * The arcs the geometry is built over: exactly one per star in the catalog, in
+ * catalog order.
+ *
+ * THE INK IS THE STAR'S. `Star.ink` (optics/sky.ts `inkOf`) times the width
+ * floor's compensation — the same two factors optics/starfield.ts folds into a
+ * disc's `aInk`, so an arc is drawn at the brightness of the star it came off.
  *
  * THE WIDTH FLOOR IS PAID FOR IN INK. A star whose honest half-width falls under
  * `minHalfRad` is drawn at the floor and dimmed by exactly the ratio, so a faint
@@ -176,17 +174,16 @@ export interface TrailArc {
  */
 export function buildTrailArcs(
   stars: readonly Star[],
-  picks: readonly number[],
   look = TRAIL_LOOK,
 ): TrailArc[] {
-  return picks.map((i) => {
-    const s = stars[i];
+  return stars.map((s) => {
     const wanted = look.widthK * starRho(s.mag);
     const half = Math.max(look.minHalfRad, wanted);
     return {
       dir: dirOf(s.az, s.alt),
       half,
-      ink: Math.min(1, wanted / half),
+      ink: (s.ink ?? 1) * Math.min(1, wanted / half),
+      tint: s.tint,
     };
   });
 }
@@ -218,14 +215,17 @@ export function createStarTrails(opts: { light: boolean }): StarTrails {
   const uTrailSweep = uniform(0);
   const uEnvelope = uniform(0);
   const uInk = uniform(new THREE.Color(palette().star));
-  const uInkOpacity = uniform(palette().starOpacity * TRAIL_LOOK.inkGain);
+  // THE FIELD'S OWN OPACITY IS THE STARS' — no gain, up or down. An arc is drawn
+  // at its star's brightness (owner), so the only per-arc dimming is `aInk` and
+  // the only field-wide one is the scene envelope.
+  const uInkOpacity = uniform(palette().starOpacity);
 
   // ── the strip soup ─────────────────────────────────────────────────────────
   // Per arc: SEG + 1 rungs of two vertices each, indexed as SEG quads. As in the
   // starfield, `position` holds the quad's PARAMETERS — (side, s, 0) — and not a
   // place; where the vertex actually lands is solved from `aDir` and the two
   // spin uniforms every frame.
-  const arcs = buildTrailArcs(SKY.stars, pickTrailStars(SKY.stars));
+  const arcs = buildTrailArcs(SKY.stars);
   const SEG = TRAIL_LOOK.segments;
   const RUNGS = SEG + 1;
   const vPerArc = RUNGS * 2;
@@ -234,6 +234,7 @@ export function createStarTrails(opts: { light: boolean }): StarTrails {
   const aDir = new Float32Array(n * vPerArc * 3);
   const aHalf = new Float32Array(n * vPerArc);
   const aInk = new Float32Array(n * vPerArc);
+  const aTint = new Float32Array(n * vPerArc * 3);
   const index = new Uint32Array(n * SEG * 6);
   for (let a = 0; a < n; a++) {
     const arc = arcs[a];
@@ -247,6 +248,9 @@ export function createStarTrails(opts: { light: boolean }): StarTrails {
         aDir[v * 3] = arc.dir[0];
         aDir[v * 3 + 1] = arc.dir[1];
         aDir[v * 3 + 2] = arc.dir[2];
+        aTint[v * 3] = arc.tint[0];
+        aTint[v * 3 + 1] = arc.tint[1];
+        aTint[v * 3 + 2] = arc.tint[2];
         aHalf[v] = arc.half;
         aInk[v] = arc.ink;
       }
@@ -268,6 +272,7 @@ export function createStarTrails(opts: { light: boolean }): StarTrails {
   geo.setAttribute("aDir", new THREE.BufferAttribute(aDir, 3));
   geo.setAttribute("aHalf", new THREE.BufferAttribute(aHalf, 1));
   geo.setAttribute("aInk", new THREE.BufferAttribute(aInk, 1));
+  geo.setAttribute("aTint", new THREE.BufferAttribute(aTint, 3));
   geo.setIndex(new THREE.BufferAttribute(index, 1));
 
   // ── the graph ──────────────────────────────────────────────────────────────
@@ -282,6 +287,7 @@ export function createStarTrails(opts: { light: boolean }): StarTrails {
   const nDir: TslNode = attribute("aDir", "vec3");
   const nHalf: TslNode = attribute("aHalf", "float");
   const nInk: TslNode = attribute("aInk", "float");
+  const nTint: TslNode = attribute("aTint", "vec3");
   const side: TslNode = positionGeometry.x;
   const s: TslNode = positionGeometry.y;
 
@@ -309,17 +315,19 @@ export function createStarTrails(opts: { light: boolean }): StarTrails {
   );
 
   const vSide: TslNode = varying(side);
-  const vS: TslNode = varying(s);
   const vInk: TslNode = varying(nInk);
+  const vTint: TslNode = varying(nTint);
   // across the band: full ink through the core, feathered to nothing at the edge
   const across: TslNode = float(1).sub(
     smoothstep(float(TRAIL_LOOK.core), float(1), abs(vSide)),
   );
-  // and along it: bright at the disc, gone at the far end of the turn
-  const tail: TslNode = pow(float(1).sub(vS), float(TRAIL_LOOK.fadePow));
 
-  mat.colorNode = uInk;
-  mat.opacityNode = across.mul(tail).mul(vInk).mul(uEnvelope).mul(uInkOpacity);
+  // the theme's ink at this star's temperature — the same product the disc is
+  // drawn with (optics/starfield.ts `starMark`), so a trail is its star's colour
+  mat.colorNode = uInk.mul(vTint);
+  // NOTHING ALONG THE ARC. There is no `s` term here on purpose: the ink an arc
+  // is drawn at is its star's, from head to tail (see the header).
+  mat.opacityNode = across.mul(vInk).mul(uEnvelope).mul(uInkOpacity);
 
   const mesh = new THREE.Mesh(geo, mat);
   mesh.name = "Lens_StarTrails";
@@ -339,7 +347,7 @@ export function createStarTrails(opts: { light: boolean }): StarTrails {
       light = l;
       const pal = palette();
       uInk.value.setHex(pal.star);
-      uInkOpacity.value = pal.starOpacity * TRAIL_LOOK.inkGain;
+      uInkOpacity.value = pal.starOpacity;
     },
     dispose() {
       mesh.removeFromParent();

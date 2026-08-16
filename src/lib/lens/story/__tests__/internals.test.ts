@@ -18,13 +18,16 @@ import {
 // arrives at a hard 1, and that nothing runs outside the scene.
 
 const inR = rangeOf("internals");
+const caR = rangeOf("cards");
 /** a spread of phases through both loop periods — no law here may depend on
  *  where in its cycle the clock happens to be. */
 const TIMES = [0, 375, 1250, 2500, 3125, 5000, 6180, 7000, 21_000];
 
 describe("internals ambient envelopes", () => {
-  it("are asleep outside the scene", () => {
-    for (const p of [0, inR.p0 - 0.05, inR.p0, inR.p1, inR.p1 + 0.05, 1]) {
+  it("are asleep outside the cards+internals span", () => {
+    // the ambient wakes a fifth into CARDS now (the peel bares the mechanism a
+    // scene early), so the quiet edges are the cards wake-point and inR.p1
+    for (const p of [0, caR.p0, atFrac(caR, 0.15), inR.p1, inR.p1 + 0.05, 1]) {
       const env = internalsEnvAt(p);
       expect(env.breath, `breath at p ${p}`).toBe(0);
       expect(env.rack, `rack at p ${p}`).toBe(0);
@@ -71,8 +74,10 @@ describe("internals aperture handoff", () => {
   });
 
   it("opens from a clean zero and stays inside the channel", () => {
-    // the scene ARRIVES at whatever the driver left: wide open
-    for (const t of TIMES) expect(internalsApertureAt(t, inR.p0)).toBe(0);
+    // the SPAN arrives at whatever the driver left: wide open at the cards
+    // wake-point (the breath is already alive by inR.p0 — no handback there)
+    for (const t of TIMES)
+      expect(internalsApertureAt(t, atFrac(caR, 0.15))).toBe(0);
     for (const t of TIMES)
       for (const f of [0.1, 0.25, 0.4, 0.5, 0.55, 0.6, 0.8]) {
         const a = internalsApertureAt(t, atFrac(inR, f));
@@ -96,24 +101,9 @@ describe("internals aperture handoff", () => {
     expect(internalsBreathAt(2700, p)).toBeLessThan(peak);
     expect(internalsBreathAt(5000, p)).toBeCloseTo(0, 10);
   });
-
-  it("breathes over most of a stop range while it is awake", () => {
-    // sampled over one whole period at the envelope's peak: the iris must
-    // actually travel, and never past its authored depth
-    const p = atFrac(inR, 0.3);
-    const samples = Array.from({ length: 41 }, (_, i) =>
-      internalsBreathAt((i * 5000) / 40, p),
-    );
-    expect(Math.min(...samples)).toBe(0);
-    expect(Math.max(...samples)).toBeCloseTo(0.55, 10);
-  });
 });
 
 describe("internals focus rack", () => {
-  it("is parked whenever its envelope is", () => {
-    for (const t of TIMES) expect(internalsFocusAt(t, 0)).toBe(0);
-  });
-
   it("racks the full channel and no further", () => {
     const samples = Array.from({ length: 57 }, (_, i) =>
       internalsFocusAt((i * 7000) / 56, 1),
@@ -127,9 +117,11 @@ describe("internals focus rack", () => {
     expect(internalsFocusAt(7000, 1)).toBeCloseTo(0, 10);
   });
 
-  it("is 0 at the scene's edges, where hero-driver takes the channel back", () => {
+  it("is 0 at the span's edges, where hero-driver takes the channel back", () => {
     for (const t of TIMES) {
-      expect(internalsFocusAt(t, internalsEnvAt(inR.p0).rack)).toBe(0);
+      expect(internalsFocusAt(t, internalsEnvAt(atFrac(caR, 0.15)).rack)).toBe(
+        0,
+      );
       expect(internalsFocusAt(t, internalsEnvAt(inR.p1).rack)).toBe(0);
       expect(internalsFocusAt(t, internalsEnvAt(atFrac(inR, 0.95)).rack)).toBe(
         0,

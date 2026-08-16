@@ -14,6 +14,18 @@ export default defineConfig({
     resolve: {
       alias: [{ find: /^three$/, replacement: "three/webgpu" }],
     },
+    // dev only (astro build bundles through rollup): pre-bundle the three
+    // subpaths — the alias above hides bare `three` from the dep scanner.
+    // Keep this list == the `from "three…"` specifiers under src/.
+    optimizeDeps: {
+      include: [
+        "three/webgpu",
+        "three/tsl",
+        "three/examples/jsm/loaders/GLTFLoader.js",
+        "three/examples/jsm/controls/OrbitControls.js",
+        "three/examples/jsm/environments/RoomEnvironment.js",
+      ],
+    },
     server: {
       allowedHosts: [".trycloudflare.com"],
     },

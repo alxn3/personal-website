@@ -1,7 +1,7 @@
 ---
-import { ANIMATIONS, loadDemos } from "../lib/lens";
+import { loadAnimations } from "../lib/lens";
 // Build-time (server) load — the client fetches its own lazy chunk in boot().
-const { DEMOS } = await loadDemos();
+const { ANIMATIONS, fmtParam } = await loadAnimations();
 import Footer from "../components/Footer.astro";
 import Navbar from "../components/Navbar.astro";
 import HtmlShell from "../layouts/HtmlShell.astro";
@@ -52,48 +52,7 @@ const shadingTransitions = [
   <!-- pt-16 clears the fixed navbar; ?embed hides the navbar (global.css), so
        there the padding drops and the viewer takes the full viewport. -->
   <main class="w-full flex-1 pt-16 in-data-embedded:pt-0">
-    <LensPreloads />
-
-    <!-- Page-level HARD wipe backdrop: a full-viewport layer BEHIND the
-         (transparent-capable) canvas and in front of the page bg. `below` fills
-         the viewport; `above` is clipped to the region above a hard, tilted line
-         — no feather. Driven by setPageWipe (lib/lens); hidden until a demo shows
-         it. z-0 keeps it under the canvas (z-10) and panel (z-20). -->
-    <div
-      id="page-wipe"
-      aria-hidden="true"
-      class="pointer-events-none fixed inset-0 z-0 hidden"
-    >
-      <div id="page-wipe-below" class="absolute inset-0"></div>
-      <div id="page-wipe-above" class="absolute inset-0"></div>
-    </div>
-
-    <!-- Page-owned TEXT layers (the "type-sandwich"): huge display type BEHIND
-         the canvas (in front of the wipe, z-5) and a caption ABOVE the canvas
-         (under the panel, z-15). Both are page DOM driven by setPageText
-         (lib/lens), created once and hidden until a demo fills them — the lens
-         occludes the back layer so the sandwich reads. Static typography lives in
-         the <style> below; the module writes only overrides + per-frame motion. -->
-    <div
-      id="page-text-back"
-      aria-hidden="true"
-      class="pointer-events-none fixed inset-0 z-5 hidden"
-    >
-      <div class="ptx-anchor">
-        <p class="ptx-main"></p>
-        <p class="ptx-sub hidden"></p>
-      </div>
-    </div>
-    <div
-      id="page-text-front"
-      aria-hidden="true"
-      class="pointer-events-none fixed inset-0 z-15 hidden"
-    >
-      <div class="ptx-anchor">
-        <p class="ptx-main"></p>
-        <p class="ptx-sub hidden"></p>
-      </div>
-    </div>
+    <LensPreloads accessories />
 
     <!-- Mobile: SPLIT VIEW — canvas on top, controls in their own region below
          (nothing overlays the render). sm+: the canvas fills the container and
@@ -117,7 +76,7 @@ const shadingTransitions = [
 
       <div
         id="controls-panel"
-        class="border-border bg-surface/90 z-20 flex max-h-[45dvh] shrink-0 flex-col border-t backdrop-blur sm:absolute sm:right-4 sm:bottom-4 sm:max-h-[calc(100dvh-6rem)] sm:w-72 sm:rounded-lg sm:border"
+        class="border-border bg-surface/90 z-20 flex max-h-[45dvh] shrink-0 flex-col border-t backdrop-blur sm:absolute sm:right-4 sm:bottom-4 sm:max-h-[calc(100dvh-6rem)] sm:w-80 sm:rounded-lg sm:border"
       >
         <div role="tablist" class="border-border flex border-b">
           <button
@@ -139,16 +98,6 @@ const shadingTransitions = [
             class="text-text-muted hover:text-text aria-selected:text-text aria-selected:border-accent flex-1 cursor-pointer border-b-2 border-transparent py-2.5 text-sm font-medium transition-colors"
           >
             Animations
-          </button>
-          <button
-            type="button"
-            role="tab"
-            id="tab-demos"
-            aria-controls="tabpanel-demos"
-            aria-selected="false"
-            class="text-text-muted hover:text-text aria-selected:text-text aria-selected:border-accent flex-1 cursor-pointer border-b-2 border-transparent py-2.5 text-sm font-medium transition-colors"
-          >
-            Demos
           </button>
         </div>
 
@@ -348,7 +297,7 @@ const shadingTransitions = [
               {
                 /* DEV: hero-camera preview — while ON (and an animation is
                    selected) the camera plays the homepage hero's scripted
-                   rewrap → caps-on choreography as the progress slider scrubs,
+                   rewrap → bloom choreography as the progress slider scrubs,
                    instead of the free orbit. */
               }
               <div
@@ -366,7 +315,7 @@ const shadingTransitions = [
                   Hero camera
                 </label>
                 <span class="text-text-muted text-[0.6875rem] leading-snug">
-                  Progress plays the homepage's rewrap → caps-on camera move
+                  Progress plays the homepage's rewrap → bloom camera move
                   (select an animation first).
                 </span>
               </div>
@@ -385,10 +334,33 @@ const shadingTransitions = [
                     aria-hidden="true"
                     class="pointer-events-none invisible col-start-1 row-start-1 flex flex-col gap-4"
                   >
+                    <button
+                      type="button"
+                      data-param-reset
+                      class="text-text-muted hover:text-text self-end text-xs underline decoration-dotted underline-offset-2"
+                    >
+                      Reset to defaults
+                    </button>
                     {a.params!.map((p) => (
                       <label class="flex flex-col gap-1.5">
                         <span class="text-text flex items-center justify-between text-sm font-medium">
-                          {p.label}
+                          <span class="flex items-baseline gap-2">
+                            {p.label}
+                            {/* the PHYSICAL value (the uniform's own unit, post-clamp) —
+                                the number a knobDefault would be written as. Kept live
+                                by the input handler through the anim's readParam. */}
+                            <output
+                              data-param-out={p.id}
+                              class="text-accent font-mono text-xs tabular-nums"
+                            >
+                              {fmtParam(p.phys)}
+                            </output>
+                            {/* the DEFAULT, static — the knob's shipped value, so a
+                                tuning session always sees how far it has drifted */}
+                            <span class="text-text-muted/70 font-mono text-[10px] tabular-nums">
+                              / {fmtParam(p.phys)}
+                            </span>
+                          </span>
                           <span class="text-text-muted text-xs font-normal">
                             {p.hint}
                           </span>
@@ -409,68 +381,6 @@ const shadingTransitions = [
               }
             </div>
           </div>
-
-          <div
-            id="tabpanel-demos"
-            role="tabpanel"
-            aria-labelledby="tab-demos"
-            aria-hidden="true"
-            class="pointer-events-none invisible col-start-1 row-start-1 flex flex-col gap-4 p-4"
-          >
-            <div class="flex flex-col gap-2">
-              <div class="flex flex-wrap gap-1.5" id="demo-group">
-                <button
-                  type="button"
-                  data-demo="none"
-                  aria-pressed="true"
-                  class="border-border text-text-muted hover:text-text aria-pressed:bg-accent aria-pressed:border-accent cursor-pointer rounded-md border px-2.5 py-1 text-xs font-medium transition-colors aria-pressed:text-white"
-                >
-                  None
-                </button>
-                {
-                  DEMOS.map((d) => (
-                    <button
-                      type="button"
-                      data-demo={d.id}
-                      aria-pressed="false"
-                      class="border-border text-text-muted hover:text-text aria-pressed:bg-accent aria-pressed:border-accent cursor-pointer rounded-md border px-2.5 py-1 text-xs font-medium transition-colors aria-pressed:text-white"
-                    >
-                      {d.label}
-                    </button>
-                  ))
-                }
-              </div>
-              <label
-                id="demo-progress-row"
-                class="pointer-events-none invisible flex flex-col gap-1.5"
-              >
-                <span
-                  class="text-text flex items-center justify-between text-sm font-medium"
-                >
-                  Progress
-                  <span
-                    class="text-text-muted text-xs font-normal"
-                    id="demo-hint"></span>
-                </span>
-                <input
-                  type="range"
-                  id="demo-progress"
-                  min="0"
-                  max="100"
-                  value="0"
-                  step="any"
-                  class="accent-accent h-2 w-full cursor-pointer"
-                />
-              </label>
-              <button
-                type="button"
-                id="demo-play"
-                class="border-border text-text hover:border-accent pointer-events-none invisible mt-1 cursor-pointer rounded-md border px-3 py-1.5 text-sm font-medium transition-colors"
-              >
-                Play
-              </button>
-            </div>
-          </div>
         </div>
       </div>
     </div>
@@ -478,104 +388,16 @@ const shadingTransitions = [
   <Footer />
 </HtmlShell>
 
-<style>
-  /* Page-owned text layers (driven by lib/lens/explore/page-text.ts). This holds
-     the STATIC house typography; the module writes only per-config overrides
-     (color/size/tracking) and the per-frame transform/opacity. The `\n`-split
-     lines rely on `white-space: pre-line`. */
-  .ptx-anchor {
-    position: absolute;
-    top: 0;
-    /* left / transform / text-align are written by the module per config */
-  }
-  #page-text-back .ptx-main,
-  #page-text-back .ptx-sub,
-  #page-text-front .ptx-main,
-  #page-text-front .ptx-sub {
-    margin: 0;
-    white-space: pre-line;
-    color: inherit; /* the layer root carries the demo-coordinated color */
-  }
-
-  /* Default ink on the ROOT (not the anchor): setPageText writes a spec's color
-     as the root's inline style, which must beat this rule — a stylesheet color
-     on the anchor would win over the root's inheritance and eat every override. */
-  #page-text-back,
-  #page-text-front {
-    color: var(--text);
-  }
-
-  /* ---- back: the type-sandwich star — huge, very bold house serif that can
-         span the viewport; sits behind the lens so the model occludes it. ---- */
-  #page-text-back .ptx-anchor {
-    width: 100vw;
-    padding: 0 clamp(1rem, 5vw, 4rem);
-  }
-  #page-text-back .ptx-main {
-    font-family: var(--font-heading);
-    font-weight: 900;
-    font-size: calc(var(--ptx-scale, 1) * clamp(4rem, 18vw, 20rem));
-    line-height: 0.88;
-    letter-spacing: -0.03em; /* big display type wants tightening */
-    text-wrap: balance;
-  }
-  #page-text-back .ptx-sub {
-    font-family: var(--font-heading);
-    font-weight: 700;
-    font-size: calc(var(--ptx-scale, 1) * clamp(1rem, 3vw, 2.75rem));
-    line-height: 1;
-    margin-top: 0.3em;
-    opacity: 0.8;
-  }
-
-  /* ---- front: caption-scale, echoing LensStory's .cap-* look — Bitter title
-         (cap-title values) over a JetBrains-Mono kicker (cap-tag values). A soft
-         halo keeps it legible where the hard wipe line crosses the type. ---- */
-  #page-text-front .ptx-anchor {
-    width: min(100vw, var(--container-layout));
-    padding: 0 1.5rem;
-    text-align: center;
-  }
-  @media (min-width: 1024px) {
-    #page-text-front .ptx-anchor {
-      padding: 0 2rem;
-    }
-  }
-  #page-text-front .ptx-main {
-    font-family: var(--font-heading);
-    font-weight: 400;
-    font-size: calc(var(--ptx-scale, 1) * clamp(30px, 3.4vw, 44px));
-    line-height: 1.08;
-    text-wrap: balance;
-    text-shadow:
-      0 2px 24px rgba(0, 0, 0, 0.4),
-      0 1px 3px rgba(0, 0, 0, 0.3);
-  }
-  #page-text-front .ptx-sub {
-    font-family: var(--font-mono);
-    font-size: 10px;
-    font-weight: 500;
-    letter-spacing: 0.18em;
-    text-transform: uppercase;
-    margin-top: 0.85em;
-  }
-</style>
-
 <script>
   import {
     initScene,
     rangeOf,
-    ANIMATIONS,
     ANIM_RESET_CHANNELS,
     CHANNEL_DEFAULTS,
-    loadDemos,
+    loadAnimations,
     resetRecipeKnobs,
-    setPageWipe,
-    setPageText,
     type AccessoryGroup,
-    type DemoApi,
     type LensAnimation,
-    type LensDemo,
     type PathViz,
     type ShadingMode,
     type TransitionName,
@@ -612,6 +434,24 @@ const shadingTransitions = [
       return;
     }
 
+    // The canned animations arrive via their own lazy chunk (lib/lens
+    // index.ts loadAnimations — module-scope recipeKnob calls make the family
+    // layer unshakeable from a static graph, so the homepage hero must not
+    // carry it). Awaited here, before any tab wiring reads the list.
+    const { ANIMATIONS, fmtParam } = await loadAnimations();
+    // Refresh one slider's physical-value readout off its uniform (the truth
+    // after KNOB_LIMITS clamping — what a baked default would be).
+    const syncParamOut = (
+      anim: (typeof ANIMATIONS)[number] | undefined,
+      input: HTMLInputElement,
+    ) => {
+      const out = input
+        .closest("label")
+        ?.querySelector<HTMLOutputElement>("output[data-param-out]");
+      const v = anim?.readParam?.(input.dataset.param ?? "");
+      if (out && v !== undefined) out.textContent = fmtParam(v);
+    };
+
     // Slider ids match SceneState channel names 1:1 (`slider-zoom` →
     // `state.zoomTarget`), so adding a slider is one row in the frontmatter
     // table plus one entry here — the template-literal key keeps it type-safe.
@@ -637,6 +477,12 @@ const shadingTransitions = [
     // follow the site theme toggle — re-palettes the current shading mode
     watchTheme((light) => scene.setTheme(light));
 
+    // The seven technical looks arrive via their own lazy chunk
+    // (materials/shading-bench.ts — the homepage hero wears only the story's
+    // realistic/ink pair and must not carry the palettes). Awaited here, before
+    // the buttons are wired, so every swap below stays SYNCHRONOUS: a
+    // transition cuts on its own apex frame and cannot wait for a fetch.
+    const benchOk = await scene.enableShadingBench();
     const shadingButtons = [
       ...document.querySelectorAll<HTMLButtonElement>(
         "#shading-group button[data-shading]",
@@ -648,6 +494,16 @@ const shadingTransitions = [
       "shading-transition",
     ) as HTMLSelectElement | null;
     for (const btn of shadingButtons) {
+      // if the bench chunk failed to load (stale deploy, dropped tunnel), a
+      // disabled button beats a transition choreography that lands on nothing
+      if (
+        !benchOk &&
+        btn.dataset.shading !== "realistic" &&
+        btn.dataset.shading !== "ink"
+      ) {
+        btn.disabled = true;
+        continue;
+      }
       btn.addEventListener("click", () => {
         scene.swapShading(btn.dataset.shading as ShadingMode, {
           transition: (transitionSelect?.value ?? "blink") as TransitionName,
@@ -688,9 +544,6 @@ const shadingTransitions = [
       t.addEventListener("click", () => {
         selectTab(t);
         localStorage.setItem("lens-tab", t.id);
-        // demos own the camera + page backdrop, so leaving their tab restores
-        // the normal seated view (their exit() undoes everything)
-        if (t.id !== "tab-demos") selectDemo(null);
       });
 
     // --- Animations showcase -------------------------------------------------
@@ -731,7 +584,11 @@ const shadingTransitions = [
       pathsStatus.classList.toggle("text-text-muted", ok);
     };
     const refreshPaths = async () => {
-      if (!pathViz) return;
+      // BOTH gates: pathViz existing is not enough — unticking the box leaves
+      // the visualizer instantiated, and the show() walk (a 96-row GPU probe
+      // plus a geometry rebuild) must not keep running invisibly on every
+      // knob drag. The checkbox is the intent, so it is the gate.
+      if (!pathViz || !pathsToggle?.checked) return;
       await pathViz.show(activeAnim, progressOf);
     };
     // (Re)apply the toggle. Split out of the listener because the BROWSER
@@ -744,6 +601,8 @@ const shadingTransitions = [
         await refreshPaths();
       } else {
         pathViz?.setVisible(false);
+        // …and cancel any walk already queued by a knob drag, so "off" is off
+        window.clearTimeout(pathsDebounce);
       }
     };
     pathsToggle?.addEventListener("change", () => void applyPathsToggle());
@@ -773,11 +632,16 @@ const shadingTransitions = [
     // dragged explode slider would otherwise keep flying the ladder recipe
     // underneath the animation (adversarial review finding). The live values
     // return when None re-enables manual control.
-    const applyManualSliders = (fromDefaults = false) => {
+    const applyManualSliders = (anim?: { manualMech?: boolean } | null) => {
       for (const id of sliderChannels) {
         const input = document.getElementById(
           `slider-${id}`,
         ) as HTMLInputElement | null;
+        // Under an animation the channels snap to slider DEFAULTS — except
+        // the mechanism trio under a manualMech bench (rose/scratch), which
+        // keeps the LIVE slider values: the mechanisms compose with the pose.
+        const fromDefaults =
+          Boolean(anim) && !(anim?.manualMech && id !== "explode");
         if (input)
           scene.state[`${id}Target`] =
             Number(fromDefaults ? input.defaultValue : input.value) / 100;
@@ -853,7 +717,7 @@ const shadingTransitions = [
         applyAt(p);
       };
       // stop the chase WITHOUT applying — for teardown, where a trailing eased
-      // frame must not reach the outgoing composition (see selectDemo).
+      // frame must not reach the outgoing selection.
       const stop = () => {
         cancel();
         target = shown;
@@ -905,22 +769,35 @@ const shadingTransitions = [
         );
       }
       resetAnimChannels();
-      applyManualSliders(Boolean(anim));
+      applyManualSliders(anim);
       // direct apply (snap): selecting isn't a scrub jump — also cancels any
       // glide left running by the outgoing animation
       animGlide.snap(progressOf());
-      scene.invalidate(); // enter/apply may drive bare uniforms (wipe et al.)
+      scene.invalidate(); // enter/apply may drive bare uniforms
       const disabled = Boolean(anim);
-      sliderGroup?.classList.toggle("pointer-events-none", disabled);
-      sliderGroup?.classList.toggle("opacity-50", disabled);
+      // A manualMech bench (rose/scratch) keeps zoom/focus/aperture LIVE —
+      // only explode is animation-owned there, so the group-level dimming
+      // stays off and each slider decides for itself.
+      const mechFree = Boolean(anim?.manualMech);
+      sliderGroup?.classList.toggle(
+        "pointer-events-none",
+        disabled && !mechFree,
+      );
+      sliderGroup?.classList.toggle("opacity-50", disabled && !mechFree);
       for (const id of sliderChannels) {
         const input = document.getElementById(
           `slider-${id}`,
         ) as HTMLInputElement | null;
-        if (input) input.disabled = disabled;
+        if (input) {
+          const off = disabled && !(mechFree && id !== "explode");
+          input.disabled = off;
+          input
+            .closest("label")
+            ?.classList.toggle("opacity-50", off && mechFree);
+        }
       }
       // visibility (not display) so the reserved space never changes — the
-      // Animations tab keeps one stable height across None/helix/reassemble
+      // Animations tab keeps one stable height across None/reassemble/rose
       if (progressRow) setStacked(progressRow, disabled);
       if (animHint) animHint.textContent = anim?.hint ?? "";
       for (const c of paramContainers) {
@@ -929,11 +806,15 @@ const shadingTransitions = [
         // (resetRecipeKnobs) or re-preset by enter(), and each input's markup
         // `value` is the position that reproduces exactly that — so put the
         // thumbs back on it rather than leaving one claiming a value the
-        // uniform no longer holds.
+        // uniform no longer holds. The readout re-reads the uniform itself,
+        // so it shows the post-reset (or enter()-preset) truth.
+        const ca = ANIMATIONS.find((a) => a.id === c.dataset.animParams);
         for (const input of c.querySelectorAll<HTMLInputElement>(
           "input[data-param]",
-        ))
+        )) {
           input.value = input.defaultValue;
+          syncParamOut(ca, input);
+        }
       }
       syncStoryCam(); // hero camera engages/releases with the selection
       void refreshPaths();
@@ -947,128 +828,6 @@ const shadingTransitions = [
         );
       });
     }
-
-    // --- Demo compositions ---------------------------------------------------
-    // A demo is a FULL composition (camera choreo + model animation + page wipe
-    // + palette) under one scrub. The page injects setPageWipe (the wipe is
-    // page-owned DOM); the demo drives everything else through the scene. exit()
-    // restores everything, so None / leaving the tab returns the seated view.
-    // DEMOS arrives via the lazy chunk (see lib/lens index.ts — this is what
-    // keeps anime.js out of the homepage bundle).
-    const { DEMOS, createDemoKit, withKit } = await loadDemos();
-    // The kit wraps the base api into a RECORDING api: demos drive the scene
-    // through the free-function verbs (scene-kit), which withKit() points at
-    // kit.api for the duration of each demo callback; the kit auto-restores
-    // every recorded write on deselect, so demos need no hand-written exit()
-    // beyond truly custom teardown (disposing an object, clearing part offsets).
-    const demoApi: DemoApi = {
-      state: scene.state,
-      scene,
-      setPageWipe,
-      setPageText,
-    };
-    const kit = createDemoKit(demoApi); // recording api the verbs write through
-    const demoButtons = [
-      ...document.querySelectorAll<HTMLButtonElement>(
-        "#demo-group button[data-demo]",
-      ),
-    ];
-    const demoProgressRow = document.getElementById("demo-progress-row");
-    const demoProgress = document.getElementById(
-      "demo-progress",
-    ) as HTMLInputElement | null;
-    const demoHint = document.getElementById("demo-hint");
-    const demoPlayBtn = document.getElementById("demo-play");
-    let activeDemo: LensDemo | null = null;
-    // same fast-forward-on-jump as the animation slider; a glide sweeping a
-    // spans boundary fires that boundary's gesture (each step is a single
-    // crossing), so a Lookbook jump plays its cuts in sequence
-    const demoGlide = makeScrubGlide((p) => {
-      const demo = activeDemo;
-      if (!demo) return;
-      withKit(kit.api, () => demo.apply(p));
-      scene.invalidate();
-    });
-    let demoRAF = 0;
-    const demoProgressOf = () => Number(demoProgress?.value ?? 0) / 100;
-    const stopDemoPlay = () => {
-      if (demoRAF) cancelAnimationFrame(demoRAF);
-      demoRAF = 0;
-    };
-
-    const selectDemo = (demo: LensDemo | null) => {
-      if (demo === activeDemo) return; // ignore re-selecting the same demo
-      stopDemoPlay();
-      // Freeze the eased scrub BEFORE the teardown (stop, not snap: applying
-      // would drive the outgoing demo one more time). An eased frame landing
-      // after kit.restore() re-records the outgoing writes into a FRESH
-      // recording, and on a deselect there is no incoming begin() to run them —
-      // the bench then sits dirty until some later selection flushes it.
-      demoGlide.stop();
-      // Tear down the outgoing composition: its optional custom exit() first,
-      // then the kit's auto-restore of every recorded write (reverse order).
-      // DESELECTING TO NONE IS THE SAME TEARDOWN as switching demos — None is
-      // just a null incoming demo — so nothing below this point may be gated on
-      // `demo`, or the outgoing composition's writes survive the deselect.
-      withKit(kit.api, () => activeDemo?.exit?.());
-      kit.restore();
-      // Clear the page text centrally so switching demos / picking None always
-      // wipes it, without each demo having to remember (mirrors how the wipe is
-      // torn down — but page-owned, not per-demo).
-      setPageText(null);
-      activeDemo = demo;
-      // demos own the whole scene — drop any active animation so their channel
-      // drives don't fight
-      if (demo) selectAnimation(null);
-      // Fresh recording for whatever comes next, INCLUDING None: begin() runs an
-      // outstanding recording rather than discarding it, so leaving it out of
-      // the deselect path is the one way a write can end up in a recording that
-      // no selection ever closes.
-      kit.begin();
-      withKit(kit.api, () => demo?.enter());
-      localStorage.setItem("lens-demo", demo?.id ?? "none");
-      for (const btn of demoButtons) {
-        btn.setAttribute(
-          "aria-pressed",
-          String((btn.dataset.demo ?? "none") === (demo?.id ?? "none")),
-        );
-      }
-      demoGlide.snap(demoProgressOf()); // selecting isn't a scrub jump
-      scene.invalidate();
-      if (demoProgressRow) setStacked(demoProgressRow, Boolean(demo));
-      if (demoPlayBtn) setStacked(demoPlayBtn, Boolean(demo));
-      if (demoHint) demoHint.textContent = demo?.hint ?? "";
-    };
-
-    for (const btn of demoButtons) {
-      btn.addEventListener("click", () => {
-        const id = btn.dataset.demo;
-        selectDemo(
-          id === "none" ? null : (DEMOS.find((d) => d.id === id) ?? null),
-        );
-      });
-    }
-    demoProgress?.addEventListener("input", () => {
-      stopDemoPlay(); // a manual scrub cancels autoplay
-      if (activeDemo) demoGlide.to(demoProgressOf());
-      scene.invalidate();
-    });
-    // Autoplay: drive apply over durationMs with rAF, updating the slider so the
-    // scrub position follows. rAF eases the demo's own numbers per frame.
-    demoPlayBtn?.addEventListener("click", () => {
-      if (!activeDemo) return;
-      stopDemoPlay();
-      const dur = activeDemo.durationMs ?? 8000;
-      const start = performance.now();
-      const step = (now: number) => {
-        const p = Math.min(1, (now - start) / dur);
-        if (demoProgress) demoProgress.value = String(Math.round(p * 100));
-        demoGlide.snap(p); // autoplay IS the fast-forward; keep `shown` synced
-        scene.invalidate();
-        demoRAF = p < 1 ? requestAnimationFrame(step) : 0;
-      };
-      demoRAF = requestAnimationFrame(step);
-    });
 
     // Frictionless test loop: boot into the state you were last in. The
     // Animations tab is the default home during the exploration; the last
@@ -1097,17 +856,10 @@ const shadingTransitions = [
       // the path walk is of the selected animation.
       void applyPathsToggle();
       void applyInspectToggle();
-      // Restore the demo only on its own tab — its transparent bg + camera pose
-      // shouldn't bleed into the Controls/Animations tabs.
-      const storedDemo = localStorage.getItem("lens-demo");
-      if (tabId === "tab-demos" && storedDemo && storedDemo !== "none") {
-        const demo = DEMOS.find((d) => d.id === storedDemo);
-        if (demo) selectDemo(demo);
-      }
     }
     progressInput?.addEventListener("input", () => {
       if (activeAnim) animGlide.to(progressOf());
-      scene.invalidate(); // apply may drive bare uniforms (wipe et al.)
+      scene.invalidate(); // apply may drive bare uniforms
       localStorage.setItem("lens-progress", progressInput.value);
       // Target only (eased): the camera glides after the scrub exactly like
       // the mechanism channels do.
@@ -1118,6 +870,26 @@ const shadingTransitions = [
     // scene only repaints on dirty/easing, so a bare uniform tweak needs invalidate().
     for (const c of paramContainers) {
       const anim = ANIMATIONS.find((a) => a.id === c.dataset.animParams);
+      // Reset: every thumb back to its markup default (the position that
+      // reproduces the shipped knobDefaults), pushed through setParam so the
+      // uniforms follow, readouts re-synced off the uniforms themselves.
+      c.querySelector<HTMLButtonElement>(
+        "button[data-param-reset]",
+      )?.addEventListener("click", () => {
+        for (const input of c.querySelectorAll<HTMLInputElement>(
+          "input[data-param]",
+        )) {
+          input.value = input.defaultValue;
+          anim?.setParam?.(
+            input.dataset.param ?? "",
+            Number(input.defaultValue) / 100,
+          );
+          syncParamOut(anim, input);
+        }
+        scene.invalidate();
+        window.clearTimeout(pathsDebounce);
+        pathsDebounce = window.setTimeout(() => void refreshPaths(), 250);
+      });
       for (const input of c.querySelectorAll<HTMLInputElement>(
         "input[data-param]",
       )) {
@@ -1126,6 +898,7 @@ const shadingTransitions = [
             input.dataset.param ?? "",
             Number(input.value) / 100,
           );
+          syncParamOut(anim, input);
           scene.invalidate();
           // A knob change reshapes the whole path, so the drawn one is now
           // stale — re-walk once the drag settles (the visualizer's own live

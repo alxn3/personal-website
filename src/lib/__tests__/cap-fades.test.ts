@@ -126,11 +126,13 @@ describe("the fade contract", () => {
     expect(top).toBe("-100%");
     expect([right, bottom, left]).toEqual(["0px", "0px", "0px"]);
     // Why the bottom and not the top: a band for [a, b] spans document
-    // [a·S, b·S + 100dvh], so it crosses the bottom line over
-    // scrollY ∈ [a·S − 100dvh, b·S] — and with the first-in-document-order rule
-    // above, a caption is lit over its own scene shifted by one CAPTION_PAD of
-    // scroll. Anchoring to the TOP (`0px 0px -100% 0px`) adds a whole viewport
-    // to both ends. No viewport-height term survives either way, so this holds
-    // at every screen size — nothing here to "tune".
+    // [a·S, b·S + 100svh], so it crosses the bottom line over
+    // scrollY ∈ [a·S − 100dvh, b·S + (100svh − 100dvh)] — and with the
+    // first-in-document-order rule above, a caption is lit over its own scene
+    // shifted by one CAPTION_PAD of scroll. Anchoring to the TOP
+    // (`0px 0px -100% 0px`) adds a whole viewport to both ends. The only
+    // viewport-height term left is (100svh − 100dvh), zero outside an iOS
+    // Safari with the toolbar hidden, so this holds at every screen size —
+    // nothing here to "tune".
   });
 });

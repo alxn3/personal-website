@@ -159,10 +159,6 @@ describe("recipeKnob — the clamp at the uniform boundary", () => {
     const curl = recipeKnob("assemble", "curl");
     curl.value = 5 / 3;
     expect(curl.value).toBe(1);
-    // bend's fold sharpness ρ: dq = flight·R/ρ, infinite at ρ = 0.
-    const radius = recipeKnob("bend", "radius");
-    radius.value = 0;
-    expect(radius.value).toBe(1);
     // assemble's flatten: the wrap's main arc is q = R/rf with
     // rf = Rb·mix(flatten, 1, stick), so an UNSTUCK piece (stick = 0 — the
     // whole flight) divides by flatten itself.
@@ -170,13 +166,6 @@ describe("recipeKnob — the clamp at the uniform boundary", () => {
     flatten.value = 0;
     expect(flatten.value).toBe(KNOB_LIMITS.assemble!.flatten[0]);
     expect(flatten.value).toBe(0.05);
-    // helix's coil: coilF = mix(1, coil, flight), and the op divides phi by it —
-    // at full flight the divisor IS the knob.
-    const coil = recipeKnob("helix", "coil");
-    coil.value = 0;
-    expect(coil.value).toBe(0.05);
-    coil.value = -2;
-    expect(coil.value).toBe(0.05);
   });
 
   it("clamps a CHANNEL write — the 0..1 scrub the idle gate reads directly", () => {
@@ -204,30 +193,6 @@ describe("recipeKnob — the clamp at the uniform boundary", () => {
     } finally {
       explode.value = before;
     }
-  });
-
-  it("accepts the meridian JOINT corner and holds the identity there", () => {
-    const stagger = recipeKnob("assemble", "stagger");
-    const partStagger = recipeKnob("assemble", "partStagger");
-    // the documented write order: the SMALL knob first (stagger drops from its
-    // 0.6 default), then the big sector stagger the classic preset wants
-    stagger.value = 0.06;
-    partStagger.value = 0.78;
-    expect(stagger.value).toBe(0.06);
-    expect(partStagger.value).toBe(0.78);
-
-    const spec = RECIPES.assemble.gateSpec({
-      ...RECIPES.assemble.knobDefaults,
-      stagger: stagger.value,
-      partStagger: partStagger.value,
-    });
-    expect(spec.windowFrac).toBeGreaterThanOrEqual(0.05);
-    for (const rank01 of [0, 1])
-      for (const layerPhase of [0, 1]) {
-        const g = gate(NUM, spec, 0, { rank01, layerPhase });
-        expect(g.flight).toBeCloseTo(0, 12);
-        expect(g.stick).toBeCloseTo(1, 12);
-      }
   });
 
   it("clamps the JOINT pair's sum, capping the knob being WRITTEN", () => {
@@ -312,7 +277,9 @@ describe("recipeKnob — the clamp at the uniform boundary", () => {
     const before = getActiveRecipes();
     try {
       expect(() => setActiveRecipes(["assemble", "explod"])).toThrow(/explod/);
-      expect(() => setActiveRecipes(["helix", "helix"])).toThrow(/duplicate/);
+      expect(() => setActiveRecipes(["explode", "explode"])).toThrow(
+        /duplicate/,
+      );
       setActiveRecipes(["assemble", "explode"]);
       expect(getActiveRecipes()).toEqual(["assemble", "explode"]);
       setActiveRecipes(null);

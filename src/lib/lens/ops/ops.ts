@@ -352,8 +352,9 @@ export function runPipeline<S>(
 // The same pass checks two more things. The `Progress` invariants, on
 // LITERAL-number fields only: a knob-bound field is a uniform this pass cannot
 // read, and its bound belongs in host.ts's KNOB_LIMITS instead (see the doc
-// block there). And a DANGLING `arc` — one with no `anchor` before it anywhere
-// in the pipeline — which is not a crash but a silent nonsense: the cursor is
+// block there). And a DANGLING chain segment (`arc` or `crease`) — one with no
+// `anchor` before it anywhere in the pipeline — which is not a crash but a
+// silent nonsense: the cursor is
 // still the seeded rem = 0, so the arc consumes nothing and walks the vertex off
 // whatever position the last op happened to leave it at.
 
@@ -431,12 +432,12 @@ function validateScope<S>(
     switch (item.kind) {
       case "modifier":
         if (item.name === "anchor") anchored = true;
-        if (item.name === "arc" && !anchored) {
+        if ((item.name === "arc" || item.name === "crease") && !anchored) {
           warn(
-            `lens ops: recipe "${recipeName}" runs an arc with no anchor ` +
-              `before it — the chain cursor is still the seeded rem = 0, so the ` +
-              `arc consumes no material and walks off wherever the previous op ` +
-              `left the vertex. Start the chain with anchor().`,
+            `lens ops: recipe "${recipeName}" runs an ${item.name} with no ` +
+              `anchor before it — the chain cursor is still the seeded rem = 0, ` +
+              `so the segment consumes no material and walks off wherever the ` +
+              `previous op left the vertex. Start the chain with anchor().`,
           );
         }
         modifierSeen = true;
@@ -672,14 +673,16 @@ export function rot<S>(rad: Live<S>): OpItem<S> {
 
 // ── Transforms ────────────────────────────────────────────────────────────────
 // The transform op family: the rigid motions (approach / orbit / swirl /
-// spread) plus the affine trio (ladder / scale / shear).
+// spread / tilt) plus the affine trio (ladder / scale / shear).
 // A transform advances BOTH the vertex state AND the piece frame — the frame
 // runs the identical rigid motion on its own coordinates, so spatial selectors
 // downstream track the piece. Every displacement is folded by ctx.flight AND the
 // active selection weight `w`, so a transform is identity at flight = 0 (or w = 0)
 // and rides the selection mask like every other op. Rotational carry (v.rot)
 // advances ONLY for the rotations (orbit / swirl) — a rigid rotation turns the
-// surface normal; translations (approach / spread / ladder) do not.
+// surface normal; translations (approach / spread / ladder) do not. tilt is a
+// rotation deliberately OUTSIDE the carve-out: its normals stay seated (the
+// stickPress precedent — see the op's own header for the licence and limits).
 
 // APPROACH: axial slide (axialMm) + a per-rank pitch spread (pitchMm·rank01). A
 // pure translation, so the normal is untouched. The frame's axial advances by the
@@ -849,6 +852,62 @@ export function spread<S>(frac: Sc<S>): OpItem<S> {
   };
 }
 
+// TILT: the HINGE — the one rotation the radial-plane + axial-translation
+// vocabulary could not express: a piece falling open about a horizontal axis at
+// its base (the defining petal motion). angle = flight·rad·w, taken in each
+// vertex's own MERIDIAN half-plane: the (radius, axial) pair turns about the
+// hinge point (f.radius, pivot) while theta stays put. Every meridian plane
+// shares the rotation, so the hinge is really the tangent CIRCLE at that
+// radius/station — which is exactly what keeps the op expressible in
+// cylindrical state (no theta write) and carries a wedge's curvature through
+// the tilt instead of flattening it. It is `orbit({about:"frame"})`'s
+// round-trip taken in the (radial, axial) plane instead of (x, z).
+//
+// THE HINGE FRAME + SIGN: `pivot` is the hinge's AXIAL station (model-mm,
+// default the piece frame's own centre — pass a station near a piece's base to
+// hinge it there). Positive `rad` tips the +Y side of the pivot OUTWARD
+// (radius grows), so with the pivot behind a piece its front edge falls open.
+//
+// The frame rides the identical rotation (its own dr is 0 — it sits ON the
+// hinge radius), so spatial selectors downstream track the tilted piece;
+// f.theta and the working direction are untouched (nothing turned about the
+// optical axis).
+//
+// v.rot does NOT advance, deliberately, though a rigid rotation turns normals:
+// rot is a rotation about the OPTICAL axis (host law 4) and a tilt turns
+// normals about the local TANGENT axis, which one in-plane angle cannot
+// express — the same accepted shading approximation as stickPress's S-ramp
+// (silhouettes exact, shading seated). An out-of-plane normal needs a basis,
+// not an angle.
+export function tilt<S>(rad: Sc<S>, opts: { pivot?: Sc<S> } = {}): OpItem<S> {
+  return {
+    kind: "transform",
+    name: "tilt",
+    run: (v, f, w, ctx) => {
+      const A = ctx.A;
+      const a = A.mul(A.mul(ctx.flight, rad), w);
+      const pivot: Sc<S> = opts.pivot === undefined ? f.axial : opts.pivot;
+      const ca = A.cos(a);
+      const sa = A.sin(a);
+      const dr = A.sub(v.radius, f.radius);
+      const dy = A.sub(v.axial, pivot);
+      const dyF = A.sub(f.axial, pivot);
+      return {
+        v: {
+          ...v,
+          radius: A.add(f.radius, A.add(A.mul(dr, ca), A.mul(dy, sa))),
+          axial: A.add(pivot, A.sub(A.mul(dy, ca), A.mul(dr, sa))),
+        },
+        f: {
+          ...f,
+          radius: A.add(f.radius, A.mul(dyF, sa)),
+          axial: A.add(pivot, A.mul(dyF, ca)),
+        },
+      };
+    },
+  };
+}
+
 // LADDER: axial displacement by a per-piece signed rung (model-mm) × gain. `rung`
 // is ctx.rung when rungOf === "attr" (the shader supplies it per piece), else the
 // literal value passed (tests). A translation, so no rot; the frame rides along.
@@ -937,7 +996,8 @@ export function shear<S>(amt: Sc<S>): OpItem<S> {
 
 // ── Modifiers ─────────────────────────────────────────────────────────────────
 // The modifier op family: shape changes — the developable bend CHAIN
-// (`anchor` + `arc`, which between them subsume wrap / rollOut / fold), plus
+// (`anchor` + `arc`, which between them subsume wrap / rollOut / fold, plus
+// `crease`, the hard fold between two of its panels), plus
 // coil / twist / stickPress. A modifier advances ONLY the vertex state and never
 // the piece frame, so a spatial selector placed after one reads a stale frame
 // (validatePipeline warns).
@@ -1079,41 +1139,99 @@ export function arc<S>(
       const s = len === undefined ? v.rem : A.min(v.rem, liveOf(len, ctx));
       const c: Sc<S> =
         opts.participation === undefined ? 1 : liveOf(opts.participation, ctx);
-      const bent = A.mul(s, c);
-      const psi = A.div(A.mul(liveOf(q, ctx), bent), ctx.R);
-      const half = A.mul(psi, 0.5);
-      const chord = A.mul(bent, sinc(A, half));
-      const n0 = v.aim;
-      const nMid = A.sub(n0, half);
-      const n1 = A.sub(n0, psi); // this vertex's exit tangent angle
-      const slip = A.sub(s, bent); // the unbent remainder, along the exit tangent
-      // Off the offset point, along the chain, back onto the offset point.
-      const px = A.sub(
-        A.mul(v.radius, A.cos(v.theta)),
-        A.mul(ctx.off, A.cos(n0)),
-      );
-      const pz = A.sub(
-        A.mul(v.radius, A.sin(v.theta)),
-        A.mul(ctx.off, A.sin(n0)),
-      );
-      const wx = A.add(
-        px,
-        A.add(A.mul(chord, A.sin(nMid)), A.mul(slip, A.sin(n1))),
-      );
-      const wz = A.sub(
-        pz,
-        A.add(A.mul(chord, A.cos(nMid)), A.mul(slip, A.cos(n1))),
-      );
-      const ox = A.add(wx, A.mul(ctx.off, A.cos(n1)));
-      const oz = A.add(wz, A.mul(ctx.off, A.sin(n1)));
-      return {
-        ...v,
-        theta: A.atan2(oz, ox),
-        radius: A.sqrt(A.add(A.mul(ox, ox), A.mul(oz, oz))),
-        rot: A.sub(v.rot, psi),
-        aim: n1,
-        rem: A.sub(v.rem, s),
-      };
+      return chainStep(v, ctx, s, liveOf(q, ctx), c);
+    },
+  };
+}
+
+/** One chain SEGMENT: consume `s` material at constant curvature `q` (R·κ), with
+ *  `c` of it bending and the rest slipping along the exit tangent. The chord
+ *  walk `arc` and `crease` share — one segment, one formula, so the two ops
+ *  cannot drift into two different chains. */
+function chainStep<S>(
+  v: VertexState<S>,
+  ctx: OpCtx<S>,
+  s: S,
+  q: Sc<S>,
+  c: Sc<S>,
+): VertexState<S> {
+  const A = ctx.A;
+  const bent = A.mul(s, c);
+  const psi = A.div(A.mul(q, bent), ctx.R);
+  const half = A.mul(psi, 0.5);
+  const chord = A.mul(bent, sinc(A, half));
+  const n0 = v.aim;
+  const nMid = A.sub(n0, half);
+  const n1 = A.sub(n0, psi); // this vertex's exit tangent angle
+  const slip = A.sub(s, bent); // the unbent remainder, along the exit tangent
+  // Off the offset point, along the chain, back onto the offset point.
+  const px = A.sub(A.mul(v.radius, A.cos(v.theta)), A.mul(ctx.off, A.cos(n0)));
+  const pz = A.sub(A.mul(v.radius, A.sin(v.theta)), A.mul(ctx.off, A.sin(n0)));
+  const wx = A.add(
+    px,
+    A.add(A.mul(chord, A.sin(nMid)), A.mul(slip, A.sin(n1))),
+  );
+  const wz = A.sub(
+    pz,
+    A.add(A.mul(chord, A.cos(nMid)), A.mul(slip, A.cos(n1))),
+  );
+  const ox = A.add(wx, A.mul(ctx.off, A.cos(n1)));
+  const oz = A.add(wz, A.mul(ctx.off, A.sin(n1)));
+  return {
+    ...v,
+    theta: A.atan2(oz, ox),
+    radius: A.sqrt(A.add(A.mul(ox, ox), A.mul(oz, oz))),
+    rot: A.sub(v.rot, psi),
+    aim: n1,
+    rem: A.sub(v.rem, s),
+  };
+}
+
+/** CREASE: a HARD FOLD in the bend chain — the origami kink `arc` cannot make.
+ *  It consumes `width` material-mm (a narrow band, not a panel) at whatever
+ *  curvature turns the chain `rad` MORE than the seated barrel already turns
+ *  over that same run: q = 1 + rad·R/width. So it is one `arc` segment with the
+ *  fold angle, rather than the curvature, as its argument — which is the only
+ *  form in which a crease composes: a recipe spells the fold it wants (0.6 rad)
+ *  and the op works out the curvature the piece's own radius needs.
+ *
+ *  WHY THE ANGLE IS RELATIVE TO THE SEAT, not absolute: `rad` = 0 gives q = 1
+ *  EXACTLY — the seated barrel, no node that has to cancel — so a crease whose
+ *  angle rides the gate (`rad = flight·knob`, the house form) is the exact
+ *  identity at channel 0 like every other chain op, and a crease dropped into a
+ *  chain at rest changes nothing. An absolute turn would have to be authored as
+ *  `mix(seatedTurn, target, flight)` at every call site, with the seated turn
+ *  re-derived per piece — three ways to get it wrong.
+ *
+ *  SIGN: positive `rad` folds the SAME way the barrel curves (a tighter cup);
+ *  negative folds back the other way (a reflex flick).
+ *
+ *  WIDTH is the crease's own material band and must be > 0 (it divides). It is
+ *  the sharpness knob: the fold is a constant-curvature fillet across it, so a
+ *  band a few % of the material reads as a hard line and the vertices inside it
+ *  are the only ones off the two flat panels. Zero would be a true kink and a
+ *  division by zero; the mesh has no vertices there to place anyway.
+ *
+ *  NORMALS ARE EXACT for an AXIALLY-UNIFORM crease, unlike `tilt`'s ever: the
+ *  fold is a turn in the RADIAL PLANE, which is the one rotation `v.rot`
+ *  represents (host law 4), and the chain advances it by the same −ψ it turns
+ *  the aim by — a crease shades as a crease. An axially-RAMPED `rad` (the
+ *  rose's corner flick keys on yN) bends the fold line off the axis, and the
+ *  rot-only lane misses the ∂/∂y term: it shades approximately, the same
+ *  documented class as `twist` and `stickPress`. */
+export function crease<S>(rad: Live<S>, width: Live<S>): OpItem<S> {
+  return {
+    kind: "modifier",
+    name: "crease",
+    run: (v, ctx) => {
+      const A = ctx.A;
+      const w = liveOf(width, ctx);
+      const s = A.min(v.rem, w);
+      // q = 1 + rad·R/width: the seated turn plus the fold. If the cursor runs
+      // out mid-crease (s < width) the fold is taken proportionally — the last
+      // scrap of material cannot carry a whole fold.
+      const q = A.add(1, A.div(A.mul(liveOf(rad, ctx), ctx.R), w));
+      return chainStep(v, ctx, s, q, 1);
     },
   };
 }

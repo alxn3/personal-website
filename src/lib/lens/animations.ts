@@ -7,13 +7,11 @@ import {
   type ParamSpec,
   drive,
   paramsOf,
+  readParamOf,
   setParamOf,
 } from "./animation-kit";
-import { CHOREO_ANIMS } from "./choreo-anims";
-import { FORMATION_ANIMS } from "./formation-anims";
-import { BEND_ANIMS } from "./bend-anims";
-
 export type { LensAnimation } from "./animation-kit";
+export { fmtParam } from "./animation-kit";
 // Sliders write the LIVE recipe knobs (ops/host recipeKnob), which are the
 // uniforms the deform host folds. recipeKnob hands back a CLAMPING view where
 // KNOB_LIMITS applies, so a map below that would leave the limit is clamped to
@@ -130,119 +128,121 @@ const ASSEMBLE_PARAMS: ParamSpec[] = [
   },
 ];
 
-const HELIX_PARAMS: ParamSpec[] = [
+// The ROSE bloom (ops/recipes.ts `rose` — the origami prototype): a slider on
+// every taste knob, so the bloom is tunable live while the progress slider
+// scrubs the channel. Ranges bracket the defaults with real headroom; the
+// gate-feeding stagger map mirrors KNOB_LIMITS exactly (≤ 0.85), and every
+// default lands on an integer slider stop (stagger 0.34 = stop 40 — the old
+// 0.6 default's off-grid exception to the no-pop contract is retired).
+//
+// `crease`/`creasePos`/`curl` are the FOLD PATTERN — the reference photo's
+// flat facets and snapped corners. `curl` is a fold ANGLE now (radians of
+// reflex at the free corners), not the old rolled lip's curvature.
+const ROSE_PARAMS: ParamSpec[] = [
   {
-    id: "turns",
-    label: "Turns",
-    hint: "½ — 1¼ turns",
-    u: recipeKnob("helix", "turns"),
-    map: { k: 1.5 },
+    id: "lift",
+    label: "Lift",
+    hint: "shut — laid back",
+    u: recipeKnob("rose", "lift"),
+    map: { k: 2 },
   },
   {
-    id: "spread",
-    label: "Spread",
-    hint: "tight — wide",
-    u: recipeKnob("helix", "spread"),
+    id: "taper",
+    label: "Taper",
+    hint: "even — budded heart",
+    u: recipeKnob("rose", "taper"),
     map: { k: 1 },
   },
-  // magnitude slider → the NEGATIVE rearward value (v=0.45 ⇒ −45mm)
   {
-    id: "approach",
-    label: "Approach",
-    hint: "flush — deep rear",
-    u: recipeKnob("helix", "approach"),
-    map: { k: -100 },
+    id: "hinge",
+    label: "Hinge",
+    hint: "rear — front",
+    u: recipeKnob("rose", "hinge"),
+    // −40…60 model-mm: the barrel's own axial extent (y 1…76) has to be
+    // reachable DEEP — the old −45…15 stopped at its first 15 mm, short of
+    // the seated station (20) where the lever-arm sign flips mid-piece and
+    // the tilt hinges instead of sliding.
+    map: { b: -40, k: 100 },
   },
-  // more bend = tighter coil, 1..0.3
+  // The FOLD PATTERN pair (ops/recipes.ts `crease`): how hard each side crease
+  // breaks, and where the two of them sit across the petal.
   {
-    id: "bend",
-    label: "Bend",
-    hint: "gentle — tight coil",
-    u: recipeKnob("helix", "coil"),
-    map: { b: 1, k: -0.7 },
+    id: "crease",
+    label: "Crease",
+    hint: "smooth petal — hard tent",
+    u: recipeKnob("rose", "crease"),
+    map: { k: 2 },
+  },
+  // 0.1…0.9 — inside KNOB_LIMITS' [0.05, 0.95], so the slider cannot reach the
+  // clamp and no stop is dead.
+  {
+    id: "creasePos",
+    label: "Panel",
+    hint: "narrow centre — broad centre",
+    u: recipeKnob("rose", "creasePos"),
+    map: { b: 0.1, k: 0.8 },
+  },
+  // 0.6–6.6mm, KNOB_LIMITS exactly (the width divides). Default 1.2 = stop 10.
+  // Narrow = knife line; widen past a shell's wall thickness to clear the
+  // inner-surface overlap on thick panels.
+  {
+    id: "band",
+    label: "Crease band",
+    hint: "knife — soft",
+    u: recipeKnob("rose", "band"),
+    map: { b: 0.6, k: 6 },
   },
   {
-    id: "snap",
-    label: "Snap",
-    hint: "glide — snap home",
-    u: recipeKnob("helix", "snap"),
+    id: "curl",
+    label: "Flick",
+    hint: "square corner — snapped fang",
+    u: recipeKnob("rose", "curl"),
+    map: { k: 2 },
+  },
+  {
+    id: "base",
+    label: "Base",
+    hint: "hinged low — hinged high",
+    u: recipeKnob("rose", "base"),
+    map: { k: 0.4 },
+  },
+  {
+    id: "facet",
+    label: "Fang",
+    hint: "short tab — long tab",
+    u: recipeKnob("rose", "facet"),
+    map: { k: 0.5 },
+  },
+  {
+    id: "open",
+    label: "Open",
+    hint: "tight — blown wide",
+    u: recipeKnob("rose", "open"),
+    map: { k: 1.25 },
+  },
+  {
+    id: "spin",
+    label: "Spin",
+    hint: "still — swirled",
+    u: recipeKnob("rose", "spin"),
     map: { k: 1 },
   },
-  // slider 0..1 → 0..12mm
   {
-    id: "hover",
-    label: "Hover",
-    hint: "flush — floating",
-    u: recipeKnob("helix", "hover"),
-    map: { k: 12 },
+    id: "rise",
+    label: "Tier",
+    // Anchored at the heart: the slider deepens the dome BOTH ways from a
+    // fixed centre — heart up, rim down (ops/recipes.ts's tier).
+    hint: "flat nest — deep cup",
+    u: recipeKnob("rose", "rise"),
+    map: { k: 40 },
   },
-];
-
-const ROLLOUT_PARAMS: ParamSpec[] = [
+  // 0..0.85 — exactly the KNOB_LIMITS range (the `during` window's own bound)
   {
     id: "stagger",
-    label: "Stagger",
-    hint: "together — layered",
-    u: recipeKnob("rollout", "stagger"),
-    map: { k: 0.75 },
-  },
-  // Sector solo — top (TAU) fully open (bit-exact identity), pull down to unroll
-  // one sector only.
-  {
-    id: "sectorWidth",
-    label: "Sector width",
-    hint: "one sector — all",
-    u: recipeKnob("rollout", "maskWidth"),
-    map: { k: TAU },
-  },
-  {
-    id: "sectorCenter",
-    label: "Sector centre",
-    hint: "−π — +π",
-    u: recipeKnob("rollout", "maskCenter"),
-    map: { b: -Math.PI, k: TAU },
-  },
-  // Rank band — lo 0 / hi 1 fully open; narrow it to roll out a subset of shells.
-  {
-    id: "rankLo",
-    label: "Rank low",
-    hint: "inner — outer",
-    u: recipeKnob("rollout", "rankLo"),
-    map: { k: 1 },
-  },
-  {
-    id: "rankHi",
-    label: "Rank high",
-    hint: "inner — outer",
-    u: recipeKnob("rollout", "rankHi"),
-    map: { k: 1 },
-  },
-];
-
-// The SCRATCH bench (ops/recipes.ts `scratch`): the owner's directly-editable
-// pipeline, with a slider on each of its three knobs. Rename or re-purpose a
-// knob in the recipe and this table follows — that pair of edits IS the bench.
-const SCRATCH_PARAMS: ParamSpec[] = [
-  {
-    id: "spread",
-    label: "Spread",
-    hint: "hug — thrown clear",
-    u: recipeKnob("scratch", "spread"),
-    map: { k: 2 },
-  },
-  {
-    id: "turn",
-    label: "Turn",
-    hint: "−π — +π",
-    u: recipeKnob("scratch", "turn"),
-    map: { b: -Math.PI, k: TAU },
-  },
-  {
-    id: "depth",
-    label: "Depth",
-    hint: "flat — deep stack",
-    u: recipeKnob("scratch", "depth"),
-    map: { k: 2 },
+    label: "Wave",
+    hint: "all at once — whorl by whorl",
+    u: recipeKnob("rose", "stagger"),
+    map: { k: 0.85 },
   },
 ];
 
@@ -264,63 +264,28 @@ const CORE_ANIMS: LensAnimation[] = [
       drive(state, "assemble", 1 - smoothstep(0, 0.75, p));
     },
     setParam: setParamOf(ASSEMBLE_PARAMS),
-  },
-  {
-    id: "helix",
-    label: "Helix assemble",
-    hint: "spiral in — unbend home",
-    // Live feel knobs come from the HELIX_PARAMS table.
-    params: paramsOf(HELIX_PARAMS),
-    apply(p, state) {
-      // ONE channel: the wedges start fully spread (p=0 ⇒ helix 1) and assemble
-      // home by p=1. The helix RECIPE (ops/recipes.ts) owns every per-wedge
-      // stagger, snap and over-coil — nothing else is driven here.
-      drive(state, "helix", 1 - p);
-    },
-    setParam: setParamOf(HELIX_PARAMS),
-  },
-  {
-    id: "rollout",
-    label: "Roll-out",
-    hint: "unrolls flat — a carpet",
-    // ONE channel: the wedges start rolled out flat (p=0 ⇒ rollout 1) and roll
-    // back home by p=1. The rollout RECIPE (ops/recipes.ts) owns the
-    // per-wedge stagger and the rolling-contact geometry; live knobs (stagger,
-    // sector/rank masks) come from ROLLOUT_PARAMS.
-    params: paramsOf(ROLLOUT_PARAMS),
-    apply(p, state) {
-      drive(state, "zoom", 0);
-      drive(state, "focus", 0);
-      drive(state, "aperture", 0);
-      drive(state, "rollout", 1 - p);
-    },
-    setParam: setParamOf(ROLLOUT_PARAMS),
+    readParam: readParamOf(ASSEMBLE_PARAMS),
   },
 ];
 
-const SCRATCH_ANIMS: LensAnimation[] = [
+const ROSE_ANIMS: LensAnimation[] = [
   {
-    id: "x-scratch",
-    label: "Scratch",
-    hint: "the editable bench — ops/recipes.ts `scratch`",
-    params: paramsOf(SCRATCH_PARAMS),
-    setParam: setParamOf(SCRATCH_PARAMS),
+    id: "x-rose",
+    label: "Rose bloom",
+    hint: "the origami bloom — outer whorls fall open first",
+    params: paramsOf(ROSE_PARAMS),
+    setParam: setParamOf(ROSE_PARAMS),
+    readParam: readParamOf(ROSE_PARAMS),
+    // The mechanisms COMPOSE with the bloom (owner: the zoom/focus/aperture
+    // sliders "are part of the animation too") — so apply() must not zero
+    // them; the page keeps their sliders live.
+    manualMech: true,
     apply(p, state) {
-      drive(state, "zoom", 0);
-      drive(state, "focus", 0);
-      drive(state, "aperture", 0);
-      // Straight progress, no shaping: a bench shows the recipe's own law.
-      drive(state, "scratch", p);
+      // Straight progress, the bench law: the recipe owns the whorl wave.
+      drive(state, "rose", p);
     },
   },
 ];
 
-/** The /lens registry: core showcase animations + the exploration families
- *  (each family owns its file under explore/). */
-export const ANIMATIONS: LensAnimation[] = [
-  ...CORE_ANIMS,
-  ...CHOREO_ANIMS,
-  ...FORMATION_ANIMS,
-  ...BEND_ANIMS,
-  ...SCRATCH_ANIMS,
-];
+/** The /lens registry: the core showcase animation plus the rose bench. */
+export const ANIMATIONS: LensAnimation[] = [...CORE_ANIMS, ...ROSE_ANIMS];

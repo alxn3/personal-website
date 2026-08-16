@@ -1,58 +1,33 @@
 import * as THREE from "three/webgpu";
-import { uniform, float } from "three/tsl";
-// The DEFORM comes from the op pipeline (ops/host.ts), and `hasOpFrames` — the
-// packed `_opA` frame attribute — gates WHICH meshes get it. That is the SAME
-// test core/scene's applyOps uses for the realistic look, so every stylized
-// mode deforms exactly the set realistic does: glass, rings and hardware
-// included, not just the shell wedges.
-import {
-  attachOps,
-  attachOpsLine,
-  attachOpsHull,
-  opsEdgeGeometry,
-  hasOpFrames,
-  opsVariantKey,
-} from "../ops/host";
-import { depthFadeFactor } from "./depthfade";
-import { isOpticalGlass, isDecal } from "../core/parts";
-import {
-  color as colorNode,
-  dot,
-  clamp,
-  floor,
-  mix,
-  normalView,
-  normalLocal,
-  positionLocal,
-  vec3,
-} from "three/tsl";
+import type { UnifiedLook } from "./unified";
+import type { ShadingBench, ShadingBenchFactory } from "./shading-bench";
 
-// CEL SHADE: quantized N·L against a fixed key light — three flat bands that
-// give the unlit ink fills FORM (pop) without abandoning the blueprint look.
-// Uses the transformed normal, so op-deformed pieces band correctly as they
-// peel and wrap. Fresh node per material.
-const CEL_LIGHT = new THREE.Vector3(0.45, 0.8, 0.55).normalize();
-const celShade = () => {
-  const ndl = dot(
-    normalView as any,
-    vec3(CEL_LIGHT.x, CEL_LIGHT.y, CEL_LIGHT.z) as any,
-  )
-    .mul(0.5)
-    .add(0.5) as any;
-  const band = clamp(floor(ndl.mul(3.0)), 0.0, 2.0).div(2.0) as any;
-  return float(0.78).add(band.mul(0.38)) as any; // 0.78 · 0.97 · 1.16
-};
-
-// Ink fill opacity, 0 = pure line drawing (edge lines only) → 1 = solid fills.
-// The scroll hero drives this so the intro reads as a blueprint that fills in.
-export const uInkFill = uniform(1);
-
-// Swappable render styles for the lens viewer, as Node materials (WebGPU). Each
-// mode re-materials every mesh, from a build it keeps for the rest of the
-// session (ModeBuild); "realistic" restores the originals captured at load.
-// Every FRAMED mesh (one carrying the derived `_op*` attributes) gets the
-// op position/normal graph attached so it still deforms in every mode.
-// Textures (the bronze matcap) are generated procedurally — nothing external.
+// ============================================================================
+// THE LOOK SWAPPER — and, since the demo era ended, almost nothing else.
+//
+// THE STORY'S PAIR IS THE ONLY LOOK THIS FILE CAN WEAR. "realistic" and "ink"
+// are ONE blended material (materials/unified.ts); set("ink") is a uniform
+// write, not a swap, so the whole hero path through here is: clear any foreign
+// renderOrder, put the merged materials on, write the blend.
+//
+// THE SEVEN BENCH LOOKS ARE A LAZY CHUNK (materials/shading-bench.ts) and
+// /lens-only. They used to live in this file, which put ~600 lines of palettes,
+// per-mesh build machinery and a procedural bronze matcap into the SHARED chunk
+// the homepage hero loads — for looks the story can never show. The boundary:
+//
+//   · this file names the bench through TYPES ONLY (`import type` above, erased
+//     at build), so Rollup sees no static edge to it;
+//   · core/scene.ts's `enableShadingBench()` dynamically imports the module and
+//     hands `createShadingBench` to `installBench` below;
+//   · every bench call is `bench?.…` — with no bench installed, this controller
+//     is complete for the story and `set` REFUSES a bench mode rather than half
+//     applying one.
+//
+// The mesh ROSTER, the site theme and the current mode stay here, on both
+// halves' behalf: `withOriginals` needs the roster with no bench in sight, and
+// two copies of "which theme are we in" is exactly the drift the split must not
+// introduce.
+// ============================================================================
 export type ShadingMode =
   | "realistic"
   | "ink"
@@ -64,707 +39,159 @@ export type ShadingMode =
   | "riso"
   | "bronze";
 
-// isOpticalGlass (core/parts): true optical glass only — the lens elements and
-// the UV filter. NOT the iris blades (they're metal; they were previously
-// mis-matched by an `Iris_` prefix).
+/** The /lens bench's own looks — everything that is NOT the story's pair, and
+ *  exactly the set materials/shading-bench.ts knows how to build. */
+export type BenchMode = Exclude<ShadingMode, "realistic" | "ink">;
 
-// A technical-drawing palette: flat fill colours keyed by part name (one
-// variant per SITE THEME) plus the edge-line colour pairs. "ink", "blueprint"
-// and "flat" run ONE shared construction in set() — a palette entry (plus the
-// optional flat/threshold knobs) is all that distinguishes them, so another
-// technical look is one new entry here, a ShadingMode union member, and a page
-// button.
-interface TechnicalPalette {
-  fill(name: string, light: boolean): number;
-  edgeBody: { dark: number; light: number };
-  edgeGlass: { dark: number; light: number };
-  /** true = skip the cel bands entirely: pure unlit fills (the "flat" look). */
-  flat?: boolean;
-  /** EdgesGeometry crease angle; higher = fewer lines (default 24). */
-  edgeThresholdDeg?: number;
-  /** parts whose edge lines are dropped entirely (beyond the decal skip). */
-  lineSkip?: (name: string) => boolean;
-}
-
-const TECHNICAL_PALETTES: Partial<Record<ShadingMode, TechnicalPalette>> = {
-  // Blueprint/"ink" flat fills — a technical palette keyed by part name, one
-  // variant per SITE THEME. Dark theme: the body shells sit near-black so the
-  // bright edge lines carry the drawing. Light theme: the relationship INVERTS —
-  // paper-light shells, dark sepia line-work (pencil-on-paper), same accent
-  // logic. Accents stay on the MECHANISM only: amber focus drivetrain
-  // (motor/screw/rods — matches the site accent and the refraction rays), brass
-  // contacts, blued-steel iris, slate grips. The GLASS is one uniform green —
-  // every element the same (owner: no per-element colour coding; the focusing
-  // element reads via its amber drivetrain instead).
-  ink: {
-    fill(name: string, light: boolean): number {
-      if (light) {
-        if (isOpticalGlass(name)) return 0x6fa863; // deeper mint — a 0.45-opacity fill must read on paper
-        if (/^Iris_Blade/.test(name)) return 0x5b6478;
-        if (isDecal(name)) return 0x3f3a2f; // printed text goes DARK on light shells
-        if (/^Mount_Contacts/.test(name)) return 0xb08428;
-        if (/^Mount_/.test(name)) return 0x7c766a;
-        if (/^Focus_/.test(name)) return 0xa8672e;
-        if (/^PCB_/.test(name)) return 0x5d7a48;
-        if (/Ring_/.test(name)) return 0x4a4f5e; // rubber grips stay dark — real rubber is
-        if (/Band_Mid|Barrel_Base|Chassis/.test(name)) return 0xe3ddcc; // gloss body
-        return 0xece6d6; // matte body — paper-light so the dark outlines pop
-      }
-      if (isOpticalGlass(name)) return 0x9ccb92; // mint-green glass — uniform across elements
-      if (/^Iris_Blade/.test(name)) return 0x4b5364; // blued-steel aperture blades
-      if (isDecal(name)) return 0xefe8d4; // white printed text
-      if (/^Mount_Contacts/.test(name)) return 0xd9a852; // bright brass contacts
-      if (/^Mount_/.test(name)) return 0x9a9482; // chrome / metal
-      if (/^Focus_/.test(name)) return 0xc5813f; // focus motor/screw/rods — amber metal
-      if (/^PCB_/.test(name)) return 0x6d8a55; // circuit-board green
-      if (/Ring_/.test(name)) return 0x343846; // rubber grip rings — dark slate
-      if (/Band_Mid|Barrel_Base|Chassis/.test(name)) return 0x2c2720; // gloss body
-      return 0x211d16; // matte body — near-black so the outlines pop
-    },
-    // Ink edge-line colours: glass gets the green accent; the body lines are bright
-    // warm white on the dark stage, dark sepia ink on the light one.
-    edgeBody: { dark: 0xe4dbc4, light: 0x2f2a20 },
-    edgeGlass: { dark: 0xc9e6bb, light: 0x3f6b39 },
-  },
-
-  // BLUEPRINT variant of the ink look. Dark theme: classic cyanotype — deep
-  // drafting blues, white line-work. Light theme: pencil-drafting — pale blue
-  // paper, deep blue line-work. Same construction as ink (window dissolve, depth
-  // fade, cel bands), different palette.
-  blueprint: {
-    fill(name: string, light: boolean): number {
-      if (light) {
-        if (isOpticalGlass(name)) return 0x5b8fbd;
-        if (isDecal(name)) return 0x24435f;
-        if (/^(Mount_Contacts|Focus_)/.test(name)) return 0x35648f; // lifted accents
-        if (/Ring_|Band_Mid|Barrel_Base|Chassis/.test(name)) return 0xc4d3e2;
-        return 0xd3dfec; // pale drafting-paper ground
-      }
-      if (isOpticalGlass(name)) return 0x7fb4d8; // pale drafting blue glass
-      if (isDecal(name)) return 0xe8f0f8; // white printed text
-      if (/^(Mount_Contacts|Focus_)/.test(name)) return 0x4f7ba6; // lifted accents
-      if (/Ring_|Band_Mid|Barrel_Base|Chassis/.test(name)) return 0x14263d;
-      return 0x0f1e31; // deep blueprint ground
-    },
-    edgeBody: { dark: 0xdbe9f7, light: 0x1e3a57 },
-    edgeGlass: { dark: 0xb7d9ef, light: 0x2c567c },
-  },
-
-  // FLAT: the vector-illustration trim of ink — the same fill/line construction
-  // with the cel bands OFF (pure unlit fills) and a higher crease threshold so
-  // only the silhouette + major structural edges survive. Three flat tones per
-  // theme (shell, grip/iris band, muted metal) + the uniform mint glass and the
-  // decal print — a printed diagram, not a shaded drawing. Used by the Prism
-  // demo's 2D beat; also a bench button.
-  flat: {
-    flat: true,
-    edgeThresholdDeg: 40,
-    fill(name: string, light: boolean): number {
-      if (light) {
-        if (isOpticalGlass(name)) return 0x6fa863; // ink's mint — uniform
-        if (isDecal(name)) return 0x3f3a2f; // printed text goes dark on cream
-        if (/^Iris_Blade|Ring_/.test(name)) return 0x4a4f5e; // ink's slate bands
-        if (/^(Mount_|Focus_|PCB_)/.test(name)) return 0x7c766a; // muted metal
-        return 0xece6d6; // ONE cream shell tone — no gloss/matte split
-      }
-      if (isOpticalGlass(name)) return 0x9ccb92;
-      if (isDecal(name)) return 0xefe8d4;
-      if (/^Iris_Blade|Ring_/.test(name)) return 0x343846;
-      if (/^(Mount_|Focus_|PCB_)/.test(name)) return 0x9a9482;
-      return 0x211d16;
-    },
-    // the ribbed bands hatch when every rib gets stroked — their form is
-    // carried by fill contrast, so flat drops their lines entirely
-    lineSkip: (name) => /^(Ring_Zoom|Ring_Focus|Band_Mid)/.test(name),
-    // ink's line pairs — the outline language stays the house one
-    edgeBody: { dark: 0xe4dbc4, light: 0x2f2a20 },
-    edgeGlass: { dark: 0xc9e6bb, light: 0x3f6b39 },
-  },
-
-  // EMBER: bold orange ink on near-black paper. The palette IS dark, so both
-  // site themes share one family — the light theme only lifts the body ground a
-  // hair so the stage still separates from a light page behind it. Accents stay
-  // on the mechanism like ink's (focus drivetrain + contacts hottest, iris a
-  // deep rust, grips near-black), glass one uniform warm amber.
-  ember: {
-    fill(name: string, light: boolean): number {
-      if (isOpticalGlass(name)) return 0xe08a4f; // warm amber glass — uniform
-      if (/^Iris_Blade/.test(name)) return 0x93401d; // deep-rust blades
-      if (isDecal(name)) return 0xffb489; // printed text glows pale orange
-      if (/^Mount_Contacts/.test(name)) return 0xffa14e;
-      if (/^Mount_/.test(name)) return 0x6f4a35;
-      if (/^Focus_/.test(name)) return 0xff7a2e; // hottest accent — the drivetrain
-      if (/^PCB_/.test(name)) return 0x83492a;
-      if (/Ring_/.test(name)) return 0x382216; // rubber grips stay near-black
-      if (/Band_Mid|Barrel_Base|Chassis/.test(name))
-        return light ? 0x2a1c12 : 0x241811; // gloss body
-      return light ? 0x231710 : 0x1c120b; // matte body — the near-black paper
-    },
-    edgeBody: { dark: 0xff5c1f, light: 0xf25818 }, // the bold orange ink
-    edgeGlass: { dark: 0xffa96b, light: 0xf09a5a },
-  },
-
-  // PAPER: near-black ink on white paper, with ONE saturated orange accent
-  // carried by the glass edge lines + the mechanism fills — everything else is
-  // achromatic warm gray so the accent reads as THE color. Dark site theme is
-  // the same look dimmed a step (a full-white slab would blast on the stage).
-  paper: {
-    fill(name: string, light: boolean): number {
-      if (light) {
-        if (isOpticalGlass(name)) return 0x8f8879; // warm-gray glass — reads at 0.45 on white
-        if (/^Iris_Blade/.test(name)) return 0x3a372f;
-        if (isDecal(name)) return 0x1f1b15; // printed text = the ink
-        if (/^Mount_Contacts/.test(name)) return 0xe8590f; // the saturated accent
-        if (/^Mount_/.test(name)) return 0xbdb6a9;
-        if (/^Focus_/.test(name)) return 0xe8590f; // accent — the drivetrain
-        if (/^PCB_/.test(name)) return 0x8c8574;
-        if (/Ring_/.test(name)) return 0x2e2a24; // rubber grips — near-ink
-        if (/Band_Mid|Barrel_Base|Chassis/.test(name)) return 0xefe9dd; // gloss body
-        return 0xf8f4ea; // matte body — the white paper
-      }
-      if (isOpticalGlass(name)) return 0x87806f;
-      if (/^Iris_Blade/.test(name)) return 0x35322a;
-      if (isDecal(name)) return 0x1c1812;
-      if (/^Mount_Contacts/.test(name)) return 0xd8520e;
-      if (/^Mount_/.test(name)) return 0xafa89a;
-      if (/^Focus_/.test(name)) return 0xd8520e;
-      if (/^PCB_/.test(name)) return 0x807966;
-      if (/Ring_/.test(name)) return 0x2a2620;
-      if (/Band_Mid|Barrel_Base|Chassis/.test(name)) return 0xddd6c8;
-      return 0xe9e3d6; // dimmed paper for the dark stage
-    },
-    edgeBody: { dark: 0x17130d, light: 0x14100b }, // near-black ink lines
-    edgeGlass: { dark: 0xff4d0f, light: 0xff4d0f }, // the saturated orange accent
-  },
-};
-
-// OUTLINE: thick screen-print contour — a constant-width inverted-hull outline
-// (silhouette + every depth step) over pure UNLIT two-tone fills, cream/ink from
-// the house palette. Deliberately the anti-x-ray: NOTHING is transparent — the
-// glass renders as solid flat discs wearing the same outline. The hull width is
-// model-mm, so the line reads bolder as the lens fills the frame (a printed
-// object, not a UI stroke). Fill tones sit a step off the line tone so the
-// contour still reads where it crosses a same-family fill.
-const OUTLINE_WIDTH = 0.8; // model mm
-const OUTLINE = {
-  light: {
-    line: 0x211c14, // near-black ink contour
-    body: 0xf0e9d8, // cream shells
-    detail: 0x3f3a2f, // grips / iris / mechanism — the ink half of the two-tone
-    glass: 0x4a4437, // solid discs, a step off the detail ink
-    decal: 0x211c14,
-  },
-  dark: {
-    line: 0xf2ead6, // cream contour on the dark stage
-    body: 0x27221a, // ink shells — the cream line carries the silhouette
-    detail: 0xcdc4ab, // cream mechanism
-    glass: 0xbfb59a,
-    decal: 0xf2ead6,
-  },
-};
-
-function outlineFill(p: (typeof OUTLINE)["light"], name: string): number {
-  if (isDecal(name)) return p.decal;
-  if (isOpticalGlass(name)) return p.glass;
-  if (/^Iris_Blade|Ring_|^Focus_|^Mount_|^PCB_/.test(name)) return p.detail;
-  return p.body;
-}
-
-// RISO: duotone risograph print — two ink passes on poster stock, hard 3-step
-// N·L posterization, NO outlines (the flat banding carries all the form).
-// Light theme = orange + near-black ink on cream stock (orange holds the
-// midtone, so it dominates). Dark theme = the same poster run on black stock:
-// bright orange ink carries the highlights over a burnt-orange mid, the paper
-// itself is the shadow. `decal` is the flat un-banded print color for the
-// engraved text; the glass is a translucent orange OVERPRINT (ink over ink).
-const RISO = {
-  light: { shadow: 0x241d18, mid: 0xe8551a, lit: 0xf2e8cf, decal: 0x241d18 },
-  dark: { shadow: 0x1b1512, mid: 0xc23e12, lit: 0xff6a2a, decal: 0xf2e8cf },
-};
-
-// Hard 3-band posterize of N·L across the three ink stops — same quantization
-// as celShade, but SELECTING flat colors instead of scaling one.
-function risoBands(stops: { shadow: number; mid: number; lit: number }) {
-  const ndl = dot(
-    normalView as any,
-    vec3(CEL_LIGHT.x, CEL_LIGHT.y, CEL_LIGHT.z) as any,
-  )
-    .mul(0.5)
-    .add(0.5) as any;
-  const b = clamp(floor(ndl.mul(3.0)), 0.0, 2.0) as any;
-  return mix(
-    mix(
-      colorNode(new THREE.Color(stops.shadow)) as any,
-      colorNode(new THREE.Color(stops.mid)) as any,
-      clamp(b, 0.0, 1.0) as any,
-    ) as any,
-    colorNode(new THREE.Color(stops.lit)) as any,
-    clamp(b.sub(1.0), 0.0, 1.0) as any,
-  ) as any;
-}
-
-// BRONZE: molten-metal dark-studio matcap — hot gold core into copper and
-// terracotta-bronze falloff, plus a low warm rim from the lower right so the
-// dark side separates from the stage. The light theme lifts the shadow floor a
-// step (pure near-black collapses to mud on the cream page).
-function makeBronzeMatcap(light: boolean): THREE.Texture {
-  const s = 256;
-  const canvas = document.createElement("canvas");
-  canvas.width = canvas.height = s;
-  const ctx = canvas.getContext("2d")!;
-  ctx.fillStyle = light ? "#241611" : "#160d09";
-  ctx.fillRect(0, 0, s, s);
-  const g = ctx.createRadialGradient(
-    s * 0.36,
-    s * 0.3,
-    s * 0.04,
-    s * 0.5,
-    s * 0.5,
-    s * 0.6,
-  );
-  g.addColorStop(0, "#ffe9c4"); // hot gold core
-  g.addColorStop(0.3, "#e8a05c"); // copper
-  g.addColorStop(0.62, "#8a4d2b"); // terracotta bronze
-  g.addColorStop(1, light ? "#2e1c13" : "#1c100a"); // umber falloff
-  ctx.fillStyle = g;
-  ctx.beginPath();
-  ctx.arc(s / 2, s / 2, s / 2, 0, Math.PI * 2);
-  ctx.fill();
-  const r = ctx.createRadialGradient(
-    s * 0.78,
-    s * 0.82,
-    s * 0.02,
-    s * 0.78,
-    s * 0.82,
-    s * 0.5,
-  );
-  r.addColorStop(0, "rgba(255,122,46,0.5)"); // warm rim light
-  r.addColorStop(1, "rgba(255,122,46,0)");
-  ctx.fillStyle = r;
-  ctx.beginPath();
-  ctx.arc(s / 2, s / 2, s / 2, 0, Math.PI * 2);
-  ctx.fill();
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
-}
+/** The story's pair — one blended material, no swap (materials/unified.ts).
+ *  A type PREDICATE, so `set`'s merged early-return is what narrows the rest of
+ *  the function to a `BenchMode`: the two halves of the union are checked by
+ *  the compiler rather than by a cast at the hand-over. */
+const MERGED = (mode: ShadingMode): mode is "realistic" | "ink" =>
+  mode === "realistic" || mode === "ink";
 
 export interface ShadingController {
-  /** Wear `mode`. A mode is BUILT once per theme and kept (ModeBuild below), so
-   *  switching back to a look this session already wore re-wears its materials
-   *  instead of re-deriving them — the story alternates ink ↔ realistic. */
-  set(mode: ShadingMode): void;
-  /** Fold meshes that loaded AFTER creation (the background accessories) into the
-   *  swapper and style them in the current mode. Idempotent per mesh. */
-  integrate(root: THREE.Object3D): void;
-  /** Re-palette the current mode for the site theme (light = no `.dark` on <html>).
-   *  Rebuilds the current mode's materials; a no-op when the theme is unchanged. */
-  setTheme(light: boolean): void;
-  /** The edge-line objects created for the current mode (empty unless "ink"). Used
-   *  by the scene's sketch-in entrance to stroke them on. */
-  getInkLines(): THREE.LineSegments[];
-  /** Wear the ORIGINALS (the "realistic" materials captured at load) for the
-   *  duration of `cb`, then put back exactly what each mesh was wearing.
+  /** Wear `mode`.
    *
-   *  NOT `set("realistic")` and back: even with the builds kept, a round trip
-   *  re-materials every mesh twice and parks/unparks the extras — and it would
+   *  "realistic"/"ink" are a UNIFORM WRITE on the merged material (plus the two
+   *  booleans it cannot blend). A bench look needs `installBench` first — see
+   *  the header; without one this warns and holds the current look rather than
+   *  leaving the meshes half swapped. */
+  set(mode: ShadingMode): void;
+  /** Plug in the lazily-imported bench half (core/scene's enableShadingBench).
+   *  Idempotent: a second call keeps the first bench, so its parked builds
+   *  survive. Takes the FACTORY, not the bench, so this controller stays the
+   *  one owner of the site-theme flag. */
+  installBench(factory: ShadingBenchFactory): void;
+  /** Whether a bench is installed — the modes outside the story's pair are
+   *  wearable iff this is true. */
+  hasBench(): boolean;
+  /** Fold meshes that loaded AFTER creation (the background accessories) into
+   *  the swapper and style them in the current mode. Idempotent per mesh. The
+   *  merged pair takes them through unified.integrate, which core/scene calls
+   *  first. */
+  integrate(root: THREE.Object3D): void;
+  /** Re-palette for the site theme (light = no `.dark` on <html>). The merged
+   *  pair re-tints in place; a bench look rebuilds. No-op if unchanged. */
+  setTheme(light: boolean): void;
+  /** Wear the REALISTIC look for the duration of `cb`, then put back exactly
+   *  what each mesh was wearing.
+   *
+   *  NOT `set("realistic")` and back: that would leave the ink blend at 0 on the
+   *  way out and, from a bench look, park and unpark its extras — and it would
    *  stomp anything else riding on a mesh (the transmissive glass clones the
-   *  warm-up itself puts on). This swaps the material references and puts back
-   *  exactly what was worn, so a caller that needs the realistic look for one
-   *  off-screen frame (core/scene's fly warm-up) pays nothing for the trip. The
-   *  stylized extras (edge lines, hulls) stay parented and simply draw as they
-   *  were — this is not a mode change and must not be used as one. */
+   *  warm-up itself puts on). This drops the blend to 0, puts the merged
+   *  materials on, and restores both, so a caller that needs the realistic look
+   *  for one off-screen frame (core/scene's fly warm-up) pays nothing for the
+   *  trip. The blend matters: `transparent` rides it, and a pipeline is keyed on
+   *  that — warming the wrong one would warm nothing. */
   withOriginals(cb: () => void): void;
   dispose(): void;
 }
 
-export function createShading(root: THREE.Object3D): ShadingController {
+export function createShading(
+  root: THREE.Object3D,
+  unified: UnifiedLook,
+): ShadingController {
   // site theme — the palettes flip between paper-light and stage-dark. Detected
   // here so both pages get the right palette without wiring; toggles arrive via
   // setTheme (the pages own the observer — a controller-owned one would leak).
   let light = !document.documentElement.classList.contains("dark");
   let currentMode: ShadingMode = "realistic";
   const meshes: THREE.Mesh[] = [];
-  const original = new Map<THREE.Mesh, THREE.Material | THREE.Material[]>();
+  const known = new Set<THREE.Mesh>();
+  /** the /lens bench, once core/scene has imported it — null on the hero */
+  let bench: ShadingBench | null = null;
 
   root.traverse((o) => {
     if (!(o instanceof THREE.Mesh)) return;
     meshes.push(o);
-    original.set(o, o.material);
+    known.add(o);
   });
 
-  // Ink edge lines cached per mesh × crease threshold: they're a pure function
-  // of the (immutable) source geometry, and rebuilding ~260 EdgesGeometry + the
-  // frame attribute copy on EVERY re-entry into ink made the toggle visibly
-  // janky. Threshold is in the key because "flat" runs the same construction at
-  // a coarser crease angle than ink/blueprint.
-  const edgeGeoCache = new Map<string, THREE.BufferGeometry>();
-
-  // ONE MODE'S BUILD — every material it created, every extra object it parented
-  // under the meshes (the technical looks' edge lines, outline's inverted hulls)
-  // and what each mesh ended up WEARING. Builds are kept per mode and never torn
-  // down on a switch: leaving a mode parks its extras, returning re-wears them.
-  // Rebuilding instead is what stalled the story's fly exit — realistic → ink
-  // re-derived ~200 materials and every pipeline behind them, mid-scroll.
-  // "realistic" has no build: the `original` map captured at load IS its cache.
-  // Every colour here is baked from the THEME PALETTE, so a theme flip throws
-  // all builds away (flushBuilds) rather than trying to re-tint them.
-  interface ModeBuild {
-    materials: THREE.Material[];
-    /** edge lines in creation order — the sketch-in entrance strokes these */
-    lines: THREE.LineSegments[];
-    /** lines + hulls with the mesh each hangs under, so parking can detach them
-     *  and a return can put them back */
-    extras: { owner: THREE.Mesh; obj: THREE.Object3D }[];
-    worn: Map<THREE.Mesh, THREE.Material | THREE.Material[]>;
-    // SHARED-material caches: one material per look × part class, not per mesh.
-    // They also let integrate() fold a late-arriving mesh (the background
-    // accessories) into a built look without rebuilding it.
-    fill: Map<string, THREE.MeshBasicNodeMaterial>;
-    line: Map<string, THREE.LineBasicNodeMaterial>;
-    /** the self-contained modes' (outline/riso/bronze) shared materials */
-    shared: Map<string, THREE.Material>;
-  }
-  const builds = new Map<ShadingMode, ModeBuild>();
-  /** the live mode's build — null while "realistic" is worn */
-  let build: ModeBuild | null = null;
-  const makeBuild = (mode: ShadingMode): ModeBuild => {
-    const b: ModeBuild = {
-      materials: [],
-      lines: [],
-      extras: [],
-      worn: new Map(),
-      fill: new Map(),
-      line: new Map(),
-      shared: new Map(),
-    };
-    builds.set(mode, b);
-    return b;
-  };
-  // bronze matcap is theme-dependent (lifted shadow floor on light), so it's
-  // cached per theme flag and rebuilt on a flip
-  let bronzeMatcap: THREE.Texture | null = null;
-  let bronzeMatcapLight = false;
-  const track = <T extends THREE.Material>(m: T): T => {
-    build!.materials.push(m);
-    return m;
-  };
-  const attach = (owner: THREE.Mesh, obj: THREE.Object3D) => {
-    obj.raycast = () => {}; // extras are never pickable
-    owner.add(obj);
-    build!.extras.push({ owner, obj });
-  };
-  /** Free EVERY build. The materials are the only thing a build owns outright:
-   *  edge geometries live in edgeGeoCache and the hulls borrow their source
-   *  mesh's geometry. */
-  const flushBuilds = () => {
-    for (const b of builds.values()) {
-      b.materials.forEach((m) => m.dispose());
-      b.extras.forEach((e) => e.obj.removeFromParent());
-    }
-    builds.clear();
-    build = null;
-  };
-
-  // BUILD the CURRENT mode's material(s) for ONE mesh, drawing from that mode's
-  // shared caches. This is the per-mesh half of set() — it runs only the first
-  // time a mode meets a mesh; every later entry re-wears `build.worn`.
-  function applyToMesh(mesh: THREE.Mesh) {
-    // ink assigns renderOrder to the window pieces (drawn last, no depth write);
-    // every other mode uses plain depth-sorted rendering — clear the override.
-    mesh.renderOrder = 0;
-    const mode = currentMode;
-
-    if (mode === "realistic") {
-      // originals already carry the op node material on the framed pieces
-      mesh.material = original.get(mesh)!;
-      return;
-    }
-
-    const b = build!; // every mode below the realistic branch has one
-    // Every look below classifies by NAME. Runtime names ARE node names now
-    // (one primitive per mesh — lens_work MIGRATION §2), so the palettes see
-    // e.g. `Focus_LeadScrew` where they used to see a Blender datablock name
-    // (`Cylinder012`) that no rule matched.
-    const name = mesh.name;
-
-    const palette = TECHNICAL_PALETTES[mode];
-    if (palette) {
-      // Technical-drawing look: flat fills + edge lines that carry the form, CEL
-      // banded (quantized N·L) so the body still reads dimensional. Every
-      // technical mode ("ink", "blueprint") is this same construction under its
-      // TECHNICAL_PALETTES entry. Shell wedges get attribute-preserving edge
-      // geometry so the lines deform with the fill.
-      //
-      // Materials are SHARED per look (colour × glass × framed), not per mesh: one
-      // material per mesh built ~260 separate node graphs, and compiling all those
-      // pipelines was the single largest chunk of time-to-first-frame. The palette
-      // collapses to ~a dozen fill materials and 4 line materials (build.fill,
-      // build.line).
-      const theme = light ? ("light" as const) : ("dark" as const);
-      const edgeBody = palette.edgeBody[theme];
-      const edgeGlass = palette.edgeGlass[theme];
-      const glass = isOpticalGlass(name);
-      const framed = hasOpFrames(mesh);
-      // A mesh whose deform graph VARIES (a mechanism spin pivot, a decal's
-      // shrink-wrap binding) can only share a material with meshes that vary the
-      // same way — every cache key below carries the variant for that reason
-      // (ops/host.ts opsVariantKey).
-      const spin = opsVariantKey(mesh);
-      const colorHex = palette.fill(name, light);
-      const fillKey = `${colorHex}|${glass}|${framed}|${spin}`;
-      let m = b.fill.get(fillKey);
-      if (!m) {
-        m = new THREE.MeshBasicNodeMaterial();
-        m.color.setHex(colorHex);
-        // cel bands on the body fills only — the translucent glass stays clean,
-        // and a `flat` palette skips banding entirely (pure print fills).
-        if (!glass && !palette.flat) {
-          m.colorNode = colorNode(new THREE.Color(colorHex)).mul(
-            celShade(),
-          ) as any;
-        }
-        m.transparent = true;
-        // Push the fill's depth back a hair so the edge lines (which share the
-        // surface's exact vertices) always win the depth test — without this
-        // the lines z-fight the fill and FLICKER whenever the model moves.
-        m.polygonOffset = true;
-        m.polygonOffsetFactor = 1;
-        m.polygonOffsetUnits = 1;
-        // Depth fade: framed pieces move in-shader, so feed the fade the op-
-        // deformed local position (positionView misses it); everything else moves
-        // by its object matrix, which positionLocal already captures.
-        // Glass elements stay filled ALWAYS (like the example) — they never fade
-        // to wireframe; only the body/metal fills fade in/out with uInkFill. All
-        // fills also dissolve past the near/far planes as they explode.
-        // Attach the op deform FIRST and feed its position node straight to the
-        // fade (was a second position graph — one deform per material).
-        const opsPos = framed ? attachOps(m, mesh) : undefined;
-        const fade = depthFadeFactor(opsPos);
-        m.opacityNode = (glass ? float(0.45) : float(1).mul(uInkFill)).mul(
-          fade,
-        );
-        // DISCARD fully-faded fragments: a transparent fill at opacity ~0 still
-        // writes depth, so a depth-faded wedge would invisibly hard-clip
-        // everything behind its silhouette (screw, rods, rings). Discarded
-        // fragments write nothing.
-        m.alphaTest = 0.02;
-        b.fill.set(fillKey, track(m));
-      }
-      mesh.material = m;
-
-      // edge lines (skip flat printed decals — their outline is just a
-      // rectangle — and any palette-declared lineSkip parts)
-      if (isDecal(name) || palette.lineSkip?.(name)) return;
-      const lineKey = `${glass}|${framed}|${spin}`;
-      let lineMat = b.line.get(lineKey);
-      if (!lineMat) {
-        lineMat = new THREE.LineBasicNodeMaterial();
-        lineMat.color.setHex(glass ? edgeGlass : edgeBody);
-        lineMat.transparent = true;
-        // Attach the deform first, then share its position node with the fade.
-        const lineOpsPos = framed ? attachOpsLine(lineMat, mesh) : undefined;
-        lineMat.opacityNode = float(glass ? 0.7 : 0.9).mul(
-          depthFadeFactor(lineOpsPos),
-        );
-        lineMat.alphaTest = 0.02; // faded lines must not depth-clip either
-        b.line.set(lineKey, track(lineMat));
-      }
-      const thr = palette.edgeThresholdDeg ?? 24;
-      const geoKey = `${mesh.id}|${thr}`;
-      let geo = edgeGeoCache.get(geoKey);
-      if (!geo) {
-        geo = framed
-          ? opsEdgeGeometry(mesh.geometry, thr)
-          : new THREE.EdgesGeometry(mesh.geometry, thr);
-        edgeGeoCache.set(geoKey, geo);
-      }
-      const line = new THREE.LineSegments(geo, lineMat);
-      b.lines.push(line);
-      attach(mesh, line);
-      return;
-    }
-
-    if (mode === "outline") {
-      // Thick screen-print contour (OUTLINE above): pure unlit two-tone fills,
-      // everything OPAQUE (glass = solid flat discs), plus an inverted-hull
-      // second pass per mesh — the same geometry re-drawn BackSide with its
-      // vertices pushed OUT along the (op-deformed) normal, so a constant
-      // model-mm dark/cream rim survives wherever the surface meets anything
-      // behind it: the whole silhouette + every depth step.
-      const P = light ? OUTLINE.light : OUTLINE.dark;
-      const framed = hasOpFrames(mesh);
-      const spin = opsVariantKey(mesh);
-      const fillHex = outlineFill(P, name);
-      const fillKey = `outline|${fillHex}|${framed}|${spin}`;
-      let m = b.shared.get(fillKey);
-      if (!m) {
-        const mat = new THREE.MeshBasicNodeMaterial({ color: fillHex });
-        if (framed) attachOps(mat, mesh);
-        m = track(mat);
-        b.shared.set(fillKey, m);
-      }
-      mesh.material = m;
-      // no hull on the flat printed decals — they'd just outline a rectangle
-      if (isDecal(name)) return;
-      const hullKey = `outline|hull|${framed}|${spin}`;
-      let hullMat = b.shared.get(hullKey);
-      if (!hullMat) {
-        const mat = new THREE.MeshBasicNodeMaterial({
-          color: P.line,
-          side: THREE.BackSide,
-        });
-        if (framed) attachOpsHull(mat, OUTLINE_WIDTH, mesh);
-        else
-          mat.positionNode = positionLocal.add(
-            normalLocal.mul(OUTLINE_WIDTH) as any,
-          );
-        hullMat = track(mat);
-        b.shared.set(hullKey, hullMat);
-      }
-      attach(mesh, new THREE.Mesh(mesh.geometry, hullMat));
-      return;
-    }
-
-    if (mode === "riso") {
-      // Duotone print (RISO above): flat 3-band posterized fills, no edge
-      // lines. Glass is a translucent orange overprint so the mechanism still
-      // reads through it; decals print flat in the contrasting ink.
-      const stops = light ? RISO.light : RISO.dark;
-      const glass = isOpticalGlass(name);
-      const decal = isDecal(name);
-      const framed = hasOpFrames(mesh);
-      const key = `riso|${glass}|${decal}|${framed}|${opsVariantKey(mesh)}`;
-      let m = b.shared.get(key);
-      if (!m) {
-        const mat = new THREE.MeshBasicNodeMaterial();
-        if (glass) {
-          mat.color.setHex(stops.mid);
-          mat.transparent = true;
-          mat.opacity = 0.35;
-        } else if (decal) {
-          mat.color.setHex(stops.decal);
-        } else {
-          mat.colorNode = risoBands(stops);
-        }
-        if (framed) attachOps(mat, mesh);
-        m = track(mat);
-        b.shared.set(key, m);
-      }
-      mesh.material = m;
-      return;
-    }
-
-    if (mode === "bronze") {
-      // Dark-studio metal (makeBronzeMatcap above): the whole lens cast in
-      // copper/bronze, rubber grips kept dark via a matcap tint, glass a deep
-      // smoked amber so the internals read as silhouettes inside the metal.
-      if (!bronzeMatcap || bronzeMatcapLight !== light) {
-        bronzeMatcap?.dispose();
-        bronzeMatcap = makeBronzeMatcap(light);
-        bronzeMatcapLight = light;
-      }
-      const glass = isOpticalGlass(name);
-      const grip = /Ring_/.test(name);
-      const framed = hasOpFrames(mesh);
-      const key = `bronze|${glass}|${grip}|${framed}|${opsVariantKey(mesh)}`;
-      let m = b.shared.get(key);
-      if (!m) {
-        const mat = glass
-          ? new THREE.MeshBasicNodeMaterial({
-              color: 0x40220f,
-              transparent: true,
-              opacity: 0.45,
-            })
-          : new THREE.MeshMatcapNodeMaterial({
-              color: grip ? 0x4c4440 : 0xffffff,
-              matcap: bronzeMatcap,
-            });
-        if (framed) attachOps(mat, mesh);
-        m = track(mat);
-        b.shared.set(key, m);
-      }
-      mesh.material = m;
-    }
-  }
-
-  /** build this mesh in the current mode and remember what it ends up wearing */
-  function style(mesh: THREE.Mesh) {
-    applyToMesh(mesh);
-    build?.worn.set(mesh, mesh.material);
-  }
-
   function set(mode: ShadingMode) {
-    // PARK the outgoing mode: its extras come off the meshes, but nothing is
-    // freed — the build stays whole so coming back is a re-wear, not a rebuild.
-    if (build) for (const e of build.extras) e.obj.removeFromParent();
-    currentMode = mode;
-    build = mode === "realistic" ? null : (builds.get(mode) ?? makeBuild(mode));
-    for (const mesh of meshes) {
-      const worn = build?.worn.get(mesh);
-      if (!worn) {
-        style(mesh); // first time this mode meets this mesh
-        continue;
-      }
-      mesh.renderOrder = 0; // as applyToMesh does — clear any foreign override
-      mesh.material = worn;
+    if (MERGED(mode)) {
+      // THE STORY'S PAIR: park whatever bench look held the meshes, then no
+      // per-mesh work beyond the renderOrder clear every mode owes — a bench
+      // look that assigned one must not leave it on the story. Then put the
+      // merged materials back and write the blend.
+      bench?.park();
+      currentMode = mode;
+      for (const mesh of meshes) mesh.renderOrder = 0;
+      unified.wear();
+      unified.setInk(mode === "ink" ? 1 : 0);
+      return;
     }
-    // …and the parked extras go back on. add() on a child already parented here
-    // is a no-op, so anything style() just attached doesn't double up.
-    if (build) for (const e of build.extras) e.owner.add(e.obj);
+    if (!bench) {
+      // Unreachable from /lens, which awaits enableShadingBench before it wires
+      // the buttons — and impossible on the hero, which never asks for one.
+      console.warn(
+        `lens shading: "${mode}" needs the bench chunk — call SceneHandle.enableShadingBench() first`,
+      );
+      return;
+    }
+    currentMode = mode;
+    // A bench look draws its own line-work, so the merged pair's has to go —
+    // setInk(0) hides it and costs nothing else while nothing wears the merged
+    // materials.
+    unified.setInk(0);
+    bench.wear(mode, meshes);
   }
 
   // Fold meshes that appear AFTER the initial capture (the background accessories
-  // GLB) into the swapper: capture their originals and apply the current mode
-  // using the SAME shared caches, so a later mode switch covers them and the
-  // hero's ink caps-on finale styles the caps. Idempotent — already-captured
-  // meshes are skipped.
-  function integrate(root: THREE.Object3D) {
-    root.traverse((o) => {
-      if (!(o instanceof THREE.Mesh) || original.has(o)) return;
+  // GLB) into the swapper and apply the current mode using the SAME shared
+  // caches, so a later mode switch covers them too. Idempotent — already-known
+  // meshes are skipped. The merged pair needs nothing here: core/scene runs
+  // unified.integrate first, which is what puts the blended material on a late
+  // arrival (and the bench's own integrate is a no-op while the pair is worn).
+  function integrate(target: THREE.Object3D) {
+    target.traverse((o) => {
+      if (!(o instanceof THREE.Mesh) || known.has(o)) return;
       meshes.push(o);
-      original.set(o, o.material);
-      style(o);
+      known.add(o);
+      bench?.integrate(o);
     });
-  }
-
-  function dispose() {
-    flushBuilds();
-    edgeGeoCache.forEach((g) => g.dispose());
-    edgeGeoCache.clear();
-    bronzeMatcap?.dispose();
   }
 
   function setTheme(l: boolean) {
     if (l === light) return;
     light = l;
-    // EVERY build is palette-baked, not just the live one — keeping the parked
-    // ones would re-wear the old theme's colours on the next switch.
-    flushBuilds();
-    set(currentMode); // rebuild the active mode under the other palette
+    // The merged pair re-tints IN PLACE (colour uniforms), so the story's two
+    // looks survive a flip without a single material being rebuilt…
+    unified.setTheme(l);
+    // …while every bench build is palette-BAKED, not just the live one: keeping
+    // the parked ones would re-wear the old theme's colours on the next switch.
+    bench?.setTheme(l);
+    if (!MERGED(currentMode)) set(currentMode); // rebuild under the other palette
   }
 
   function withOriginals(cb: () => void) {
     const worn = new Map<THREE.Mesh, THREE.Material | THREE.Material[]>();
-    for (const mesh of meshes) {
-      const orig = original.get(mesh);
-      if (!orig) continue;
-      worn.set(mesh, mesh.material);
-      mesh.material = orig;
-    }
+    for (const mesh of meshes) worn.set(mesh, mesh.material);
+    const blend = unified.ink();
+    unified.setInk(0);
+    unified.wear();
     try {
       cb();
     } finally {
+      // the blend FIRST: it writes the elements' material itself, so the exact
+      // restore below has to land after it
+      unified.setInk(blend);
       for (const [mesh, mat] of worn) mesh.material = mat;
     }
   }
 
   return {
     set,
+    installBench(factory) {
+      bench ??= factory(light);
+    },
+    hasBench: () => bench !== null,
     integrate,
     setTheme,
-    getInkLines: () => build?.lines ?? [],
     withOriginals,
-    dispose,
+    dispose() {
+      bench?.dispose();
+    },
   };
 }

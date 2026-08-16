@@ -1371,11 +1371,12 @@ export function createPathAnalysis(ctx: PathVizContext): PathAnalysis {
   }
 
   async function curlCorners(
-    // The classic rewrap "reassemble" this defaulted against is gone; the two
-    // surviving sheet constructions are the assemble recipe's wrap-on and the
-    // rollout recipe's unroll.
+    // The /lens bench keeps two sheet constructions to compare: the assemble
+    // recipe's wrap-on and the rose recipe's bloom. (The `rollout` unroll this
+    // once defaulted against went with the bench-recipe cleanup; pass any two
+    // animation ids.)
     idA = "assemble",
-    idB = "rollout",
+    idB = "x-rose",
   ): Promise<CurlCornerResult> {
     const wA = await walk(findAnim(idA));
     const wB = await walk(findAnim(idB));

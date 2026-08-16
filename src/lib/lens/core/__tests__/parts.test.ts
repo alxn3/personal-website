@@ -1,11 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  isIrisMechanism,
-  isOpticalGlass,
-  isOpticsIsolate,
-  isSilhouetteGreeble,
-  partClassOf,
-} from "../parts";
+import { isIrisMechanism, isOpticalGlass, partClassOf } from "../parts";
 import { PART_CLASS } from "../../ops/ops";
 
 // The name predicates on the names the shipped GLBs actually carry. Runtime
@@ -23,20 +17,6 @@ describe("isOpticalGlass", () => {
     // as glass.
     expect(isOpticalGlass("Iris_Blade_01")).toBe(false);
     expect(isOpticalGlass("Acc_Filter_Ring")).toBe(false);
-  });
-});
-
-describe("isOpticsIsolate", () => {
-  it("keeps the glass and the whole iris assembly", () => {
-    for (const n of [
-      "Element_07",
-      "Acc_Filter_Glass",
-      "Iris_Blade_04",
-      "Iris_CamPlate_Seg3",
-      "Iris_Housing_Seg0",
-    ])
-      expect(isOpticsIsolate(n), n).toBe(true);
-    expect(isOpticsIsolate("Ring_Zoom_Seg2")).toBe(false);
   });
 });
 
@@ -60,45 +40,13 @@ describe("isIrisMechanism", () => {
   });
 });
 
-describe("isSilhouetteGreeble", () => {
-  it("hides the mechanical clutter, keeps the shapes that draw the lens", () => {
-    for (const n of [
-      "DecalT_Brand",
-      "PCB_Components_Seg3",
-      "Mount_Screws",
-      "Iris_Blade_02",
-      "Iris_CamPlate_Seg1",
-      "Focus_LeadScrew",
-      // Focus_Arms is the carrier's bracket, split off it by lens_work N.12
-      // (MIGRATION §10) — it hides with the ring it belongs to, not without it.
-      "Focus_Arms",
-      "Optics_Cell_G2",
-      "Shim_Ring_0",
-    ])
-      expect(isSilhouetteGreeble(n), n).toBe(true);
-    for (const n of [
-      "Barrel_Inner_Seg3",
-      "Ring_Zoom_Seg0",
-      "Iris_Housing_Seg2",
-      "Element_05",
-    ])
-      expect(isSilhouetteGreeble(n), n).toBe(false);
-  });
-
-  it("no longer mentions Iris_FlexTrunk — the part was cut model-side", () => {
-    // lens_work MIGRATION §7b: the node does not exist in any web GLB, so the
-    // regex arm was a silent no-op. Nothing named FlexTrunk should be special.
-    expect(isSilhouetteGreeble("Iris_FlexTrunk")).toBe(false);
-  });
-});
-
 describe("partClassOf", () => {
   it("classifies by the ordered tests, glass first", () => {
     expect(partClassOf("Element_01")).toBe(PART_CLASS.glass);
     expect(partClassOf("Iris_Blade_01")).toBe(PART_CLASS.iris);
     expect(partClassOf("DecalT_Brand")).toBe(PART_CLASS.decal);
     // Acc_Filter_Glass is an ACCESSORY, not glass: it comes off with the filter
-    // and its glass shading is materials/shading.ts's business, not a selector's.
+    // and its glass shading is the look swapper's business, not a selector's.
     expect(partClassOf("Acc_Filter_Glass")).toBe(PART_CLASS.accessory);
     expect(partClassOf("Acc_Hood")).toBe(PART_CLASS.accessory);
     // The housing falls through to STRUCTURE so it wraps with every other shell.

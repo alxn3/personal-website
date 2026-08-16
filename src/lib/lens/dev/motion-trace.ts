@@ -13,6 +13,12 @@ import * as THREE from "three/webgpu";
 // world +X — so aim, roll, screen position and apparent size of the subject are
 // all derivable from this frame's camera pose alone.
 //
+// ONE SPAN IS EXEMPT: through the fly-through the camera is PARKED and the lens
+// translates past it (story/fly.ts, SceneHandle.setLensDolly). The rows there
+// are therefore flat by design — that is the dive working, not a dropped
+// instrument — and `ndc`/`rad` project the world origin, which is the lens'
+// HOME rather than where it is. Read the dive off story/fly.ts's `flyDollyAt`.
+//
 // Harvest from the console (or a driver script): `window.__lensMotionTrace`.
 // ============================================================================
 

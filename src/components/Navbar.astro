@@ -2,6 +2,17 @@
 import { Icon } from "astro-icon/components";
 import ThemeToggle from "./ThemeToggle.astro";
 
+interface Props {
+  /** Selector for a full-bleed backdrop the page parks UNDER the bar (the
+   *  homepage story stage). While it still covers the bar, the bar drops its
+   *  border and blur so the backdrop runs unbroken to the top of the window;
+   *  once the page has scrolled past it, ordinary content would slide under the
+   *  nav labels, so the chrome comes back. */
+  clearOver?: string;
+}
+
+const { clearOver } = Astro.props;
+
 const navItems = [
   { href: "/", label: "Home" },
   { href: "/projects", label: "Projects" },
@@ -20,14 +31,21 @@ const isCurrentPath = (href: string) => {
 ---
 
 <header
-  class="border-border fixed inset-x-0 top-0 z-50 border-b backdrop-blur transition-colors"
+  class="border-border fixed inset-x-0 top-0 z-50 border-b backdrop-blur transition-[border-color,backdrop-filter] data-clear:border-transparent data-clear:backdrop-blur-none"
+  data-clear-over={clearOver}
+  data-clear={clearOver ? "" : undefined}
   x-data="{ open: false }"
 >
   <nav
     class="max-w-layout mx-auto flex h-16 items-center justify-between px-4 sm:px-6 lg:px-8"
     aria-label="Primary navigation"
   >
-    <a href="/" class="text-text font-serif text-xl font-bold"> Alex Lin </a>
+    <a
+      href="/"
+      class="text-text focus-visible:ring-accent focus-visible:ring-offset-bg rounded-md font-serif text-xl font-bold focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
+    >
+      Alex Lin
+    </a>
 
     <div class="flex items-center">
       <div class="hidden items-center gap-1.5 sm:flex" aria-label="Main pages">
@@ -40,7 +58,11 @@ const isCurrentPath = (href: string) => {
                 href={item.href}
                 aria-current={isCurrent ? "page" : undefined}
                 class:list={[
-                  "rounded-md px-2.5 py-1.5 text-sm font-medium transition-colors",
+                  // the ring rides a --bg ring-offset cushion — the halo device
+                  // extended to focus: readable over the clear bar's arbitrary
+                  // scene content (black barrel, bright cards) in both themes,
+                  // where the UA default or a flat accent ring can vanish
+                  "focus-visible:ring-accent focus-visible:ring-offset-bg rounded-md px-2.5 py-1.5 text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none",
                   isCurrent
                     ? "text-highlight"
                     : "text-text-muted hover:text-text",
@@ -58,7 +80,7 @@ const isCurrentPath = (href: string) => {
       <!-- the X starts x-cloak'd so only the hamburger paints before Alpine boots -->
       <button
         type="button"
-        class="text-text-muted hover:text-accent inline-flex size-9 items-center justify-center rounded-md transition-colors sm:hidden"
+        class="text-text-muted hover:text-accent focus-visible:ring-accent focus-visible:ring-offset-bg inline-flex size-9 items-center justify-center rounded-md transition-colors focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none sm:hidden"
         x-on:click="open = !open"
         x-bind:aria-expanded="open"
         aria-label="Toggle menu"
@@ -111,3 +133,63 @@ const isCurrentPath = (href: string) => {
     </div>
   </div>
 </header>
+
+<script>
+  // `data-clear` is rendered by the server for a page that declares a backdrop,
+  // so the chrome-less bar is the FIRST paint (no flash); this only takes it
+  // away again once that backdrop has scrolled off the bar.
+  const header = document.querySelector<HTMLElement>("header[data-clear-over]");
+  const backdrop = header?.dataset.clearOver
+    ? document.querySelector<HTMLElement>(header.dataset.clearOver)
+    : null;
+
+  if (header && backdrop) {
+    let queued = false;
+    const sync = () => {
+      queued = false;
+      header.toggleAttribute(
+        "data-clear",
+        backdrop.getBoundingClientRect().bottom > header.offsetHeight,
+      );
+    };
+    const onScroll = () => {
+      if (queued) return;
+      queued = true;
+      requestAnimationFrame(sync);
+    };
+    addEventListener("scroll", onScroll, { passive: true });
+    addEventListener("resize", onScroll);
+    // bfcache restores skip module re-eval, and a restored scroll position may
+    // land below the hero before any scroll event fires — re-sync on both.
+    addEventListener("pageshow", onScroll);
+    sync();
+  } else if (import.meta.env.DEV && header) {
+    console.warn(
+      `navbar: clearOver selector "${header.dataset.clearOver}" matched nothing — the bar will stay chrome-less everywhere`,
+    );
+  }
+</script>
+
+<style>
+  /* THE CHROME-LESS BAR'S ONLY LEGIBILITY DEVICE. With no fill there is nothing
+     between the bar's type and whatever the page scrolls under it, and the
+     story's stage is not one colour: mid-dive the camera is inside the barrel,
+     so a LIGHT-theme frame goes near-black under the nav for ~1.5 screenfuls,
+     and in dark theme the cards scene sends bright photographs through the same
+     band. The captions already answer this with a halo in the stage's own paper
+     (LensStory's --cap-shadow); the bar takes the same device in the SITE's
+     background — invisible over that background by definition, and only doing
+     work where foreign content passes beneath. A halo, not a scrim: it hugs the
+     letterforms, so the bar still has no edge of its own. */
+  header[data-clear] nav {
+    text-shadow:
+      0 0 2px var(--bg),
+      0 0 4px var(--bg),
+      0 1px 14px var(--bg);
+  }
+  /* text-shadow does not reach the icons (the theme toggle, the mobile
+     hamburger) — same halo, the one form that draws off a stroke. */
+  header[data-clear] nav :global(svg) {
+    filter: drop-shadow(0 0 4px var(--bg)) drop-shadow(0 1px 10px var(--bg));
+  }
+</style>

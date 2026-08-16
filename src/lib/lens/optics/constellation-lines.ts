@@ -62,39 +62,36 @@ import { STARFIELD_LOOK, safeDir2 } from "./starfield";
  *  cuts a living stroke off mid-life. */
 export const SLOT_COUNT = 24;
 
-/** THE GAP AT EACH END, as a fraction of the segment: a stroke starts 6% of the
- *  way out of star A and stops 6% short of star B, so it points at its stars
- *  instead of touching them. Carried by the GEOMETRY (the endpoints written on
- *  spawn are already inset), not by the shader — the shader has enough to do and
- *  the inset never changes after a spawn. */
-export const LINE_GAP = 0.06;
+/** THE GAP AT EACH END, RADIANS OF SKY — one fixed angle, so a stroke leaves the
+ *  same ring of clear sky around a star whatever its length. It used to be a
+ *  fraction of the segment (with a disc-clearing floor), which made the gap grow
+ *  with the stroke; the owner read exactly that off the shipped page ("the gap
+ *  between the line ends and the star aren't constant — it varies on the length,
+ *  it should be a fixed gap size").
+ *
+ *  0.009 rad ≈ 6 px at the finale's fov 70 on an 800 px canvas, against the
+ *  biggest disc in the catalog at ~0.0048 rad of RADIUS (optics/starfield.ts
+ *  `starRho` at mag 3.1, ~3 px) — so even the brightest star keeps ~3 px of air,
+ *  and a floor-sized speck ~5.
+ *
+ *  Carried by the GEOMETRY (the endpoints written on spawn are already inset),
+ *  not by the shader — the shader has enough to do and the inset never changes
+ *  after a spawn. */
+export const GAP_RAD = 0.009;
 
-/** THE OTHER GAP, and the one that actually clears the star: how many DISC RADII
- *  of clear sky a stroke leaves at an endpoint. A proportional gap alone cannot
- *  do this — a disc is a fixed angular size (optics/starfield.ts `starRho`:
- *  0.004 × mag^0.85, so ~0.010 rad on the brightest authored star) while 6% of a
- *  minimum-separation segment is only 0.0048 rad, i.e. the stroke would end
- *  UNDER the disc it was pointing at. The two gaps are taken at their maximum. */
-export const GAP_DISC_K = 2.6;
-
-/** and the ceiling on either end's inset, as a fraction of the segment — two
- *  bright stars at the minimum separation ask for ~0.25 each, so this is slack
- *  rather than a live limit, but it is what guarantees a stroke can never be
- *  inset past its own middle and come out inverted. */
+/** the ceiling on either end's inset, as a fraction of the segment. The driver's
+ *  own pair window keeps every stroke far clear of it (story/constellations.ts
+ *  MIN_SEP is 0.08 rad, i.e. an inset of ~0.11 per end), so this is not a live
+ *  limit — it is what makes `lineInsetAt` total: no separation, however
+ *  degenerate, can inset a stroke past its own middle and invert it. */
 export const GAP_MAX = 0.4;
 
 /**
- * THE INSET AT ONE ENDPOINT, as a fraction of the segment: the larger of the
- * proportional gap and the disc-clearing one, capped. `rhoRad` is that end's
- * star's angular disc radius (optics/starfield.ts `starRho(mag)`) — which is why
- * the caller supplies it: the line engine has no catalog and no idea how bright
- * the stars it is joining are.
+ * THE INSET AT ONE ENDPOINT, as a fraction of the segment — the fixed angular
+ * gap expressed in the units the spawn writes its endpoints in, capped.
  */
-export const lineInsetAt = (sepRad: number, rhoRad: number): number =>
-  Math.min(
-    GAP_MAX,
-    Math.max(LINE_GAP, (GAP_DISC_K * rhoRad) / Math.max(sepRad, 1e-6)),
-  );
+export const lineInsetAt = (sepRad: number): number =>
+  Math.min(GAP_MAX, GAP_RAD / Math.max(sepRad, 1e-6));
 
 /** The head's soft leading edge, in units of the segment parameter t: the pen
  *  fades in over this much of the stroke rather than arriving as a hard chip.
@@ -112,18 +109,40 @@ export const CONST_LINES_LOOK = {
    *  wants to be anyway. Kept as one number so the two sphere radii can never
    *  drift apart. */
   radius: STARFIELD_LOOK.radius * 0.99,
-  /** angular HALF-thickness of a stroke, radians. Roughly twice the starfield's
-   *  authored asterism strokes (STARFIELD_LOOK.lineWidthRad = 0.0016): those are
-   *  background texture, these are the scene's subject. */
-  halfWidthRad: 0.0026,
+  /** angular HALF-thickness of a stroke, radians. THE ONLY STROKE WIDTH ON THE
+   *  SKY now that the starfield's pre-drawn asterisms are gated off
+   *  (STARFIELD_LOOK.staticLines) — there is no second line system to be twice
+   *  as wide as any more, so this is free to be as fine as it reads.
+   *
+   *  0.00088 — ONE PIXEL TOTAL, which is where the owner stopped it ("the lines
+   *  connecting the stars for constellations are a bit too thick. Lets do 1
+   *  pixel thick right now"), down from 0.0015 and 0.0026 before that.
+   *
+   *  THE ARITHMETIC IS THE ON-AXIS ONE, not the frame-average 655 px/rad the
+   *  rest of the sky files quote. A stroke is offset in VIEW space and divided
+   *  by the vertex's own depth, so at the finale's fov 70 a stroke through the
+   *  middle of an 800 px canvas runs at H/(2·tan 35°) = 571 px/rad and one at
+   *  the frame's edge is wider by 1/cos γ. 2 × 0.00088 × 571 = 1.00 px in the
+   *  middle and ~1.2 px at the frame's edge: a hairline everywhere, and never
+   *  under a pixel where it would start dropping out between pixel centres. */
+  halfWidthRad: 0.00088,
   /** the fraction of the half-width that stays at full ink before the edge
    *  feathers — the strokes' version of STARFIELD_LOOK.lineCore. Low: a stroke
    *  whose core runs nearly to its edge reads as an extruded beam, and half the
    *  width in feather is what makes it read as a pen mark instead. */
   core: 0.35,
-  /** a multiplier on SKY_INK's `lineOpacity`, for the same reason the width is
-   *  bigger: these strokes are what the viewer is meant to be watching. */
-  inkGain: 1.45,
+  /** a multiplier on SKY_INK's `lineOpacity`: these strokes are what the viewer
+   *  is meant to be watching, and a mark this fine has to buy back in ink what
+   *  it gave up in width.
+   *
+   *  1.75, up from 1.45 with the width cut to 0.59 of what it was: a stroke's
+   *  weight is width × ink, so some of the ink has to come back or a 1 px line
+   *  reads as a smudge — measured on the LIGHT stage, where graphite on cream
+   *  had gone soft at the old product (dark ink on paper starts with less
+   *  contrast to spend than cream on near-black). The products it makes —
+   *  0.79 dark, 0.88 light — both stay under 1, which they must: `opacityNode`
+   *  is not clamped and an alpha over 1 would over-brighten the blend. */
+  inkGain: 1.75,
   /** THE PEN'S SPEED, ms per radian of angular separation — a stroke is drawn
    *  at a constant rate, so a long line honestly takes longer than a short one. */
   penMsPerRad: 4500,
@@ -179,10 +198,9 @@ export interface ConstellationLines {
    *  its own and expects to ride the starfield group's camera-centring */
   object: THREE.Object3D;
   /** Start a new stroke between two unit directions, born at `nowMs` on the
-   *  driver's accumulated clock (the same clock `setTime` is fed). `rhoA`/`rhoB`
-   *  are the two stars' angular disc radii (optics/starfield.ts `starRho`), so
-   *  the endpoint insets can clear the discs — see `lineInsetAt`. */
-  spawn(a: Dir3, b: Dir3, nowMs: number, rhoA: number, rhoB: number): void;
+   *  driver's accumulated clock (the same clock `setTime` is fed). Both ends are
+   *  inset by the fixed gap — see `GAP_RAD`. */
+  spawn(a: Dir3, b: Dir3, nowMs: number): void;
   /** advance the one clock every law in the shader reads */
   setTime(ms: number): void;
   /** the scene envelope, 0..1 — a straight multiplier on every stroke's alpha */
@@ -329,7 +347,7 @@ export function createConstellationLines(opts: {
 
   return {
     object: mesh,
-    spawn(a, b, nowMs, rhoA, rhoB) {
+    spawn(a, b, nowMs) {
       const s = next;
       next = (next + 1) % SLOT_COUNT; // oldest slot first, always
       const r = CONST_LINES_LOOK.radius;
@@ -339,11 +357,9 @@ export function createConstellationLines(opts: {
       );
       const sep = Math.acos(dot);
       const drawMs = lineDrawMs(sep);
-      // THE GAPS, per END, baked into the endpoints — a bright star's disc needs
-      // more clearance than a faint one's, so the two ends are inset by
-      // different amounts (see lineInsetAt).
-      const fa = lineInsetAt(sep, rhoA);
-      const fb = lineInsetAt(sep, rhoB);
+      // THE GAP, baked into the endpoints: the same angle at both ends and on
+      // every stroke, which as a FRACTION of this segment is this (lineInsetAt).
+      const f = lineInsetAt(sep);
       for (let k = 0; k < 3; k++) {
         // Straight-line interpolation along the chord, matching the straight
         // quad the shader draws between the two endpoints.
@@ -351,8 +367,8 @@ export function createConstellationLines(opts: {
         const eb = b[k] * r;
         const d = eb - ea;
         for (let c = 0; c < 4; c++) {
-          aA[(s * 4 + c) * 3 + k] = ea + d * fa;
-          aB[(s * 4 + c) * 3 + k] = eb - d * fb;
+          aA[(s * 4 + c) * 3 + k] = ea + d * f;
+          aB[(s * 4 + c) * 3 + k] = eb - d * f;
         }
       }
       for (let c = 0; c < 4; c++) {

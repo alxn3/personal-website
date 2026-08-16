@@ -18,14 +18,71 @@ import {
   pass,
 } from "three/tsl";
 import type { TslNode } from "../ops/algebra-tsl";
-import { uWormhole, uPinchStrength, uProfilePow } from "./warp";
+import { STARFIELD_LOOK } from "./starfield";
+
+/** THE WORMHOLE RAMP, 0..1, BOOTS 0 — how hard the FRAME is pinched toward the
+ *  throat. The dive drives it (story/fly.ts `flyWarpAt`); the pipeline below is
+ *  an exact passthrough at 0, by construction (see the header). */
+export const uWormhole = uniform(0);
+
+/** The wormhole's SHAPE knobs, as opposed to the animated ramp above.
+ *  Defaults; each is a live uniform below and tunable through `__lensWormhole`.
+ *  SCREEN-SPACE quantities, not sky-direction ones. */
+export const WORMHOLE_LOOK = {
+  /** how much further out the frame is sampled at the throat when uWormhole = 1:
+   *  the screen radius scale there is 1 + this, so the content of a disc 1 + this
+   *  times wider is squeezed into the middle of the frame. 0 = no pinch at any
+   *  ramp value. TUNED ON THE BENCH at the peak of the dive.
+   *
+   *  MEASURED AT THREE BEATS, not one: at 2.6 the mount ring at p = 0.15 goes
+   *  visibly egg-shaped, the iris blades at p = 0.30 bow into petals instead of
+   *  staying straight-edged trapezoids, and the barrel walls at p = 0.50 draw an
+   *  hourglass down to the throat. 1.6 does all three but reads as a lens shot
+   *  through soft glass rather than as a funnel. The price of 2.6 is the
+   *  aperture disc, which the funnel swallows — that is the effect working, not
+   *  a defect, but it is the knob to lower if the starfield beat matters more
+   *  than the bend.
+   *
+   *  TWO CEILINGS, and the LOWER one binds — neither a taste limit but the
+   *  geometry's, and BOTH move when profilePow moves. For the map
+   *  r' = r·(1 + k·(1 − r/R)^p):
+   *
+   *    IN-FRAME  r' ≤ R for every r ⇔ k ≤ 1/max_x[x(1−x)^(p−1)] = 2.88 at
+   *              profilePow 1.6 (it was 4.55 at 2.2). Past it the periphery
+   *              samples off-frame and clamp-to-edge smears the border.
+   *    NO-FOLD   dr'/dr ≥ 0 everywhere ⇔ k ≤ 1/max_x[(1−x)^(p−1)((p+1)x − 1)]
+   *              = 2.41 at 1.6 (3.25 at 2.2). Past THIS the map turns back on
+   *              itself in an annulus — two radii read the same source ring and
+   *              the periphery creases. It is the stricter of the two at every
+   *              p that matters here, so 2.41 is the real ceiling now.
+   *
+   *  2.1 IS 87% OF IT, and the drop from 2.6 is paid for by the flatter
+   *  profile, not lost: k(x) = strength·(1 − x)^p is 1.19 at x = 0.3 either
+   *  way (2.6·0.7^2.2 = 1.186, 2.1·0.7^1.6 = 1.187), and from there OUT the new
+   *  pair is stronger — 0.69 vs 0.57 at x = 0.5, 0.31 vs 0.18 at 0.7, 0.053 vs
+   *  0.016 at 0.9. Same funnel at the throat, a live rim. */
+  pinchStrength: 2.1,
+  /** exponent of the falloff (1 − r/rEdge)^pow: bigger = the pull is confined
+   *  harder to the throat and the frame's border stays calmer. Also sets the
+   *  two stability ceilings on pinchStrength above.
+   *
+   *  1.6, DOWN FROM 2.2 — the owner's note is that the effect dies at the
+   *  sides. At 2.2 the profile had spent 78% of its strength by x = 0.5 and
+   *  99% by 0.9, so the pinch was a knot around the throat with a dead frame
+   *  around it; 1.6 keeps the throat and gives the mid-field and the rim
+   *  something to do (the numbers are on `pinchStrength`). It is not free: the
+   *  no-fold ceiling falls with it, which is what took the strength to 2.1. */
+  profilePow: 1.6,
+};
+export const uPinchStrength = uniform(WORMHOLE_LOOK.pinchStrength);
+export const uProfilePow = uniform(WORMHOLE_LOOK.profilePow);
 
 // ============================================================================
 // THE WORMHOLE, IN SCREEN SPACE — the pinch moved out of the sky and into the
 // FRAME, so it warps everything the camera sees: the barrel, the internals, the
 // blades, the glass and the starfield alike.
 //
-// WHY IT MOVED. The old pinch (optics/warp.ts) bent the SAMPLE DIRECTION before
+// WHY IT MOVED. The old pinch (the retired per-pixel sky trace) bent the SAMPLE DIRECTION before
 // the baked sky was read, which meant it could only ever distort the sky — the
 // lens model draws on top of its own background node (Background.js:91-133), so
 // every mesh stayed geometrically pristine while the stars streamed behind it.
@@ -106,10 +163,14 @@ import { uWormhole, uPinchStrength, uProfilePow } from "./warp";
 // product does both jobs. Safety at the border is by the window's own decay:
 // staying inside the frame needs k ≤ (1−ρ)/ρ, and near ρ = 1 the smoothstep
 // gives win ≈ 3((1−ρ)/(1−EDGE_FADE))², so k·ρ/(1−ρ) → 0 — border samples
-// stay inside for any sane strength. Inside the window (win = 1) the old
-// circular bound governs: k ≤ 1/max_x[x(1−x)^(p−1)] = 4.55 at profilePow 2.2,
-// comfortably above pinchStrength; a live-tuned strength far past that can
-// still smear mid-band, so ~4.5 remains the knob's documented ceiling.
+// stay inside for any sane strength. Inside the window (win = 1) the circular
+// bounds govern, and there are TWO — the in-frame one (k ≤ 1/max_x[x(1−x)^(p−1)]
+// = 2.88 at the shipped profilePow 1.6) and the stricter NO-FOLD one
+// (k ≤ 1/max_x[(1−x)^(p−1)((p+1)x − 1)] = 2.41), which is the one a live-tuned
+// strength has to respect: past it the radial map turns back on itself and the
+// periphery creases. Both are derived, and re-derived, on
+// WORMHOLE_LOOK.pinchStrength above, which is where they belong: they move with
+// profilePow, and that is the knob they bound.
 // ============================================================================
 
 /** The exit axis: world +X, the fly-through's one heading and the direction
@@ -127,8 +188,26 @@ const CORNERS: readonly [number, number][] = [
 
 /** Where the border window starts fading, as a fraction of the throat→border
  *  distance: 1 (no effect) until here, 0 at the border. Lower = the calm rim
- *  creeps further into the frame; higher = a harder stop near the edge. */
-const EDGE_FADE = 0.75;
+ *  creeps further into the frame; higher = a harder stop near the edge.
+ *
+ *  0.85, UP FROM 0.75 — the other half of "the effect dies at the sides". The
+ *  window is what kills the TOP AND BOTTOM mid-edges (the short dimension: at
+ *  16:10 a pixel there is only r = 0.5 out of rEdge 0.94, so `circ` still has
+ *  plenty left and the window is the only thing taking it away), and at 0.75 a
+ *  quarter of the way in from every border was already fading. It is not free
+ *  either: the window is the ONLY guard that scales with how far a sample can
+ *  reach, so pushing it out lets more of the frame sample past the border.
+ *  SOLVED, not guessed, on the worst ray — the vertical, where a pixel's ρ buys
+ *  it the least radius and therefore the most `circ`: ρ(1 + k) > 1 (the sample
+ *  is off-frame) holds over ρ ≈ 0.415…0.987 for the shipped pair
+ *  (profilePow 1.6, pinchStrength 2.1) at 16:10, against ρ ≈ 0.390…0.955 for
+ *  the pair this replaces (2.2 / 2.6 at EDGE_FADE 0.75). So the off-frame band is
+ *  the one this pass has always had, moved out by a couple of hundredths — not
+ *  a new failure — and what lands there is clamp-to-edge over a starfield, i.e.
+ *  backdrop. LIVE on `__lensWormhole.set({ edgeFade })` — the one knob to lower
+ *  if a future beat puts structure against the frame's edge. */
+const EDGE_FADE = 0.85;
+const uEdgeFade = uniform(EDGE_FADE);
 
 /** Guard for every divide below, as one number. */
 const EPS = 1e-4;
@@ -156,6 +235,45 @@ const EPS = 1e-4;
 //   THE SMEAR. Inside the band, average a few samples taken at the pixel's own
 //   radius but ROTATED about the throat by a small angle, which drags detail
 //   ALONG the ring and turns speckle into concentric streaks.
+//
+// IT IS ALL MEASURED IN THE SOURCE FRAME — the radius the pixel READS, not the
+// radius it sits at. That is the whole of "one ring, not two". The sprites draw
+// their arcs at a fixed ANGLE off the exit axis and the pinch then drags them
+// inward by however hard it is running: their band is drawn at r = 0.345 (γ
+// 0.45 rad at fov 70) and at full ramp it LANDS far inside that — r = 0.13 at
+// 16:10 under the pinch shipped here, r = 0.117 under the pair this replaces.
+// So a mask keyed to the pixel's own radius can only agree with them at one
+// ramp value, and the authored one agreed at none: it sat at 0.36 of rEdge
+// (r = 0.34 at 16:10), 2.9× further out than where the arcs of its own pair
+// actually landed (2.6× against this one's). What that draws is an annulus of
+// speckle with an unrelated smeared ring around it, which is what the owner is
+// looking at. Keying the mask to `r·(1 + k)` — the
+// radius the sample is taken from, which is the same expression the base sample
+// already computes — puts the fold and the smear on exactly the pixels showing
+// the sprite band, at every ramp value and every aspect, with no second
+// constant to keep in step.
+// The fold mirrors in that same frame (2·rRing − r·(1 + k)) for the same
+// reason. This is also why the map should not FOLD (see the header's no-fold
+// ceiling): a non-monotone r ↦ r·(1 + k) makes "the pixels reading the band"
+// two annuli instead of one.
+//
+// THE CEILING ONLY BOUNDS HALF OF IT, and the honest version is worth stating.
+// It bounds the CIRCULAR profile; the shipped k carries the border window too,
+// and `win`'s own decay turns the composite map back down near the short
+// dimension's border whatever the ceiling says. Measured, 16:10, vertical ray,
+// full ramp: rSrc climbs to 0.768 at ρ 0.854 and falls back to 0.500 at the
+// border, which re-enters the band (outer edge 0.552). What makes that
+// immaterial is `win`, not the ceiling — it is what multiplies the mask, and
+// the outer lobe's peak band·win is 0.0076 at ρ 0.973, i.e. under 1% of a fold
+// or a smear once foldGain/smearMix are on it. The ceiling still earns its keep
+// INSIDE the window, where win = 1 and a fold would be at full weight.
+//
+// AND EVERY LENGTH IN IT SCALES WITH THE RING'S OWN RADIUS, which is the other
+// half of reading as one feature: the band's half-width is a fraction of
+// `rRing` (not of the frame), and the smear is an ANGLE, so its arc length is
+// `rSrc · smearArc` — proportional by construction. Move the ring in or out and
+// the annulus and the streaks in it change size with it instead of staying a
+// fixed pixel width at whatever radius they land on.
 //
 // THREE RULES, all three load-bearing:
 //   1. uWormhole = 0 is still an EXACT pixel passthrough. Every ring term is
@@ -185,19 +303,49 @@ const SMEAR_TAPS = 3;
  *  sampler's clamp. */
 const EDGE_KEEP = 0.98;
 
+/** WHERE THE SPRITE BAND LANDS on an undistorted frame, in the shader's
+ *  aspect-corrected radius metric (in which the frame's half-height is exactly
+ *  0.5, whatever the aspect): the starfield authors its ring as an ANGLE off
+ *  the exit axis (optics/starfield.ts STARFIELD_LOOK.ringCentreRad) and a
+ *  rectilinear camera puts an angle γ at tan γ / tan(fov/2) of the way to the
+ *  top of the frame. Read every frame from the LIVE camera in `sync`, so a fov
+ *  ramp cannot slide the two halves of the ring apart, and pinned against the
+ *  starfield's own projection in __tests__/wormhole-post.test.ts.
+ *
+ *  IT ASSUMES THE EXIT AXIS IS THE OPTICAL ONE. A single radius describes the
+ *  γ-cone only when the throat is at the frame's centre; off-axis the cone
+ *  projects to a conic about the (off-centre) vanishing point and no radius is
+ *  right. The story is safe by construction — the camera faces +X from DIVE_P0
+ *  on and `flyWarpAt` is exactly 0 before that (story/fly.ts) — but the /lens
+ *  dive (story/fly.ts) drives `uWormhole` on dive progress while its own
+ *  camera still carries the park's elevation, so its ring is approximate for
+ *  those first frames. Not a regression: the authored 0.36·rEdge this replaces
+ *  was equally off-axis-blind. */
+export const ringSourceRadius = (fovDeg: number): number =>
+  (0.5 * Math.tan(STARFIELD_LOOK.ringCentreRad)) /
+  Math.tan((fovDeg * Math.PI) / 360);
+
 /** The ring's SHAPE knobs, defaults for the uniforms below (all live on
- *  `window.__lensWormhole`). Both radii are fractions of `rEdge`, the aspect-
- *  corrected radius at which the pinch itself dies — so the ring scales with
- *  the frame instead of drifting across it as the window changes shape. */
+ *  `window.__lensWormhole`). NEITHER IS A RADIUS any more: the radius itself is
+ *  derived (`ringSourceRadius` above), and these two say how to sit on it. */
 export const RING_LOOK = {
-  /** the band's centre. Placed to overlap where the sprite arcs land: the
-   *  starfield's band sits at γ ≈ 0.45 rad, which at the dive's fov 70 projects
-   *  to roughly a third of the frame radius before the pinch pulls it inward. */
-  ringRadius: 0.36,
-  /** HALF the band's width — the mask is 1 at ringRadius and smoothly 0 at
-   *  ±this, so the annulus spans 0.20 … 0.52 of rEdge at the defaults. Wide on
-   *  purpose: the reference's annulus is broad and turbulent, not a hairline. */
-  ringWidth: 0.16,
+  /** MULTIPLIER on the derived radius, so the band can be walked off the
+   *  sprites' own ring without losing the fov/aspect tracking. 1 = exactly on
+   *  it, which is the whole point of the derivation — this exists to be tuned
+   *  live and put back, not to ship at anything else. */
+  ringGain: 1,
+  /** HALF the band's width, AS A FRACTION OF THE RING'S RADIUS — the mask is 1
+   *  at the ring and smoothly 0 at ±this, so the annulus spans 0.4 … 1.6 of the
+   *  ring's radius at the default. Wide on purpose: the reference's annulus is
+   *  broad and turbulent, not a hairline, and this is the width the SPRITES
+   *  cover — their band is γ = 0.45 ± 0.25 rad (STARFIELD_LOOK), which projects
+   *  to 0.42 … 1.74 of the ring's radius at the dive's fov 70. The number is
+   *  taken a little inside that at the OUTER edge (1.6 against 1.74), where all
+   *  the visible width is; it cannot also be inside at the inner one, since a
+   *  band symmetric in RADIUS cannot sit inside a band symmetric in ANGLE at
+   *  both ends — 0.4 against 0.42 overhangs by 2% of the radius, into sprite
+   *  weight that is a smoothstep already nearly out by its edges. */
+  ringWidth: 0.6,
   /** how much of the MIRRORED sample is mixed in at the centre of the band.
    *  0 = no fold. 1 = the mirrored image replaces the frame inside the band,
    *  which reads as a hole; half of it reads as strata. */
@@ -229,9 +377,10 @@ export const RING_LOOK = {
 //
 // WHERE IT PEAKS, in numbers, because the default has to be judged not guessed:
 // the displacement is |d|·k ∝ x(1 − x)^profilePow for x = r/rEdge, which peaks at
-// x = 1/(1 + profilePow) = 0.31 — just inside the ring — at ~0.36 of rEdge in uv.
-// The red-to-blue separation there is 2·caShift·0.36·rEdge — ~3.6% of the
-// frame's half-height at 0.05, ~1.4% at 0.02. The default is 0.02, judged BY
+// x = 1/(1 + profilePow) = 0.38 — outside the ring's landing radius — at 0.37 of
+// rEdge in uv (0.3846 · 2.1 · 0.6154^1.6). The red-to-blue separation there is
+// 2·caShift·0.37·rEdge — ~1.5% of the frame's HEIGHT at 0.02 and ~3.8% at 0.05
+// (rEdge ≈ 1.02 at 16:9). The default is 0.02, judged BY
 // EYE on the dense starfield: 0.05 split each streak into three distinct
 // coloured copies (the duplicated-star look the owner has already rejected
 // once), while 0.02 reads as prismatic fringing on the streak tips.
@@ -246,7 +395,10 @@ export const CA_LOOK = {
 };
 export const uCaShift = uniform(CA_LOOK.caShift);
 
-export const uRingRadius = uniform(RING_LOOK.ringRadius);
+/** the band's centre in the SOURCE frame, absolute in the shader's radius
+ *  metric — written every frame by `sync` from the live fov, never authored. */
+const uRingRadius = uniform(ringSourceRadius(70));
+export const uRingGain = uniform(RING_LOOK.ringGain);
 export const uRingWidth = uniform(RING_LOOK.ringWidth);
 export const uRingFold = uniform(RING_LOOK.foldGain);
 export const uRingSmearArc = uniform(RING_LOOK.smearArc);
@@ -331,7 +483,7 @@ export function createWormholePost(
     const circ: TslNode = pow(max(float(1).sub(r.div(uREdge)), 0), uProfilePow);
     // The border WINDOW.
     const win: TslNode = float(1)
-      .sub(smoothstep(float(EDGE_FADE), float(1), borderFraction(d)))
+      .sub(smoothstep(uEdgeFade, float(1), borderFraction(d)))
       .toVar();
     const k: TslNode = uWormhole.mul(uPinchStrength).mul(circ).mul(win).toVar();
     // The OFFSET form, not `uv·m` — see the header's exactness note. THREE
@@ -350,24 +502,28 @@ export function createWormholePost(
     );
 
     // ── THE RING ───────────────────────────────────────────────────────────
-    // The band: a bump in radius, 1 at the ring and flat 0 outside it — so the
-    // centre disc and the far field are both untouched. `uWormhole` and the
-    // border window ride along, which is what makes the whole thing vanish at
-    // rest and stay clear of the frame's edges.
-    const rRing: TslNode = uREdge.mul(uRingRadius);
-    const rWidth: TslNode = max(uREdge.mul(uRingWidth), EPS);
+    // The band: a bump in the SOURCE radius — the radius this pixel READS, i.e.
+    // where the sprites drew their arcs — 1 at the ring and flat 0 outside it,
+    // so the centre disc and the far field are both untouched. `uWormhole` and
+    // the border window ride along, which is what makes the whole thing vanish
+    // at rest and stay clear of the frame's edges.
+    const rSrc: TslNode = r.mul(float(1).add(k)).toVar();
+    const rRing: TslNode = uRingRadius.mul(uRingGain).toVar();
+    const rWidth: TslNode = max(rRing.mul(uRingWidth), EPS);
     const band: TslNode = float(1).sub(
-      smoothstep(float(0), rWidth, abs(r.sub(rRing))),
+      smoothstep(float(0), rWidth, abs(rSrc.sub(rRing))),
     );
     const mask: TslNode = uWormhole.mul(band).mul(win).toVar();
 
-    // THE FOLD: the same ray, at the radius mirrored about the ring —
-    // r' = 2·rRing − r means scaling this pixel's offset by 2·rRing/r − 1, and
-    // the pinch it would have carried is the pixel's own (the mirror lands
-    // inside the same band, where the profile barely moves).
-    const foldOff: TslNode = d
-      .mul(rRing.mul(2).div(max(r, EPS)).sub(1))
-      .mul(float(1).add(k));
+    // THE FOLD: the same ray, at the SOURCE radius mirrored about the ring —
+    // 2·rRing − rSrc, which is this pixel's offset scaled by
+    // 2·rRing/r − (1 + k). The mask is 0 unless rSrc is within `rWidth` of the
+    // ring, and RING_LOOK.ringWidth is a fraction of the radius that is under
+    // 1 — so the mirrored radius is positive wherever the fold can contribute
+    // and the offset never flips through the throat.
+    const foldOff: TslNode = d.mul(
+      rRing.mul(2).div(max(r, EPS)).sub(float(1).add(k)),
+    );
     const folded: TslNode = mix(base, tap(foldOff), mask.mul(uRingFold));
 
     // THE SMEAR: the pinched offset, turned both ways by up to smearArc, in
@@ -412,6 +568,15 @@ export function createWormholePost(
     // one rather than snapping the funnel across the frame. Unreachable on the
     // dive, which faces +X from the first frame to the last.
     uAspect.value = cam.aspect;
+    // THE RING FOLLOWS THE SPRITES, every frame: the band's radius is where
+    // optics/starfield.ts's own ring band projects at THIS fov (the dive's is
+    // 70, and story/fly.ts hands it back to the story's 42 over rewrap-local
+    // [0.25, 0.38] — a scene PAST the sky's end, and long past this pass's own
+    // window), so the two halves of the Einstein ring cannot drift apart. It is
+    // written every frame regardless: the pass outlives the warp. Aspect-free by
+    // construction — a vertical fov and a radius metric normalized on the same
+    // half-height.
+    uRingRadius.value = ringSourceRadius(cam.fov);
     // The NEAREST corner, so the circular profile dies at the corner circle —
     // see the header's shape note.
     let rEdge = Infinity;
@@ -448,23 +613,29 @@ export function createWormholePost(
   sync(camera);
   pipeline.render();
 
-  // The ring's five knobs and the aberration's one, live — the same shape as
-  // optics/starfield.ts's `__lensStars`. They are pure look, they interact (a
-  // wider band wants a shorter smear), and the pass only exists during one demo,
-  // so tuning them from the console beats a rebuild per guess.
+  // NINE KNOBS, live — the ring's five, the pinch profile's two, the border
+  // window's one and the aberration's one; the README's list is the same set.
+  // The same shape as optics/starfield.ts's `__lensStars`. They are pure
+  // look, they interact (a wider band wants a shorter smear), and the pass only
+  // exists over one stretch of the story, so tuning them from the console beats
+  // a rebuild per guess.
   if (import.meta.env.DEV && typeof window !== "undefined") {
     const KNOBS: Record<string, { u: { value: number }; boot: number }> = {
-      ringRadius: { u: uRingRadius, boot: RING_LOOK.ringRadius },
+      // `ringRadius` is GONE from this table on purpose — it is derived from
+      // the starfield's own band every frame (see `sync`), so a write here
+      // would last exactly one frame. `ringGain` is the way to move the ring.
+      ringGain: { u: uRingGain, boot: RING_LOOK.ringGain },
       ringWidth: { u: uRingWidth, boot: RING_LOOK.ringWidth },
+      edgeFade: { u: uEdgeFade, boot: EDGE_FADE },
       foldGain: { u: uRingFold, boot: RING_LOOK.foldGain },
       smearArc: { u: uRingSmearArc, boot: RING_LOOK.smearArc },
       smearMix: { u: uRingSmearMix, boot: RING_LOOK.smearMix },
       caShift: { u: uCaShift, boot: CA_LOOK.caShift },
-      pinchStrength: { u: uPinchStrength, boot: uPinchStrength.value },
-      profilePow: { u: uProfilePow, boot: uProfilePow.value },
+      pinchStrength: { u: uPinchStrength, boot: WORMHOLE_LOOK.pinchStrength },
+      profilePow: { u: uProfilePow, boot: WORMHOLE_LOOK.profilePow },
     };
     const handle = {
-      /** e.g. `__lensWormhole.set({ ringRadius: 0.45, foldGain: 0.8 })` */
+      /** e.g. `__lensWormhole.set({ ringGain: 1.2, foldGain: 0.8 })` */
       set(k: Record<string, number>) {
         for (const [name, v] of Object.entries(k))
           if (KNOBS[name] !== undefined) KNOBS[name].u.value = v;

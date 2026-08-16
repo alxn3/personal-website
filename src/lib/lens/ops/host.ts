@@ -14,14 +14,18 @@
 //     `reconstruct(final) − reconstruct(seated)`, with BOTH sides rebuilt by the
 //     same (radius·cos θ, axial, radius·sin θ) formula, so the two cancel
 //     term-for-term when the ops are identity.
-//  3. The HARD IDLE GATE. `.mul(step(1e-6, channel))` on both the delta and the
-//     rotation. At channel = 0 every op is identity only up to float rounding
-//     (a bend rebuilds the seated arc through trig); the step force-zeroes the
-//     residue so the seated render is bit-exact for any knob values within
-//     KNOB_LIMITS, BY CONSTRUCTION rather than by luck. The limits are load-
-//     bearing here and not a UI nicety: the step multiplies by ZERO, and
-//     NaN · 0 = NaN, so a knob that makes the gate divide 0/0 would push NaN
+//  3. The HARD IDLE GATE. `.mul(step(IDLE_EPS, channel))` on both the delta and
+//     the rotation. At channel = 0 every op is identity only up to float
+//     rounding (a bend rebuilds the seated arc through trig); the step
+//     force-zeroes the residue so the seated render is bit-exact for any knob
+//     values within KNOB_LIMITS, BY CONSTRUCTION rather than by luck. The limits
+//     are load-bearing here and not a UI nicety: the step multiplies by ZERO,
+//     and NaN · 0 = NaN, so a knob that makes the gate divide 0/0 would push NaN
 //     straight through the idle gate into the seated render.
+//     The gate is now paired with a UNIFORM BRANCH on the same threshold (see
+//     `IDLE_EPS` and `sampleFn` below), which skips the WORK as well as zeroing
+//     the result — the multiply stays because it, not the branch, is what the
+//     bit-exactness of an ACTIVE-but-tiny channel and the NaN law rest on.
 //  4. Rest-normal rotation. The normal graph rotates `normalLocal` about the
 //     optical axis by the summed gated `rot` in the SAME +α sense the position
 //     build uses, then hands it over view-transformed. No normalize: a rotation
@@ -40,6 +44,7 @@
 import * as THREE from "three/webgpu";
 import {
   Fn,
+  If,
   attribute,
   uniform,
   positionLocal,
@@ -47,6 +52,7 @@ import {
   transformNormalToView,
   vec2,
   vec3,
+  vec4,
   float,
   atan,
   cos,
@@ -80,6 +86,19 @@ export type RecipeName = Recipe<TslNode>["name"];
 
 const TAU = 6.283185307179586;
 const HOUSE_FROM = -1;
+/** THE IDLE THRESHOLD, written ONCE. `step(IDLE_EPS, channel)` is 1 exactly when
+ *  `channel ≥ IDLE_EPS`, so the hard idle gate (law 3) and the uniform branch
+ *  that skips the recipe's work read the SAME edge: the branch can only ever
+ *  skip a contribution the multiply was already zeroing. Two literals here would
+ *  be a way for the two to drift apart, and a channel landing in the gap would
+ *  then either pay for nothing or, worse, be skipped while the gate wanted it.
+ *
+ *  EXPORTED as a READING, like the story's own edges: a channel below it
+ *  contributes an EXACT zero to the deform, which is what lets a caller outside
+ *  this file conclude that the model is standing in its rest pose — the licence
+ *  materials/unified.ts's opaque edge needs before it may trust a mesh's
+ *  rest-pose bounds (the deform is in-shader; the bounds cannot see it). */
+export const IDLE_EPS = 1e-6;
 // The same radius floor ops/frames.ts applies, for the edge-geometry fallback
 // (an unmatched vertex must never hand the algebra R = 0 — R is a divisor).
 const R_MIN = 0.5;
@@ -234,9 +253,12 @@ export function recipeChannel(name: RecipeName): { value: number } {
  * (stagger, partStagger, split, overlap, snap — the only knobs any gateSpec
  * reads) and every knob that reaches a DIVISOR in ops/recipes.ts or ops/ops.ts
  * (flatten, curl, radius, coil — the four `A.div` denominators a knob can
- * touch). Recipes/knobs absent from it neither feed the gate nor divide (they
- * feed op amplitudes only, where a silly value is a silly POSE, not a NaN) and
- * are left unclamped. `__tests__/host-knobs.test.ts` walks the limit CORNERS
+ * touch; `crease`'s width is a FIFTH divisor in ops.ts, but every call site
+ * passes a literal — a knob wired to a crease width joins this table first).
+ * One member is neither: rose.creasePos is a SHAPE bound (its comment says
+ * so) — the enumeration rule covers the rest. Recipes/knobs absent from it
+ * neither feed the gate nor divide (they feed op amplitudes only, where a
+ * silly value is a silly POSE, not a NaN) and are left unclamped. `__tests__/host-knobs.test.ts` walks the limit CORNERS
  * through gateSpec + gate at channel 0 and asserts flight 0 / stick 1, finite —
  * that test is the actual proof these numbers hold, not this comment.
  *
@@ -248,10 +270,11 @@ export function recipeChannel(name: RecipeName): { value: number } {
  * `validatePipeline`'s advisory; a KNOB-BOUND one is a uniform no static pass
  * can read, so the rule is: any knob wired into a `Progress` field is a
  * gate-feeding knob and MUST enter this table (from ≥ 0, to ≥ from + ε,
- * ease > 0). ONE ships: `peel.stagger`, which IS its `during` window (the peel's
- * cast defeats both of the gate's own staggers — ops/recipes says why), so its
- * 0.85 ceiling is what keeps the window 0.15 wide rather than what keeps
- * windowFrac off the floor. `__tests__/progress.test.ts` (l′) walks it.
+ * ease > 0). TWO ship: `peel.stagger`, which IS its `during` window (the peel's
+ * cast defeats both of the gate's own staggers — ops/recipes says why), and
+ * `rose.stagger`, the same idiom keyed on rank01 — for both, the 0.85 ceiling
+ * is what keeps the window 0.15 wide rather than what keeps windowFrac off the
+ * floor. `__tests__/progress.test.ts` (l′/l″) walks them.
  */
 export const KNOB_LIMITS: Partial<
   Record<RecipeName, Record<string, readonly [number, number]>>
@@ -267,13 +290,21 @@ export const KNOB_LIMITS: Partial<
     // which reads as flat, and the ceiling only keeps a silly write finite.
     flatten: [0.05, 30],
   },
-  rollout: { stagger: [0, 0.85] },
   // peel's knob is a `during` width, not a gate window: 1 − stagger is how much
-  // of the channel each piece gets, so 0.85 leaves 0.15 — the same ceiling
-  // guarding a different denominator.
+  // of the channel each piece gets, so 0.85 leaves 0.15 — a ceiling guarding a
+  // denominator, like assemble's above.
   peel: { stagger: [0, 0.85] },
-  helix: { snap: [0, 1], coil: [0.05, 3] },
-  bend: { radius: [1, 200] },
+  // rose keys the same `during` idiom on the whorl key (rank01^ROSE_WHORL_EXP,
+  // ops/recipes.ts) instead of the meridian, so its stagger carries the
+  // identical bound for the identical reason. `creasePos` is a SHAPE bound, not
+  // a gate one: it splits the petal's material between the centre panel and the
+  // two side panels, and either end of the range starves a panel below the
+  // crease band's own width (the recipe's max(0, …) then holds the chain
+  // together, but a fold pattern with no panel is not a petal).
+  // band is the crease width — ops.ts crease() DIVIDES by it (the fifth
+  // divisor the doc block above promised would join this table the moment a
+  // knob reached it), so the floor is load-bearing, not taste.
+  rose: { stagger: [0, 0.85], creasePos: [0.05, 0.95], band: [0.6, 6.6] },
 };
 
 /**
@@ -395,8 +426,8 @@ export function recipeKnobs(): Record<
 // scene, not to a SceneHandle.
 let activeRecipes: RecipeName[] | null = null;
 
-/** Choose which recipes the deform folds in. null = all. Call BEFORE applyOps /
- *  any shading-mode material build.
+/** Choose which recipes the deform folds in. null = all. Call BEFORE any
+ *  material is built (materials/unified.ts, materials/shading-bench.ts).
  *
  *  THROWS on an unknown name or a duplicate rather than filtering: the list comes
  *  from a page's `SceneOptions.recipes`, and a typo silently dropped is a
@@ -472,7 +503,8 @@ const rotateAboutAxis = (n: TslNode, rad: TslNode): TslNode => {
 //
 // A tag is per MESH and baked into the graph, so a tagged mesh cannot share a
 // material with an untagged one — see `opsSpinKey`, which every material cache
-// (here and in materials/shading.ts) carries in its key.
+// (here, in materials/unified.ts and in materials/shading-bench.ts) carries in its
+// key.
 const OPS_SPIN_KEY = "opsSpin";
 interface SpinTag {
   /** Cache discriminator — distinct per tagged group, so two pivots never share
@@ -492,9 +524,10 @@ let spinTagCount = 0;
  * it. Only the meshes' tags reach a material.
  *
  * ORDERING CONSTRAINT: the tag must exist BEFORE the mesh's materials are built
- * (`applyOps`, `createShading`) — the counter-rotation is a baked node, not a
- * runtime branch. core/scene.ts's `prepareModelMaterials` calls the mechanism's
- * tagger for that reason, well before `createMechanism` builds the pivot itself.
+ * (`createUnified`, `createShading`) — the counter-rotation is a baked node, not
+ * a runtime branch. core/scene.ts's `prepareModelMaterials` calls the
+ * mechanism's tagger for that reason, well before `createMechanism` builds the
+ * pivot itself.
  */
 export function tagOpsSpin(node: THREE.Object3D): { value: number } {
   const u = uniform(0);
@@ -530,7 +563,8 @@ function needsWrap(mesh?: THREE.Object3D | null): boolean {
  *  graph). Two things vary the deform per mesh — a mechanism spin pivot's
  *  counter-rotation and a decal's shrink-wrap binding — and a material built
  *  with either must never be handed to a mesh that does not want it. Every
- *  material cache (here and in materials/shading.ts) carries this in its key. */
+ *  material cache (here, in materials/unified.ts and in materials/shading-bench.ts)
+ *  carries this in its key. */
 export function opsVariantKey(mesh: THREE.Object3D): string {
   const spin = opsSpinKey(mesh);
   const wrap = needsWrap(mesh) ? "wrap" : "";
@@ -580,41 +614,66 @@ function fold(
   // scalar `_op*` attributes overflowed it and the model went invisible).
   const frameA = attribute("_opA", "vec4") as TslNode; // t0, R, span, rank
   const frameB = attribute("_opB", "vec4") as TslNode; // phase, class, rung, axi
-  const t0 = frameA.x as TslNode;
-  const R = frameA.y as TslNode;
-  const halfSpan = frameA.z.mul(0.5) as TslNode;
-  const rank01 = frameA.w as TslNode;
-  const layerPhase = frameB.x as TslNode;
-  const partClass = frameB.y as TslNode;
-  const rung = frameB.z as TslNode;
-  const axi = frameB.w as TslNode;
   // yMin, yMax, layerN, adopted
   const frameY = attribute("_opY", "vec4") as TslNode;
-  const layerN = frameY.z as TslNode;
-  const adopted = frameY.w as TslNode;
 
-  // The ONE mapping point: optical axis = Y, radial plane = X–Z.
-  const yMid = frameY.x.add(frameY.y).mul(0.5);
+  /**
+   * The summed, hard-gated delta and normal rotation the deform produces AT AN
+   * ARBITRARY POINT of this piece — the preamble is a pure function of the
+   * position and the piece's lanes, so the decal binding can ask for it at its
+   * host triangle's corners as well as at the vertex itself.
+   *
+   * AN `Fn`, AND PACKED AS `vec4(delta, rot)`, for one reason: the per-recipe
+   * chain now lives inside `If(channel ≥ IDLE_EPS, …)`, and TSL control flow
+   * needs a function stack to live on. Every consumer in this file reaches the
+   * chain through THIS ONE builder (`fold` is the only caller of the recipe
+   * loop, and every attach point is a caller of `fold`), so there is no path
+   * left that can quietly keep the unbranched cost.
+   *
+   * WHY THE BRANCH IS SAFE. `step(IDLE_EPS, channel)` is 1 exactly when
+   * `channel ≥ IDLE_EPS`, so a skipped recipe is one whose delta and rot the
+   * hard idle gate was already multiplying by zero — the branch contributes the
+   * same zeros, and the taken branch is the OLD EXPRESSION VERBATIM, gate
+   * multiply included. `channel` is a uniform, so the branch is uniform-valued
+   * across the whole draw: coherent on every GPU, no divergence.
+   *
+   * WHY THE PREAMBLE IS `.toVar()`ed. TSL emits an expression at its point of
+   * FIRST use, so a plain node first used inside one branch would be declared
+   * inside that branch's block and read as garbage from the next one. Anything
+   * that crosses into more than one branch is therefore a shader variable, the
+   * the same law the retired per-pixel trace loop kept.
+   */
+  const sampleFn = Fn(([q]: [TslNode]) => {
+    const t0 = frameA.x as TslNode;
+    const R = frameA.y as TslNode;
+    const halfSpan = frameA.z.mul(0.5).toVar() as TslNode;
+    const rank01 = frameA.w as TslNode;
+    const layerPhase = frameB.x as TslNode;
+    const partClass = frameB.y as TslNode;
+    const rung = frameB.z as TslNode;
+    const axi = frameB.w as TslNode;
+    const layerN = frameY.z as TslNode;
+    const adopted = frameY.w as TslNode;
 
-  /** The summed, hard-gated delta and normal rotation the deform produces AT AN
-   *  ARBITRARY POINT of this piece — the preamble is a pure function of the
-   *  position and the piece's lanes, so the decal binding can ask for it at its
-   *  host triangle's corners as well as at the vertex itself. */
-  const sampleAt = (q: TslNode): { delta: TslNode; rot: TslNode } | null => {
-    const theta = atan(q.z, q.x); // atan2(z, x)
-    const phi = wrapPi(theta.sub(t0)); // wedge-local angle off the sector centre
-    const radius = length(vec2(q.x, q.z)) as TslNode;
+    // The ONE mapping point: optical axis = Y, radial plane = X–Z.
+    const yMid = frameY.x.add(frameY.y).mul(0.5).toVar() as TslNode;
+
+    const theta = atan(q.z, q.x).toVar() as TslNode; // atan2(z, x)
+    // wedge-local angle off the sector centre
+    const phi = wrapPi(theta.sub(t0)).toVar() as TslNode;
+    const radius = length(vec2(q.x, q.z)).toVar() as TslNode;
     // Material coordinates in the HOUSE winding sense (from = −1) — for MATERIAL
     // selectors; `bend` carries its own `from` and re-derives d/L from phi.
-    const d = R.mul(phi.mul(HOUSE_FROM).add(halfSpan));
-    const L = R.mul(halfSpan.mul(2));
+    const d = R.mul(phi.mul(HOUSE_FROM).add(halfSpan)).toVar() as TslNode;
+    const L = R.mul(halfSpan.mul(2)).toVar() as TslNode;
     // Normalized axial position over the PIECE's own extent — so a short piece
     // sees the full −0.5..+0.5 range that twist/shear/stickPress read against.
     const yN = q.y
       .sub(frameY.x)
       .div(max(frameY.y.sub(frameY.x), 1e-6))
-      .sub(0.5) as TslNode;
-    const off = radius.sub(R); // wall offset off the seated barrel
+      .sub(0.5)
+      .toVar() as TslNode;
+    const off = radius.sub(R).toVar() as TslNode; // wall offset off the barrel
 
     const seated: VertexState<TslNode> = {
       theta,
@@ -624,71 +683,79 @@ function fold(
       aim: t0, // the working direction starts on the piece's own meridian
       rem: float(0),
     };
-    const seatedPoint = reconstruct(seated);
+    const seatedPoint = reconstruct(seated).toVar() as TslNode;
 
-    let delta: TslNode | null = null;
-    let rot: TslNode | null = null;
+    // The accumulators the branches add into. They start at zero where the old
+    // graph started at the FIRST recipe's term — the only difference an idle
+    // fold can show is the sign of a zero, which `positionLocal + 0` and
+    // `rotateAboutAxis(n, 0)` are both blind to.
+    const delta = vec3(0).toVar() as TslNode;
+    const rot = float(0).toVar() as TslNode;
 
     for (const name of names) {
-      const recipe = RECIPES[name];
       const channel = channels[name];
-      const k = knobs[name];
-      // The gate spec is captured ONCE and handed to the ctx as a closure: a
-      // `during` scope re-runs THIS recipe's gate at a remapped channel, and
-      // routing it through the ctx is what keeps ops.ts free of gate.ts.
-      const spec = recipe.gateSpec(k);
-      const gateAt = (c: Sc<TslNode>): { flight: TslNode; stick: TslNode } =>
-        gate(A, spec, c, { rank01, layerPhase });
-      const g = gateAt(channel);
-      const ctx: OpCtx<TslNode> = {
-        A,
-        t0,
-        R,
-        rank01,
-        layerPhase,
-        halfSpan,
-        partClass,
-        phi,
-        d,
-        L,
-        yN,
-        off,
-        rung,
-        axi,
-        layerN,
-        adopted,
-        channel,
-        gateAt,
-        flight: g.flight,
-        stick: g.stick,
-        wrapDir: WRAP_DIR,
-      };
-      // The piece frame spatial selectors track: the piece's own seated centre
-      // (sector meridian, shell radius, axial midpoint), unrotated.
-      const frame0: PieceFrame<TslNode> = {
-        theta: t0,
-        radius: R,
-        axial: yMid,
-        orient: t0,
-      };
-      const items = recipe.build(ctx, k);
-      validatePipeline(items, name);
-      const out = runPipeline(items, seated, frame0, ctx);
-      // THE HARD IDLE GATE (law 3 in the header). Non-negotiable: the seated
-      // render's bit-exactness rests on this step, not on the ops rounding to
-      // exactly zero.
-      const on = step(1e-6, channel);
-      const dRecipe = reconstruct(out.v).sub(seatedPoint).mul(on);
-      const rRecipe = out.v.rot.mul(on);
-      delta = delta === null ? dRecipe : delta.add(dRecipe);
-      rot = rot === null ? rRecipe : rot.add(rRecipe);
+      If(channel.greaterThanEqual(IDLE_EPS), () => {
+        const recipe = RECIPES[name];
+        const k = knobs[name];
+        // The gate spec is captured ONCE and handed to the ctx as a closure: a
+        // `during` scope re-runs THIS recipe's gate at a remapped channel, and
+        // routing it through the ctx is what keeps ops.ts free of gate.ts.
+        const spec = recipe.gateSpec(k);
+        const gateAt = (c: Sc<TslNode>): { flight: TslNode; stick: TslNode } =>
+          gate(A, spec, c, { rank01, layerPhase });
+        const g = gateAt(channel);
+        const ctx: OpCtx<TslNode> = {
+          A,
+          t0,
+          R,
+          rank01,
+          layerPhase,
+          halfSpan,
+          partClass,
+          phi,
+          d,
+          L,
+          yN,
+          off,
+          rung,
+          axi,
+          layerN,
+          adopted,
+          channel,
+          gateAt,
+          flight: g.flight,
+          stick: g.stick,
+          wrapDir: WRAP_DIR,
+        };
+        // The piece frame spatial selectors track: the piece's own seated centre
+        // (sector meridian, shell radius, axial midpoint), unrotated.
+        const frame0: PieceFrame<TslNode> = {
+          theta: t0,
+          radius: R,
+          axial: yMid,
+          orient: t0,
+        };
+        const items = recipe.build(ctx, k);
+        validatePipeline(items, name);
+        const out = runPipeline(items, seated, frame0, ctx);
+        // THE HARD IDLE GATE (law 3 in the header). Non-negotiable, and NOT made
+        // redundant by the branch above: the seated render's bit-exactness rests
+        // on this step, not on the ops rounding to exactly zero, and the branch
+        // only removes the case where the two agree that nothing happens.
+        const on = step(IDLE_EPS, channel);
+        delta.addAssign(reconstruct(out.v).sub(seatedPoint).mul(on));
+        rot.addAssign(out.v.rot.mul(on));
+      });
     }
-    return delta === null || rot === null ? null : { delta, rot };
-  };
+    return vec4(delta, rot);
+  });
+
+  /** The fold at one point, as `vec4(delta.xyz, rot)`. */
+  const sampleAt = (q: TslNode): TslNode => sampleFn(q) as TslNode;
 
   const at = sampleAt(p);
-  if (!at) return null;
-  const { delta, rot } = at;
+  const delta = at.xyz as TslNode;
+  const rot = at.w as TslNode;
 
   if (wrap) {
     // THE SHRINK-WRAP BINDING (ops/frames.ts WRAP_ATTRS). A decal follows the
@@ -708,45 +775,40 @@ function fold(
     const v = wB.w as TslNode;
     const h = wC.w as TslNode;
     const w = float(1).sub(u).sub(v);
-    const s0 = sampleAt(p0);
-    const s1 = sampleAt(p1);
-    const s2 = sampleAt(p2);
-    if (s0 && s1 && s2) {
-      const P0 = p0.add(s0.delta);
-      const P1 = p1.add(s1.delta);
-      const P2 = p2.add(s2.delta);
-      // Facet frames, seated and deformed. Built from the SAME winding, which
-      // is what keeps the two consistently oriented — deliberately NOT a
-      // dot-product sign match against the seated normal, which would flip the
-      // text back through the surface exactly when the wrap turns a facet past
-      // 90°, which it routinely does.
-      const eS = p1.sub(p0);
-      const eF = P1.sub(P0);
-      const nS = safeUnit(cross(eS, p2.sub(p0)));
-      const nF = safeUnit(cross(eF, P2.sub(P0)));
-      const bound = P0.mul(u).add(P1.mul(v)).add(P2.mul(w)).add(nF.mul(h));
-      // The host adds this to `positionLocal`, and at rest the corners are
-      // seated, so this reduces to the vertex's own authored position (to the
-      // float error of recomposing it — see the binding's exactness note).
-      const wrapDelta = bound.sub(p);
-      const tS = safeUnit(eS);
-      const tF = safeUnit(eF);
-      const bS = cross(nS, tS);
-      const bF = cross(nF, tF);
-      return {
-        delta: spin ? unspinY(wrapDelta, spin) : wrapDelta,
-        rot,
-        // The shading normal rides the facet's own rotation: components read in
-        // the seated triad, recombined in the deformed one. Both triads are
-        // orthonormal by construction (the face normal is perpendicular to the
-        // edge it was crossed with), so this is a rotation, not a shear.
-        normal: (n: TslNode) =>
-          tF
-            .mul(n.dot(tS))
-            .add(bF.mul(n.dot(bS)))
-            .add(nF.mul(n.dot(nS))),
-      };
-    }
+    const P0 = p0.add(sampleAt(p0).xyz);
+    const P1 = p1.add(sampleAt(p1).xyz);
+    const P2 = p2.add(sampleAt(p2).xyz);
+    // Facet frames, seated and deformed. Built from the SAME winding, which
+    // is what keeps the two consistently oriented — deliberately NOT a
+    // dot-product sign match against the seated normal, which would flip the
+    // text back through the surface exactly when the wrap turns a facet past
+    // 90°, which it routinely does.
+    const eS = p1.sub(p0);
+    const eF = P1.sub(P0);
+    const nS = safeUnit(cross(eS, p2.sub(p0)));
+    const nF = safeUnit(cross(eF, P2.sub(P0)));
+    const bound = P0.mul(u).add(P1.mul(v)).add(P2.mul(w)).add(nF.mul(h));
+    // The host adds this to `positionLocal`, and at rest the corners are
+    // seated, so this reduces to the vertex's own authored position (to the
+    // float error of recomposing it — see the binding's exactness note).
+    const wrapDelta = bound.sub(p);
+    const tS = safeUnit(eS);
+    const tF = safeUnit(eF);
+    const bS = cross(nS, tS);
+    const bF = cross(nF, tF);
+    return {
+      delta: spin ? unspinY(wrapDelta, spin) : wrapDelta,
+      rot,
+      // The shading normal rides the facet's own rotation: components read in
+      // the seated triad, recombined in the deformed one. Both triads are
+      // orthonormal by construction (the face normal is perpendicular to the
+      // edge it was crossed with), so this is a rotation, not a shear.
+      normal: (n: TslNode) =>
+        tF
+          .mul(n.dot(tS))
+          .add(bF.mul(n.dot(bS)))
+          .add(nF.mul(n.dot(nS))),
+    };
   }
   // Inside a spin pivot the delta lands in the ROTATED local frame; un-spin it
   // so the piece spins about its own displaced axis instead of orbiting its
@@ -933,57 +995,12 @@ export function opsEdgeGeometry(
   return eg;
 }
 
-// One op NodeMaterial per SOURCE material × GRAPH VARIANT (the model shares ~10
-// source materials, has one spin pivot and one decal binding, so this keeps the
-// program count — and time-to-first-frame — low; every piece scrubs the same
-// uniforms anyway).
-const cache = new WeakMap<THREE.Material, Map<string, THREE.Material>>();
-
-function makeOpsMaterial(
-  src: THREE.Material,
-  mesh: THREE.Object3D,
-): THREE.Material {
-  // The op deform covers every mesh — including the authored transmission
-  // glass. Copying a MeshPhysicalMaterial into a
-  // MeshStandardNodeMaterial would silently DROP transmission/ior/iridescence
-  // (NodeMaterial.copy only copies properties the target already declares), so
-  // the target class tracks the source.
-  const m = (src as THREE.MeshPhysicalMaterial).isMeshPhysicalMaterial
-    ? new THREE.MeshPhysicalNodeMaterial()
-    : new THREE.MeshStandardNodeMaterial();
-  m.copy(src as THREE.MeshStandardMaterial);
-  attachOps(m, mesh);
-  return m;
-}
-
-/**
- * Swap every frame-carrying mesh under `root` to an op NodeMaterial. Returns a
- * disposer for the materials it created.
- */
-export function applyOps(root: THREE.Object3D): () => void {
-  const created = new Set<THREE.Material>();
-  root.traverse((o) => {
-    if (!(o instanceof THREE.Mesh) || !hasOpFrames(o)) return;
-    // In-shader displacement invalidates the mesh's rest-pose bounds, so
-    // stale-bounds frustum culling would pop deformed pieces out.
-    o.frustumCulled = false;
-    const src = o.material as THREE.Material;
-    let bySpin = cache.get(src);
-    if (!bySpin) {
-      bySpin = new Map();
-      cache.set(src, bySpin);
-    }
-    const variant = opsVariantKey(o);
-    let om = bySpin.get(variant);
-    if (!om) {
-      om = makeOpsMaterial(src, o);
-      bySpin.set(variant, om);
-      created.add(om);
-    }
-    o.material = om;
-  });
-  return () => created.forEach((m) => m.dispose());
-}
+// THE MODEL'S OWN MATERIALS are built by materials/unified.ts, which mounts the
+// three attach points above ONE op NodeMaterial per source material × graph
+// variant (the model shares ~10 source materials, has one spin pivot and one
+// decal binding, so the program count — and time-to-first-frame — stays low;
+// every piece scrubs the same uniforms anyway). This file used to own that pass
+// as `applyOps`; it moved when the realistic and ink looks merged.
 
 // ── DEV diagnostics ─────────────────────────────────────────────────────────
 

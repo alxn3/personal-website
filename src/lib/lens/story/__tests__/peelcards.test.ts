@@ -1,32 +1,35 @@
 import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import { isSegWedge, isShellPart } from "../../core/parts";
-import { atFrac, rangeOf } from "../story";
+import { atFrac, DIVE_P0, rangeOf, windowEdges } from "../story";
+import { CARDS_APART } from "../envelopes";
 import {
-  BAFFLE_FAMILY_ORDER,
-  baffleDriftWindowOf,
-  bafflePiece,
+  BODY_FADE_BACK,
+  BODY_FADE_OUT,
   CARD_COUNT,
   cardFadeAt,
   cardOrbitAt,
+  cardRollAt,
   cardScaleAt,
   cardsFadeOutAt,
-  driftOrderOf,
-  driftWindowOf,
+  peelBodyFadeAt,
   peelChannelAt,
+  peelRollAt,
+  MOUNT_HI,
+  MOUNT_HYST,
+  MOUNT_LO,
+  peelSpinAt,
   peelValueAt,
-  SEG_COUNT,
+  RELEASE_SPAN,
   segSectorAngle,
-  shellPartSector,
-  stripDriftAt,
-  TUBE_FAMILY_ORDER,
-  tubeDriftWindowOf,
-  tubePiece,
-  tubeSectorAngle,
+  SPIN_SPAN,
+  VALLEY,
+  WINK_SPAN,
 } from "../peelcards";
 
 const peR = rangeOf("peel");
 const cdR = rangeOf("cards");
+const inR = rangeOf("internals");
 
 // The peel/cards LAWS, not their plumbing. What the scene depends on is that the
 // unroll is a saturating pure function of the scroll, that a strip is flat before
@@ -57,215 +60,125 @@ describe("the unroll channel", () => {
   });
 });
 
-const SEGS = [0, 1, 2, 3, 4];
+/** every peel-tube family's wedge indices, in TUBE_FAMILY_ORDER — the cut each
+ *  is really segmented on (5-cut on the shell's seams, 7-cut on the cam's) */
 
-describe("the strip drift", () => {
-  it("holds every strip home until the unroll is done, and lands them all by the scene's end", () => {
-    for (const seg of SEGS) {
-      for (const local of [0, 0.1, 0.3, 0.35])
-        expect(stripDriftAt(local, seg), `seg ${seg} local ${local}`).toBe(0);
-      expect(stripDriftAt(0.95, seg), `seg ${seg}`).toBeCloseTo(2.2, 10);
-      expect(stripDriftAt(1, seg), `seg ${seg} past the end`).toBeCloseTo(
-        2.2,
-        10,
-      );
+describe("the spin", () => {
+  const SPAN = Array.from({ length: 201 }, (_, i) => peR.p0 + (i / 200) * 0.2);
+
+  it("is asleep before it opens and spent after it closes", () => {
+    // probed off SPIN_SPAN itself: a retune of the window is taste and must not
+    // fail a law test — only the shape's edges are the law
+    for (const p of [0, 0.05, peR.p0, SPIN_SPAN[0]])
+      expect(peelSpinAt(p), `p ${p}`).toBe(0);
+    for (const p of [SPIN_SPAN[1], cdR.p1, 1])
+      expect(peelSpinAt(p), `p ${p}`).toBe(1);
+  });
+
+  it("only ever winds forward", () => {
+    let prev = -1;
+    for (const p of SPAN) {
+      const v = peelSpinAt(p);
+      expect(v, `p ${p}`).toBeGreaterThanOrEqual(prev);
+      prev = v;
     }
   });
 
-  it("travels monotonically", () => {
-    for (const seg of SEGS) {
-      let prev = -1;
-      for (const local of SAMPLES) {
-        const v = stripDriftAt(local, seg);
-        expect(v, `seg ${seg} local ${local}`).toBeGreaterThanOrEqual(prev);
-        prev = v;
-      }
+  it("is STILL AT CRUISE where the cards take over — it does not decelerate in", () => {
+    // story/reveal.ts's lesson, in a second place: a smoothstep would be dying
+    // right where the card shell has to look like it is continuing the motion.
+    // The rate over the handover — the body fade's own out-ramp, read from it —
+    // must be the same as the rate well before it.
+    //
+    // AND THE MARGIN IS THIN, deliberately: the fade's foot sits at spin-local
+    // 0.3762 against SPIN_WIND_UP 0.35, so a wind-up retune past 0.376 fails
+    // here rather than shipping a decelerating handover. That is the law; the
+    // 0.026 of slack is the number to know before touching it.
+    const rate = (p: number) => (peelSpinAt(p + 1e-5) - peelSpinAt(p)) / 1e-5;
+    const span = SPIN_SPAN[1] - SPIN_SPAN[0];
+    const cruise = rate(SPIN_SPAN[0] + 0.9 * span);
+    expect(rate(BODY_FADE_OUT[0]), "at the fade's foot").toBeCloseTo(cruise, 6);
+    expect(rate(BODY_FADE_OUT[1]), "at the fade's floor").toBeCloseTo(
+      cruise,
+      6,
+    );
+    // …and the wind-up really is behind it by then
+    expect(rate(SPIN_SPAN[0] + 0.05 * span), "still winding up").toBeLessThan(
+      cruise,
+    );
+  });
+
+  it("lands the lens on a WHOLE number of turns, so the drop to 0 is exact", () => {
+    // peelRollAt is hard 0 past its window because the reveal's own roll shares
+    // the one setModelOrientation writer. That drop may only ever be the
+    // identity, which is what an integer turn count buys.
+    const last = peelRollAt(SPIN_SPAN[1] - 1e-9);
+    const turns = last / (2 * Math.PI);
+    expect(turns, "whole turns").toBeCloseTo(Math.round(turns), 6);
+    expect(Math.round(turns), "and it actually turns").not.toBe(0);
+    for (const p of [SPIN_SPAN[1], cdR.p1, 0.5, 1])
+      expect(Math.abs(peelRollAt(p)), `p ${p}`).toBe(0);
+    for (const p of [0, peR.p0, SPIN_SPAN[0]])
+      expect(Math.abs(peelRollAt(p)), `p ${p}`).toBe(0);
+  });
+
+  it("hands over MONOTONELY: the cards arrive while the lens is still going", () => {
+    // The crossfade's structure, pinned without pinning either envelope's
+    // edges: over the peel's tail the card field's opacity only ever rises, the
+    // spin only ever advances, and the field is fully out before the lens'
+    // fade-out floor (hero-driver, cards 0.20) is reached.
+    let prevFade = -1;
+    for (let i = 0; i <= 100; i++) {
+      const local = 0.5 + (i / 100) * 0.5;
+      const fade = Math.min(...KS.map((k) => cardFadeAt(k, local)));
+      expect(fade, `peel ${local}`).toBeGreaterThanOrEqual(prevFade);
+      prevFade = fade;
     }
-  });
-
-  it("leaves the flock one sector at a time, in MERIDIAN order", () => {
-    // The point of the per-sector window, and of keying it on driftOrderOf: no
-    // two sectors share a window, and the order they go in is the order their
-    // seams come round — the same key the `peel` recipe fans its unroll on, so a
-    // strip drifts on the heels of its own unroll.
-    const order = [...SEGS].sort((a, b) => driftOrderOf(a) - driftOrderOf(b));
-    const wins = order.map(driftWindowOf);
-    for (let s = 1; s < SEG_COUNT; s++) {
-      expect(
-        wins[s][0],
-        `${order[s]} opens after ${order[s - 1]}`,
-      ).toBeGreaterThan(wins[s - 1][0]);
-      expect(
-        wins[s][1],
-        `${order[s]} lands after ${order[s - 1]}`,
-      ).toBeGreaterThan(wins[s - 1][1]);
-    }
-    // …and the sequence is visible mid-scene rather than only in the numbers
-    const mid = order.map((s) => stripDriftAt(0.66, s));
-    for (let s = 1; s < SEG_COUNT; s++)
-      expect(mid[s], `${order[s]} vs ${order[s - 1]} at 0.66`).toBeLessThan(
-        mid[s - 1],
-      );
-  });
-});
-
-/** the two tubes' wedge counts, in TUBE_FAMILY_ORDER — the cut each is really
- *  segmented on (five for the chassis, seven for the cam barrel) */
-const TUBE_SEGS: Record<string, number[]> = {
-  Chassis_Fixed: [0, 1, 2, 3, 4],
-  Cam_Barrel: [0, 1, 2, 3, 4, 5, 6],
-};
-const TUBE_PIECES = TUBE_FAMILY_ORDER.flatMap((family) =>
-  TUBE_SEGS[family].map((seg) => ({ family, seg })),
-);
-
-describe("the inner tubes' departure", () => {
-  it("opens AFTER the skin's own wink-out and closes before the bore does", () => {
-    for (const { family, seg } of TUBE_PIECES) {
-      const [a, b] = tubeDriftWindowOf(family, seg);
-      // the shell gate starts winking the skin away at peel-local 0.6
-      expect(a, `${family}_Seg${seg} opens`).toBeGreaterThanOrEqual(0.48);
-      // …and it has winked every TUBE away by ~0.85, so a wedge still
-      // travelling then would vanish mid-flight
-      expect(b, `${family}_Seg${seg} lands`).toBeLessThanOrEqual(0.84);
-    }
-  });
-
-  it("leaves before the baffles do — the reveal layers outside-in", () => {
-    // The two flocks overlap in the middle, as the strips' and the tubes' do:
-    // what has to hold is that the tubes' fan sits EARLIER in the peel at both
-    // of its ends, so the tube layer is coming off while the bore is still
-    // closed and not the other way round. (The order a viewer actually reads is
-    // the gate's — core/scene's four bands — and this is the drift that feeds
-    // it.)
-    const baffleOpens = BAFFLE_FAMILY_ORDER.flatMap((family) =>
-      SEGS.map((seg) => baffleDriftWindowOf(family, seg)[0]),
-    );
-    const tubeOpens = TUBE_PIECES.map(
-      ({ family, seg }) => tubeDriftWindowOf(family, seg)[0],
-    );
-    expect(Math.min(...tubeOpens), "first tube vs first baffle").toBeLessThan(
-      Math.min(...baffleOpens),
-    );
-    expect(Math.max(...tubeOpens), "last tube vs last baffle").toBeLessThan(
-      Math.max(...baffleOpens),
-    );
-  });
-
-  it("gives every wedge its own window, the outer tube first", () => {
-    const opens = TUBE_PIECES.map(
-      ({ family, seg }) => tubeDriftWindowOf(family, seg)[0],
-    );
-    expect(new Set(opens.map((o) => o.toFixed(6))).size).toBe(
-      TUBE_PIECES.length,
-    );
-    const openOf = ({ family, seg }: { family: string; seg: number }) =>
-      tubeDriftWindowOf(family, seg)[0];
-    const outer = TUBE_PIECES.filter((p) => p.family === "Chassis_Fixed");
-    const inner = TUBE_PIECES.filter((p) => p.family === "Cam_Barrel");
-    expect(Math.max(...outer.map(openOf))).toBeLessThan(
-      Math.min(...inner.map(openOf)),
-    );
-  });
-
-  it("names a tube wedge and nothing else", () => {
-    expect(tubePiece("Cam_Barrel_Seg6")).toEqual({
-      family: "Cam_Barrel",
-      seg: 6,
-    });
-    // the family GROUP nodes, the hardware Chassis_Fixed adopts, and the other
-    // casts must not be offset by this one
-    for (const n of [
-      "Chassis_Fixed",
-      "Cam_Barrel",
-      "Focus_Motor",
-      "Focus_GuideRods",
-      "Cam_OpticsCage_Seg2",
-      "Barrel_Inner_Seg0",
-      "Baffle_Rear_Seg0",
-    ])
-      expect(tubePiece(n), n).toBeUndefined();
-  });
-});
-
-describe("the baffles' departure", () => {
-  const PIECES = BAFFLE_FAMILY_ORDER.flatMap((family) =>
-    SEGS.map((seg) => ({ family, seg })),
-  );
-
-  it("opens the bore AFTER the skin is off, and is done by the scene's end", () => {
-    for (const { family, seg } of PIECES) {
-      const [a, b] = baffleDriftWindowOf(family, seg);
-      // the strips start at 0.35; nothing internal moves until they are away
-      expect(a, `${family}_Seg${seg} opens`).toBeGreaterThanOrEqual(0.6);
-      expect(b, `${family}_Seg${seg} lands`).toBeLessThanOrEqual(0.95);
-    }
-  });
-
-  it("gives every plate its own window, the rear ring first", () => {
-    const opens = PIECES.map(
-      ({ family, seg }) => baffleDriftWindowOf(family, seg)[0],
-    );
-    expect(new Set(opens.map((o) => o.toFixed(6))).size).toBe(PIECES.length);
-    // family-major: every plate of the rear ring goes before any optics trap
-    const rear = PIECES.filter((p) => p.family === "Baffle_Rear");
-    const front = PIECES.filter((p) => p.family !== "Baffle_Rear");
-    const openOf = ({ family, seg }: { family: string; seg: number }) =>
-      baffleDriftWindowOf(family, seg)[0];
-    expect(Math.max(...rear.map(openOf))).toBeLessThan(
-      Math.min(...front.map(openOf)),
-    );
-  });
-
-  it("names a baffle wedge and nothing else", () => {
-    expect(bafflePiece("Baffle_Rear_Seg3")).toEqual({
-      family: "Baffle_Rear",
-      seg: 3,
-    });
-    // the family GROUP nodes and the shell must not be offset by this cast
-    for (const n of [
-      "Baffle_Rear",
-      "Optics_Baffle_G2",
-      "Barrel_Inner_Seg0",
-      "Optics_Cell_G3_Seg5",
-    ])
-      expect(bafflePiece(n), n).toBeUndefined();
+    for (const k of KS)
+      expect(cardFadeAt(k, 1), `card ${k} by the peel's end`).toBe(1);
   });
 });
 
 describe("the card cross-fade", () => {
-  it("starts with the shell still rolling and no card yet out", () => {
-    for (const k of KS) expect(cardFadeAt(k, 0.55), `card ${k}`).toBe(0);
+  it("starts once the lens is apart and no card is out before that", () => {
+    for (const k of KS) expect(cardFadeAt(k, 0.28), `card ${k}`).toBe(0);
   });
 
-  it("is complete for every card by peel-local 0.98", () => {
+  it("is complete for every card before the body fade lands", () => {
     for (const k of KS) {
-      expect(cardFadeAt(k, 0.98), `card ${k}`).toBe(1);
+      expect(cardFadeAt(k, 0.62), `card ${k}`).toBe(1);
       expect(cardFadeAt(k, 1), `card ${k} past the end`).toBe(1);
     }
   });
 
   it("is staggered — the cards arrive in order, never together", () => {
-    const mid = KS.map((k) => cardFadeAt(k, 0.75));
+    const mid = KS.map((k) => cardFadeAt(k, 0.45));
     for (let k = 1; k < CARD_COUNT; k++)
       expect(mid[k], `card ${k} vs ${k - 1}`).toBeLessThan(mid[k - 1]);
   });
 });
 
 describe("the field's fade-out", () => {
-  it("is gone by internals-local 0.22, before the labels arrive", () => {
-    for (const local of [0.22, 0.3, 1])
+  it("hands back to the bare lens inside its OWN scene", () => {
+    for (const local of [0.88, 0.95, 1])
       expect(cardsFadeOutAt(local), `local ${local}`).toBe(1);
   });
 
-  it("is still whole as the internals scene opens", () => {
+  it("is still whole while the cards scene is the cards scene", () => {
     expect(cardsFadeOutAt(0)).toBe(0);
-    expect(cardsFadeOutAt(0.1)).toBeGreaterThan(0);
-    expect(cardsFadeOutAt(0.1)).toBeLessThan(1);
+    expect(cardsFadeOutAt(0.6)).toBe(0);
+    expect(cardsFadeOutAt(0.8)).toBeGreaterThan(0);
+    expect(cardsFadeOutAt(0.8)).toBeLessThan(1);
   });
 });
 
-describe("the orbit", () => {
+// THE CARD SHELL. The field's laws changed shape with the peel re-choreography
+// (owner: the lens "is replaced with the cards spinning as a transition"), so
+// these pin the NEW ones — a coherent spherical shell — rather than the old run
+// of hoops: eight stations on ONE sphere, ONE rotation axis, ONE direction, ONE
+// rate, and no second motion of any kind on top. Taste values (the radius, the
+// rate) are deliberately NOT pinned; the structure is.
+describe("the card shell", () => {
   const TIMES = [0, 250, 1_000, 4_500, 12_000, 47_300, 600_000];
 
   it("is a pure function of (card, time)", () => {
@@ -276,37 +189,87 @@ describe("the orbit", () => {
         );
   });
 
-  it("rings the OPTICAL AXIS, always clear of the model", () => {
-    // The ring is in Y–Z, about world X. The floor is the load-bearing number:
-    // the model's silhouette is 2.8 wu, so a card centre inside ~3.4 would be
-    // riding through the barrel instead of past it.
+  it("is a SPHERE: every card is the same distance from the lens, always", () => {
+    // An identity, not a bound — that is what makes "the shell clears the model
+    // everywhere at once" a fact rather than a per-ring promise. MEASURED off
+    // the seated model in the browser: a 4.07 × 3.08 × 3.09 wu world box, i.e. a
+    // bounding sphere of √(2.04² + 1.54²) = 2.56 wu.
+    const r0 = Math.hypot(...Object.values(cardOrbitAt(0, 0)));
+    expect(r0).toBeGreaterThan(2.56);
     for (const k of KS)
       for (const t of TIMES) {
         const o = cardOrbitAt(k, t);
-        const r = Math.hypot(o.y, o.z);
-        expect(r, `card ${k} at ${t}ms`).toBeGreaterThanOrEqual(3.4);
-        expect(r, `card ${k} at ${t}ms`).toBeLessThanOrEqual(6.2);
+        expect(Math.hypot(o.x, o.y, o.z), `card ${k} at ${t}ms`).toBeCloseTo(
+          r0,
+          10,
+        );
       }
   });
 
-  it("strings the rings ALONG the axis, and holds each card's station", () => {
+  it("turns about the OPTICAL AXIS, so no card's axial station ever moves", () => {
     for (const k of KS) {
       const x = cardOrbitAt(k, 0).x;
-      expect(Math.abs(x), `card ${k}`).toBeLessThanOrEqual(2.5);
-      // the axial station is the card's, not the clock's: nothing but the ring
-      // and the bob moves, so a card cannot wander down the barrel
       for (const t of TIMES)
         expect(cardOrbitAt(k, t).x, `card ${k} at ${t}ms`).toBe(x);
     }
-    // the eight are spread across the run rather than stacked on one hoop
+    // the eight sit on eight distinct latitudes, none of them a POLE (where a
+    // rotation about the axis would leave a card dead still)
     const xs = KS.map((k) => cardOrbitAt(k, 0).x);
     expect(new Set(xs.map((x) => x.toFixed(6))).size).toBe(CARD_COUNT);
+    const r0 = Math.hypot(...Object.values(cardOrbitAt(0, 0)));
+    for (const k of KS)
+      expect(
+        Math.hypot(cardOrbitAt(k, 0).y, cardOrbitAt(k, 0).z),
+        `card ${k}`,
+      ).toBeGreaterThan(0.5 * r0);
+  });
+
+  it("advances every card by the SAME angle: one rate, one direction", () => {
+    // The rewrite's whole point. The old field gave each card its own ω and
+    // ALTERNATED the direction by parity, which is why it read as aimless drift;
+    // a shell that turns as one body cannot have either.
+    const step = (k: number, t0: number, t1: number) => {
+      const a = cardOrbitAt(k, t0);
+      const b = cardOrbitAt(k, t1);
+      const d = Math.atan2(b.z, b.y) - Math.atan2(a.z, a.y);
+      return Math.atan2(Math.sin(d), Math.cos(d));
+    };
+    for (const [t0, t1] of [
+      [0, 250],
+      [4_500, 4_750],
+      [600_000, 600_250],
+    ]) {
+      const ds = KS.map((k) => step(k, t0, t1));
+      for (const k of KS) {
+        expect(ds[k], `card ${k} over [${t0}, ${t1}]`).toBeCloseTo(ds[0], 12);
+        expect(Math.sign(ds[k]), `card ${k} direction`).toBe(Math.sign(ds[0]));
+      }
+      expect(ds[0], "the shell is actually turning").not.toBe(0);
+    }
+  });
+
+  it("carries NO second motion — no bob, no sway, nothing off the circle", () => {
+    // Anything added on top of the rotation (the old vertical bob, the old idle
+    // roll sway) shows up as a card leaving its own latitude circle. Sampled
+    // densely, because a slow wobble is exactly what a coarse sample misses.
+    for (const k of KS) {
+      const ring = Math.hypot(cardOrbitAt(k, 0).y, cardOrbitAt(k, 0).z);
+      for (let i = 0; i < 400; i++) {
+        const o = cardOrbitAt(k, i * 137);
+        expect(Math.hypot(o.y, o.z), `card ${k} sample ${i}`).toBeCloseTo(
+          ring,
+          10,
+        );
+      }
+    }
+    // …and the ROLL is a pure function of the scroll now, with no clock at all
+    expect(cardRollAt.length, "cardRollAt takes (k, cardsLocal)").toBe(2);
   });
 
   it("sweeps every card through a real range of camera depths", () => {
     // What the sizes come from: over a pass, a card's own Z (the story cameras
-    // sit side-on-ish, ~20 wu out on +Z) swings by twice its ring radius, so no
-    // two cards are at one depth for long.
+    // sit side-on-ish, ~16 wu out on −Z) swings by twice its latitude circle's
+    // radius, so no two cards are at one depth for long.
     for (const k of KS) {
       const zs = Array.from(
         { length: 400 },
@@ -316,7 +279,7 @@ describe("the orbit", () => {
     }
   });
 
-  it("starts every card on its own phase", () => {
+  it("starts every card on its own longitude", () => {
     const phases = KS.map((k) => {
       const o = cardOrbitAt(k, 0);
       return Math.atan2(o.z, o.y);
@@ -343,6 +306,19 @@ describe("the orbit", () => {
     // more than one size, and not so many that a "size" stops meaning anything
     expect(new Set(s).size).toBeGreaterThan(1);
   });
+
+  it("tips a card in on entry and settles it, on the SCROLL", () => {
+    // What survives from the old roll law (owner: "when the cards come off let's
+    // have it roll on its side a little bit"): a card arrives tipped over and
+    // rights itself on its own fade window, so a scrub replays it exactly.
+    for (const k of KS) {
+      const entry = Math.abs(cardRollAt(k, 0));
+      const rest = Math.abs(cardRollAt(k, 1));
+      expect(entry, `card ${k} enters tipped`).toBeGreaterThan(rest);
+      expect(rest, `card ${k} keeps a residual`).toBeGreaterThan(0);
+      expect(entry, `card ${k} entry is a tip, not a tumble`).toBeLessThan(0.5);
+    }
+  });
 });
 
 describe("the whole peel channel", () => {
@@ -351,19 +327,154 @@ describe("the whole peel channel", () => {
       expect(peelValueAt(p), `p ${p}`).toBe(0);
   });
 
-  it("holds fully unrolled from the peel's tail into the cards", () => {
+  it("holds fully unrolled to the end of the peel scene", () => {
     for (const f of [0.72, 0.85, 1])
       expect(peelValueAt(atFrac(peR, f)), `peel ${f}`).toBe(1);
-    for (const f of [0, 0.05])
-      expect(peelValueAt(atFrac(cdR, f)), `cards ${f}`).toBe(1);
   });
 
-  it("is released again by cards-local 0.35, behind the winked-out shell", () => {
-    for (const f of [0.35, 0.6, 1])
-      expect(peelValueAt(atFrac(cdR, f)), `cards ${f}`).toBe(0);
-    const mid = peelValueAt(atFrac(cdR, 0.2));
+  it("is spent before the departure opens — the two never share a wedge", () => {
+    // the unroll and the reverse reassembly are two unwrap chains on one wedge,
+    // so the release runs to EXACTLY 0 at the rise's foot rather than fading
+    // under a cover
+    const apart = windowEdges(CARDS_APART.rise)[0];
+    expect(peelValueAt(apart), "spent where the departure opens").toBe(0);
+    for (const p of [RELEASE_SPAN[1], VALLEY[0], cdR.p1])
+      expect(peelValueAt(p), `p ${p}`).toBe(0);
+    const mid = peelValueAt((RELEASE_SPAN[0] + RELEASE_SPAN[1]) / 2);
     expect(mid).toBeGreaterThan(0);
     expect(mid).toBeLessThan(1);
+  });
+});
+
+// THE VALLEY, and the four things that live inside it. It is THE load-bearing
+// structure of the peel→cards seam: the body fade's envelope is exactly 0 across
+// it, so the lens is out of core/scene's applyVisibility entirely and every snap
+// the chapter has to make is put in there. Its four edges used to be literals
+// copied into three modules and re-typed as bare numbers here; they are
+// story/peelcards.ts's now, and these are the containments — move the envelope
+// and something fails HERE rather than becoming a visible pop in a scroll nobody
+// re-checks.
+describe("the body fade's valley", () => {
+  it("is EXACTLY 0 across the valley, and exactly 1 at both far ends", () => {
+    // not "≈0": both smoothsteps saturate, which is what takes the meshes out of
+    // the visibility pass rather than merely making them faint
+    for (let i = 0; i <= 200; i++)
+      expect(
+        peelBodyFadeAt(VALLEY[0] + ((VALLEY[1] - VALLEY[0]) * i) / 200),
+        `valley ${i / 200}`,
+      ).toBe(0);
+    for (const p of [0, peR.p0, BODY_FADE_OUT[0]])
+      expect(peelBodyFadeAt(p), `p ${p}`).toBe(1);
+    for (const p of [BODY_FADE_BACK[1], inR.p0, inR.p1, 1])
+      expect(peelBodyFadeAt(p), `p ${p}`).toBe(1);
+  });
+
+  it("never goes over 1 or under 0 anywhere on the track", () => {
+    // the two terms are added, not composed, so an overlap of the out-ramp and
+    // the back-ramp would drive the channel past 1 — core/scene clamps, but the
+    // shape would no longer be the one every gate below is timed against
+    for (let i = 0; i <= 1000; i++) {
+      const v = peelBodyFadeAt(i / 1000);
+      expect(v, `p ${i / 1000}`).toBeGreaterThanOrEqual(0);
+      expect(v, `p ${i / 1000}`).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it("hides the WINK inside the valley, where it belongs again", () => {
+    // the shell and the interior are filed out of applyVisibility behind the
+    // body fade's 0-stretch, so the internals scene opens on the bare mechanism
+    expect(WINK_SPAN[0]).toBeGreaterThanOrEqual(VALLEY[0]);
+    expect(WINK_SPAN[1]).toBeLessThanOrEqual(VALLEY[1]);
+    expect(peelBodyFadeAt(WINK_SPAN[0]), "nothing is drawn there").toBe(0);
+    expect(peelBodyFadeAt(WINK_SPAN[1])).toBe(0);
+    // …and it is spent a whole scene before the internals scene settles
+    expect(WINK_SPAN[1]).toBeLessThan(inR.p0);
+  });
+
+  it("hides the spin's STOP — the one place the angular rate steps", () => {
+    expect(SPIN_SPAN[1]).toBeGreaterThan(VALLEY[0]);
+    expect(SPIN_SPAN[1]).toBeLessThan(VALLEY[1]);
+    expect(peelBodyFadeAt(SPIN_SPAN[1]), "and the lens is gone there").toBe(0);
+  });
+
+  // …AND HIDES IT ON THE CLOCK THE WRITER ACTUALLY USES. The containment above
+  // is a statement about ONE p. It only buys the guarantee — the rate step
+  // happens behind a lens nobody can see — while the roll and the body fade are
+  // sampled at the SAME p, which is the raw one frame() writes the fade, the
+  // per-piece drift and the card field from. story/hero-driver.ts's single
+  // setModelOrientation writer moved onto the render loop for the reveal's sake
+  // and takes its OTHER term from the eased story channel; this pins that the
+  // peel's term did not come along.
+  it("hides it on ONE clock — and the peel's roll is written on the RAW p", () => {
+    // the whole margin is the valley's tail past the stop: 0.0062 of the track
+    const slack = VALLEY[1] - SPIN_SPAN[1];
+    expect(slack).toBeGreaterThan(0);
+    expect(slack).toBeLessThan(0.01);
+    // core/scene's tick() eases with EASE = 0.12, so a channel read there trails
+    // the raw position by Σ(1−EASE)ⁿ = 7.33 frames of whatever the scroll is
+    // doing. Against that slack the guarantee breaks at 0.00084 p/frame — at
+    // 60 Hz over a 14.7-screenful track, 0.75 screenfuls/second, which is a
+    // reading flick, not a fling. Past it the body fades back IN on a lens still
+    // turning at cruise (−146 rad per unit p here), which then stops dead.
+    const EASE_LAG_FRAMES = 0.88 / 0.12;
+    expect(slack / EASE_LAG_FRAMES).toBeLessThan(0.001);
+    const rate = (p: number) => (peelRollAt(p + 1e-7) - peelRollAt(p)) / 1e-7;
+    expect(Math.abs(rate(SPIN_SPAN[1] - 1e-5))).toBeGreaterThan(100);
+    expect(rate(SPIN_SPAN[1] + 1e-5)).toBe(0);
+    // the counterfactual, at 1.5× that threshold speed: raw p is past the
+    // valley's far edge — the lens is back in the visibility pass — while a
+    // lagged sample is still short of the stop, i.e. still at cruise
+    const lag = EASE_LAG_FRAMES * 1.5 * (slack / EASE_LAG_FRAMES);
+    const pRaw = VALLEY[1] + 0.2 * slack;
+    expect(peelBodyFadeAt(pRaw), "the lens is drawn again").toBeGreaterThan(0);
+    expect(pRaw - lag).toBeLessThan(SPIN_SPAN[1]);
+    expect(
+      Math.abs(rate(pRaw - lag)),
+      "and a lagged clock would still be turning at cruise under it",
+    ).toBeGreaterThan(100);
+    // …so the writer takes this term at frame()'s own raw p. The reveal's term
+    // keeps the eased channels — that is the fast-scroll fix — but they are two
+    // clocks in one call, deliberately, and this is the structural guard on it.
+    const driver = fs.readFileSync(
+      new URL("../hero-driver.ts", import.meta.url),
+      "utf8",
+    );
+    expect(driver).toMatch(/peelRollAt\(lastP\)/);
+    expect(driver).not.toMatch(/peelRollAt\(pE\)/);
+  });
+
+  it("takes the DEPARTURE'S CHANNEL home inside it", () => {
+    // the wrap's fall is the one snap the valley still has to cover: the
+    // recipe's ladder moves the mechanism the wink KEEPS, so the channel must
+    // read 0 before the body fade brings it back
+    const [f0, f1] = windowEdges(CARDS_APART.fall);
+    expect(f0).toBeGreaterThanOrEqual(VALLEY[0]);
+    expect(f1).toBeLessThanOrEqual(VALLEY[1]);
+    expect(peelBodyFadeAt(f0), "nothing is drawn there").toBe(0);
+    expect(peelBodyFadeAt(f1)).toBe(0);
+  });
+
+  it("puts the lens back BEFORE the internals scene opens on it", () => {
+    // the whole point of the return: the internals scene still starts on exactly
+    // the mechanism it always did, with no fade running under its first frame
+    expect(BODY_FADE_BACK[1]).toBeLessThan(inR.p0);
+    expect(peelBodyFadeAt(inR.p0)).toBe(1);
+  });
+
+  it("owns the channel all the way to the DIVE's first frame", () => {
+    // THE RANGE-TILED WRITER MAP. hero-driver writes this envelope for every
+    // p < DIVE_P0 and story/fly.ts owns setBodyFade from DIVE_P0 on (its own
+    // half is pinned in story-fly.test.ts). The tile used to end at the
+    // flythrough scene's p0 instead, which left [internals p1, DIVE_P0] with no
+    // owner at all — and applyBodyFade holds its last level on an unchanged
+    // write, so one frame(p) jumping out of the valley into that band left the
+    // lens hidden for the whole approach with nothing to restore it.
+    expect(DIVE_P0).toBeGreaterThan(inR.p1);
+    for (let i = 0; i <= 200; i++)
+      expect(
+        peelBodyFadeAt(inR.p0 + ((DIVE_P0 - inR.p0) * i) / 200),
+        `approach ${i / 200}`,
+      ).toBe(1);
   });
 });
 
@@ -413,6 +524,9 @@ interface Strip {
   y: number;
   /** does anything from this mesh up to the root turn or scale its frame? */
   posed: boolean;
+  /** the sum of every translation from this mesh up to the root — where the
+   *  piece's own local origin sits in the gltf frame */
+  origin: [number, number, number];
 }
 
 /** Every mesh of the peel's drifting cast, measured in the gltf frame —
@@ -429,6 +543,7 @@ function centres(segOf: (name: string) => number | undefined): Strip[] {
     const acc =
       gltf.accessors[gltf.meshes[n.mesh].primitives[0].attributes.POSITION];
     const c = [0, 1, 2].map((k) => (acc.min[k] + acc.max[k]) / 2);
+    const t = [0, 0, 0];
     let posed = false;
     for (
       let up: number | undefined = i;
@@ -436,27 +551,68 @@ function centres(segOf: (name: string) => number | undefined): Strip[] {
       up = parent.get(up)
     ) {
       const nd = gltf.nodes[up];
-      if (nd.translation) for (const k of [0, 1, 2]) c[k] += nd.translation[k];
+      if (nd.translation) for (const k of [0, 1, 2]) t[k] += nd.translation[k];
       if (nd.rotation || nd.scale || nd.matrix) posed = true;
     }
+    for (const k of [0, 1, 2]) c[k] += t[k];
     // the radial plane is X–Z; +Y is the optical axis
     return [
-      { name: n.name, seg, angle: Math.atan2(c[2], c[0]), y: c[1], posed },
+      {
+        name: n.name,
+        seg,
+        angle: Math.atan2(c[2], c[0]),
+        y: c[1],
+        posed,
+        origin: t as [number, number, number],
+      },
     ];
   });
 }
 
+describe("the card field's mount window", () => {
+  // Newly EXPORTED so story/cost.ts can count the eight draws at p without
+  // spelling this window a second time — pinned here, where it is owned.
+
+  it("mounts a whole scene early and leaves before the dive", () => {
+    // the eight texture uploads (~80ms) land in the zoom's quiet beat, not on
+    // the peel's first frames
+    expect(MOUNT_LO).toBe(rangeOf("zoom").p0);
+    expect(MOUNT_LO).toBeLessThan(peR.p0);
+    // …and the tail is the cards scene's own end: the field is spent inside the
+    // scene (it dissolves as the pieces fly home under it), so nothing is left
+    // to draw past this edge and no invisible card survives into the internals
+    // scene or the fly-through
+    expect(MOUNT_HI).toBe(cdR.p1);
+    expect(MOUNT_HI).toBeLessThan(DIVE_P0);
+    expect(MOUNT_HI).toBeLessThanOrEqual(inR.p0);
+    expect(cardsFadeOutAt(1), "the field is gone by the scene's end").toBe(1);
+  });
+
+  it("covers the whole span the cards are ever drawn over", () => {
+    for (const p of [cdR.p0, cdR.p1, atFrac(cdR, 0.5), peR.p0])
+      expect(p, `card p ${p}`).toBeGreaterThanOrEqual(MOUNT_LO);
+    expect(cdR.p1).toBeLessThanOrEqual(MOUNT_HI);
+  });
+
+  it("pads the unmount, and by less than the window it guards", () => {
+    expect(MOUNT_HYST).toBeGreaterThan(0);
+    expect(MOUNT_HYST).toBeLessThan((MOUNT_HI - MOUNT_LO) / 2);
+  });
+});
+
+/** every `<family>_SegN` wedge of the shell cast, off the shipped GLB */
 const stripCentres = () =>
-  centres((n) => (isShellPart(n) ? shellPartSector(n) : undefined));
+  centres((n) => {
+    const m = /_Seg(\d+)$/.exec(n);
+    return m && isShellPart(n) && isSegWedge(n) ? Number(m[1]) : undefined;
+  });
 
 /** shortest angular distance, in degrees */
 const apart = (a: number, b: number) =>
   (Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b))) * 180) / Math.PI;
 
 describe("the shell's seam convention", () => {
-  const measured = stripCentres();
-  const wedges = measured.filter((s) => isSegWedge(s.name));
-  const decals = measured.filter((s) => !isSegWedge(s.name));
+  const wedges = stripCentres();
 
   it("is five sectors on each of five families — 25 wedges", () => {
     expect(wedges).toHaveLength(25);
@@ -465,97 +621,10 @@ describe("the shell's seam convention", () => {
   });
 
   it("puts every wedge on the sector segSectorAngle names for it", () => {
+    // 10°: the residual is the bounding box's own asymmetry. Half a sector is
+    // 36°, so this cannot admit the wrong sector. The card field's own
+    // longitudes are seeded off this law (cardPhaseAt).
     for (const w of wedges)
-      // 10°: the residual is the bounding box's own asymmetry (Barrel_Inner,
-      // which carries interior geometry, is the worst at ~7°). Half a sector is
-      // 36°, so this is nowhere near able to admit the wrong sector.
       expect(apart(w.angle, segSectorAngle(w.seg)), w.name).toBeLessThan(10);
-  });
-
-  it("carries every printed marking on a sector it really sits on", () => {
-    // all 18 markings of the cast are in this GLB and all are assigned
-    expect(decals).toHaveLength(18);
-    for (const d of decals)
-      // half a sector: past this the marking would be riding a strip it is not
-      // printed on. DecalT_Zoom_35 (~33°) straddles a seam — see DECAL_SECTOR.
-      expect(apart(d.angle, segSectorAngle(d.seg)), d.name).toBeLessThan(36);
-  });
-
-  it("hangs every strip off a chain of pure TRANSLATIONS", () => {
-    // What makes a gltf-frame offset a world-radial offset: nothing between a
-    // strip and the gltf root turns or scales its frame, so the only rotations
-    // in play are core/scene's two model rolls (peelcards.ts drift()).
-    for (const s of measured) expect(s.posed, s.name).toBe(false);
-  });
-});
-
-describe("the inner tubes, against the shipped model", () => {
-  const measured = centres((n) => tubePiece(n)?.seg);
-  const familyOf = (name: string) => /^(.*)_Seg\d+$/.exec(name)![1];
-
-  it("is two tubes on two DIFFERENT cuts — five wedges and seven", () => {
-    expect(measured).toHaveLength(12);
-    for (const family of TUBE_FAMILY_ORDER)
-      expect(
-        measured.filter((t) => familyOf(t.name) === family),
-        family,
-      ).toHaveLength(TUBE_SEGS[family].length);
-  });
-
-  it("puts every wedge on the sector tubeSectorAngle names for it", () => {
-    // Same 10° tolerance the shell's wedges get, and for the same reason: the
-    // residual is the bounding box's own asymmetry. Half of the NARROWER sector
-    // (seven-way, so 25.7°) is still well clear of it, so this cannot admit the
-    // wrong sector on either family.
-    for (const t of measured)
-      expect(
-        apart(t.angle, tubeSectorAngle(familyOf(t.name), t.seg)),
-        t.name,
-      ).toBeLessThan(10);
-  });
-
-  it("hangs every wedge off a chain of pure TRANSLATIONS", () => {
-    // What makes the gltf-frame offset a world-radial one. `Cam_Barrel`'s GROUP
-    // node is additionally turned at runtime by the zoom mechanism — harmless
-    // here, since the drift only opens at peel-local 0.48 and the zoom channel
-    // is home by peel-local 0.4, and a turned parent would rotate the offset
-    // with the wedge's own meridian in any case.
-    for (const t of measured) expect(t.posed, t.name).toBe(false);
-  });
-});
-
-describe("the baffles, against the shipped model", () => {
-  const measured = centres((n) => bafflePiece(n)?.seg);
-  // the lens body spans y ≈ 1…77, so this is the plane an exit is chosen about
-  const MID_Y = 39;
-
-  it("is three rings of five, cut on the SHELL's seams", () => {
-    expect(measured).toHaveLength(15);
-    for (const family of BAFFLE_FAMILY_ORDER)
-      expect(
-        measured.filter((b) => b.name.startsWith(`${family}_Seg`)),
-        family,
-      ).toHaveLength(SEG_COUNT);
-    // riding segSectorAngle is what lets a baffle fan out like a strip
-    for (const b of measured)
-      expect(apart(b.angle, segSectorAngle(b.seg)), b.name).toBeLessThan(10);
-  });
-
-  it("sends every plate out of the END IT IS NEAREST", () => {
-    // The claim BAFFLE_EXIT makes about the model: a plate's exit sign is the
-    // side of the mid-plane it sits on. A re-export that moves one across must
-    // fail here, not as a baffle sliding the length of the optical column.
-    for (const b of measured) {
-      const family = /^(.*)_Seg\d+$/.exec(b.name)![1];
-      const [a, z] = baffleDriftWindowOf(family, b.seg);
-      expect(z, `${b.name} has a window`).toBeGreaterThan(a);
-      expect(Math.sign(b.y - MID_Y), b.name).toBe(
-        family === "Baffle_Rear" ? -1 : 1,
-      );
-    }
-  });
-
-  it("hangs every plate off a chain of pure TRANSLATIONS", () => {
-    for (const b of measured) expect(b.posed, b.name).toBe(false);
   });
 });

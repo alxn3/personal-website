@@ -5,6 +5,7 @@ import {
   anchor,
   arc,
   coil,
+  crease,
   rot,
   runPipeline,
   selAxialBand,
@@ -282,6 +283,131 @@ describe("anchor / arc — the developable bend chain", () => {
       expect(p[0]).toBeCloseTo(R * NHAT[0] + THAT[0] * d, 8);
       expect(p[1]).toBeCloseTo(R * NHAT[1] + THAT[1] * d, 8);
     }
+  });
+});
+
+describe("crease — the hard fold between two panels", () => {
+  const W = 0.5; // the crease's material band, model-mm
+
+  it("(h) rad = 0 is the seated arc segment — the identity a gate-driven crease rests on", () => {
+    const creased: OpItem<number>[] = [
+      ...SEAM(),
+      arc<number>(1, 2),
+      crease<number>(0, W),
+      arc<number>(1),
+    ];
+    const plain: OpItem<number>[] = [
+      ...SEAM(),
+      arc<number>(1, 2),
+      arc<number>(1, W),
+      arc<number>(1),
+    ];
+    // Every position in the material, the two overrun ends included, and a
+    // vertex off the wall: rad = 0 ⇒ q = 1 ⇒ the chain never left the barrel.
+    for (const d of [-1.5, 0, 0.3, 2, 2.25, 2.6, L, L + 2]) {
+      for (const off of [0, 0.35]) {
+        const ctx = ctxAt(d, { off });
+        const a = runM(creased, seatedAt(ctx), 1, ctx);
+        const b = runM(plain, seatedAt(ctx), 1, ctx);
+        // STRICT equality, not toBeCloseTo: rad = 0 makes q exactly 1 through
+        // the shared chainStep, so crease-vs-plain is bit-for-bit — the
+        // property a gate-driven crease actually rests on.
+        expect(a.theta).toBe(b.theta);
+        expect(a.radius).toBe(b.radius);
+        expect(a.rot).toBe(b.rot);
+        // …and that is the seated state to float rounding: the ARC itself
+        // rebuilds the seat through trig (rot carries ~1e-16 of residue on
+        // some grid points), which is host law 3's business — the idle gate
+        // force-zeroes it at channel 0. Crease adds nothing on top; the
+        // strict a-vs-b pins that.
+        expect(a.rot).toBeCloseTo(0, 12);
+        expect(a.radius).toBeCloseTo(ctx.R + off, 12);
+      }
+    }
+  });
+
+  it("(h′) the turn across the band is the seated turn PLUS rad, and the normal carries it", () => {
+    const RAD = 0.6;
+    const op: OpItem<number>[] = [
+      ...SEAM(),
+      arc<number>(0, 3), // flat panel
+      crease<number>(RAD, W),
+      arc<number>(0), // flat panel
+    ];
+    // Past the band the aim has turned by ψ = (1 + rad·R/W)·W/R = W/R + rad.
+    const turn = W / R + RAD;
+    const ctx = ctxAt(L);
+    const out = runM(op, seatedAt(ctx), 1, ctx);
+    expect(out.rot + (ctx.t0 + ctx.phi)).toBeCloseTo(N0 - turn, 12);
+
+    // A NEGATIVE rad folds back the other way, past the anchor tangent — the
+    // reflex flick — and the two are symmetric about the seated fold.
+    const back: OpItem<number>[] = [
+      ...SEAM(),
+      arc<number>(0, 3),
+      crease<number>(-RAD, W),
+      arc<number>(0),
+    ];
+    const outBack = runM(back, seatedAt(ctx), 1, ctx);
+    expect(outBack.rot + (ctx.t0 + ctx.phi)).toBeCloseTo(
+      N0 - (W / R - RAD),
+      12,
+    );
+    expect(outBack.rot).toBeGreaterThan(0); // turned the opposite way
+
+    // Material is conserved: the band consumes exactly W, so a crease and an
+    // arc of the same length leave the same cursor for what follows. A vertex
+    // BEFORE the band cannot feel it at all.
+    const early = ctxAt(1.5);
+    const short: OpItem<number>[] = [...SEAM(), arc<number>(0, 3)];
+    const a = runM(op, seatedAt(early), 1, early);
+    const b = runM(short, seatedAt(early), 1, early);
+    expect(a.theta).toBeCloseTo(b.theta, 12);
+    expect(a.radius).toBeCloseTo(b.radius, 12);
+  });
+
+  it("(h″) the tent: flat panels stay dead straight and the whole turn sits in the two folds", () => {
+    // The rose's own fold pattern in miniature: panel, crease, panel, crease,
+    // panel — the reference photo's petal cross-section.
+    const RAD = 0.5;
+    const p1 = 2,
+      p2 = 3; // panel lengths; the last is the remainder
+    const tent: OpItem<number>[] = [
+      ...SEAM(),
+      arc<number>(0, p1),
+      crease<number>(RAD, W),
+      arc<number>(0, p2),
+      crease<number>(RAD, W),
+      arc<number>(0),
+    ];
+    const at = (d: number): [number, number] => {
+      const ctx = ctxAt(d);
+      return xzOf(runM(tent, seatedAt(ctx), 1, ctx));
+    };
+    // Three samples inside a panel are COLLINEAR (a facet is flat, not a
+    // shallow arc): the cross product of the two spans vanishes.
+    const straightness = (a: number, b: number, c: number): number => {
+      const [P, Q, S] = [at(a), at(b), at(c)];
+      return Math.abs(
+        (Q[0] - P[0]) * (S[1] - P[1]) - (Q[1] - P[1]) * (S[0] - P[0]),
+      );
+    };
+    expect(straightness(0.1, 1, 1.9)).toBeLessThan(1e-12);
+    expect(
+      straightness(p1 + W + 0.1, p1 + W + 1.5, p1 + W + p2 - 0.1),
+    ).toBeLessThan(1e-12);
+    expect(straightness(p1 + p2 + 2 * W + 0.1, L - 1, L)).toBeLessThan(1e-12);
+
+    // Each fold turns the panel by the same dihedral, and the pattern's whole
+    // turn is their sum (plus the seated turn the two bands themselves carry).
+    const aimAt = (d: number): number => {
+      const ctx = ctxAt(d);
+      return runM(tent, seatedAt(ctx), 1, ctx).rot + (ctx.t0 + ctx.phi);
+    };
+    const fold = W / R + RAD;
+    expect(aimAt(1)).toBeCloseTo(N0, 12);
+    expect(aimAt(p1 + W + 1)).toBeCloseTo(N0 - fold, 12);
+    expect(aimAt(L)).toBeCloseTo(N0 - 2 * fold, 12);
   });
 });
 

@@ -11,6 +11,7 @@ import {
   shear,
   spread,
   swirl,
+  tilt,
   PART_CLASS,
   type OpCtx,
   type OpItem,
@@ -111,6 +112,8 @@ describe("transforms", () => {
       ladder(5, 2),
       scale(2),
       shear(0.7),
+      tilt(1.2),
+      tilt(1.2, { pivot: -7 }),
     ];
     for (const op of ops) expectIdentity(runT(op, V0, F0, w, ctx));
   });
@@ -404,5 +407,63 @@ describe("transforms", () => {
     // Frame + rot unchanged.
     expect(sNear.f).toEqual(F0);
     expect(sNear.v.rot).toBe(V0.rot);
+  });
+
+  it("(g) tilt turns (radius, axial) about the hinge (f.radius, pivot); theta, rot and the working direction untouched", () => {
+    const ctx = makeCtx({ flight: 0.5 });
+    const rad = 1.2;
+    const a = 0.5 * rad * 1; // flight·rad·w
+    const pivot = -0.4;
+    const out = runT(tilt(rad, { pivot }), V0, F0, 1, ctx);
+    // The vertex's meridian-plane offset off the hinge point rotates rigidly:
+    // (dr, dy) → (dr·cos a + dy·sin a, dy·cos a − dr·sin a) — positive rad tips
+    // the +Y side of the pivot OUTWARD.
+    const dr = V0.radius - F0.radius;
+    const dy = V0.axial - pivot;
+    expect(out.v.radius).toBeCloseTo(
+      F0.radius + dr * Math.cos(a) + dy * Math.sin(a),
+      12,
+    );
+    expect(out.v.axial).toBeCloseTo(
+      pivot + dy * Math.cos(a) - dr * Math.sin(a),
+      12,
+    );
+    // The hinge-plane distance is preserved — the motion is rigid per meridian.
+    expect(
+      Math.hypot(out.v.radius - F0.radius, out.v.axial - pivot),
+    ).toBeCloseTo(Math.hypot(dr, dy), 12);
+    // theta never moves (the hinge is the tangent circle), and rot stays seated
+    // — a tilt turns normals about the local tangent axis, which the one
+    // optical-axis rot angle cannot express (see the op's note).
+    expect(out.v.theta).toBe(V0.theta);
+    expect(out.v.rot).toBe(V0.rot);
+    // The frame rides the same rotation with dr = 0 (it sits ON the hinge
+    // radius); its placement tracks the tilted piece, its facing does not turn.
+    const dyF = F0.axial - pivot;
+    expect(out.f.radius).toBeCloseTo(F0.radius + dyF * Math.sin(a), 12);
+    expect(out.f.axial).toBeCloseTo(pivot + dyF * Math.cos(a), 12);
+    expect(out.f.theta).toBe(F0.theta);
+    expect(out.f.orient).toBe(F0.orient);
+
+    // Default pivot = the frame centre: a vertex level with it and on the hinge
+    // radius is the fixed point.
+    const onHinge: VertexState<number> = {
+      ...V0,
+      radius: F0.radius,
+      axial: F0.axial,
+    };
+    const still = runT(tilt(rad), onHinge, F0, 1, ctx);
+    expect(still.v.radius).toBeCloseTo(F0.radius, 12);
+    expect(still.v.axial).toBeCloseTo(F0.axial, 12);
+    expect(still.f.radius).toBeCloseTo(F0.radius, 12);
+    expect(still.f.axial).toBeCloseTo(F0.axial, 12);
+
+    // w folds like every transform: w = 0.5 halves the ANGLE.
+    const half = runT(tilt(rad, { pivot }), V0, F0, 0.5, ctx);
+    const aH = a * 0.5;
+    expect(half.v.radius).toBeCloseTo(
+      F0.radius + dr * Math.cos(aH) + dy * Math.sin(aH),
+      12,
+    );
   });
 });

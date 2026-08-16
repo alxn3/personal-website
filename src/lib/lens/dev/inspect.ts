@@ -1,6 +1,7 @@
 import * as THREE from "three/webgpu";
 import { vec4 } from "three/tsl";
 import { displaceInto, opsStateKey } from "./ops-cpu";
+import { isGraphGroup } from "../core/parts";
 
 // ============================================================================
 // PIECE INSPECTOR — the /lens "Inspect" toggle. Hover a piece to read the GLB
@@ -81,11 +82,16 @@ export interface Inspector {
  *  same grouping `ops/frames.ts` `groupOf` derives the explode ladder from, so
  *  the second name is the sub-assembly a request would talk about
  *  (`Mount_BrassRing_Seg2` → `Mount_BrassRing`; a generic `Cylinder012` under
- *  `Focus_LeadScrew` reports both). Empty part name when the hit IS the root. */
+ *  `Focus_LeadScrew` reports both). Empty part name when the hit IS the root.
+ *
+ *  The `Grp_*` graph empties are skipped for the SAME reason `groupOf` skips
+ *  them (core/parts isGraphGroup): they own no rung and name no sub-assembly, so
+ *  reporting `Focus_Motor` as part of "Grp_FocusDrive" would name a node the
+ *  ladder does not have. */
 function namesOf(obj: THREE.Object3D, root: THREE.Object3D): [string, string] {
   const chain: string[] = [];
   for (let o: THREE.Object3D | null = obj; o && o !== root; o = o.parent)
-    if (o.name) chain.push(o.name);
+    if (o.name && !isGraphGroup(o.name)) chain.push(o.name);
   if (chain.length === 0) return [root.name || "(unnamed)", ""];
   return [chain[0], chain[chain.length - 1]];
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import fs from "node:fs";
-import { PRESCRIPTION, IRIS, FOCUS_MM, OPTICS_KNOBS } from "../prescription";
+import { PRESCRIPTION, IRIS, FOCUS_MM } from "../prescription";
 import { MECHANISM } from "../../ops/mechanism";
 
 // The prescription's SHAPE contract. The optical numbers themselves are
@@ -10,6 +10,11 @@ import { MECHANISM } from "../../ops/mechanism";
 // apertures, and a gap ahead of the focus rider wide enough that the focus
 // slide can never REORDER a surface (ops/trace.ts unrolls once, at module
 // load).
+//
+// OPTICS_KNOBS is deliberately NOT mirrored here — a table of tunable look
+// values restated as a literal is churn. The two knobs that must agree with
+// something (warpGain / focusCouple, against traceLens's own signature
+// defaults) are tripwired in optics/__tests__/trace-laws.test.ts, law (i).
 //
 // The GLB is read the same way ops/__tests__/shipped-glb.test.ts reads it: the
 // glTF JSON chunk straight off disk, no renderer.
@@ -152,14 +157,5 @@ describe("prescription", () => {
       IRIS.irisMaxMm,
       `open iris within ${PRESCRIPTION[k].id}/${PRESCRIPTION[k + 1].id} clear aperture`,
     ).toBeLessThanOrEqual(neighbourMm);
-  });
-
-  it("(h) ships the spec's knob defaults", () => {
-    expect(OPTICS_KNOBS).toEqual({
-      warpGain: 1,
-      dispersion: 0.015,
-      focusCouple: 1,
-      skyMix: 0,
-    });
   });
 });

@@ -4,39 +4,44 @@ import { starRho } from "../../optics/starfield";
 import {
   CONST_LINES_LOOK,
   GAP_MAX,
+  GAP_RAD,
   HEAD_SOFT,
-  LINE_GAP,
   SLOT_COUNT,
   lineAlphaAt,
   lineDrawMs,
   lineHeadAt,
   lineInsetAt,
 } from "../../optics/constellation-lines";
-import { KEYHOLE_DIR } from "../../optics/sky";
+import { BRIGHT_COUNT, SKY, dirOf } from "../../optics/sky";
 import {
+  CANDIDATE_CDF,
   CANDIDATE_DIRS,
   CANDIDATE_RHO,
-  KEYHOLE_LABEL,
   LABELS,
   LABEL_ENTRIES,
   LABEL_SEP,
   LABEL_STARS,
+  MAX_TOUCH,
   QUOTE_ATTR,
   QUOTE_DIR,
   QUOTE_TEXT,
   SKY_TYPE_LOOK,
+  SPAN_P0,
+  SPAN_P1,
   SPAWN_MS,
-  asterismDropRad,
+  arcsClash,
+  arcsCross,
+  centreCdf,
   constellationEnvAt,
   inLabelFrame,
   inkOf,
   labelEnvAt,
-  labelWidthRad,
   lcg,
   pairKey,
   pickLabelStars,
   pickPair,
   quoteEnvAt,
+  sampleCdf,
   sepOf,
 } from "../constellations";
 
@@ -51,7 +56,8 @@ const tR = rangeOf("trails");
 // the separation window and the recent depth the driver is authored against —
 // pinned as literals so a tune of either has to come past this file
 const MIN_SEP = 0.08;
-const MAX_SEP = 0.4;
+const MAX_SEP = 0.3;
+const CLEAR_RAD = 0.02;
 
 describe("the pen", () => {
   it("starts at nothing and arrives exactly once", () => {
@@ -132,18 +138,67 @@ describe("a stroke's life", () => {
 });
 
 describe("pair picking", () => {
-  it("has a pool worth picking from", () => {
-    expect(CANDIDATE_DIRS.length).toBeGreaterThanOrEqual(12);
-    // every candidate is inside the ~55° cone about the view axis (world +X)
-    for (const d of CANDIDATE_DIRS)
-      expect(d[0]).toBeGreaterThan(Math.cos((55 * Math.PI) / 180));
+  it("pools every star in the cone that is not backdrop", () => {
+    // the owner's rule: lines may join ANY star, not only the authored ones —
+    // so the pool is the whole catalog inside the cone MINUS the dim tier
+    expect(CANDIDATE_DIRS.length).toBeGreaterThanOrEqual(60);
+    const cos = Math.cos((55 * Math.PI) / 180);
+    for (const d of CANDIDATE_DIRS) expect(d[0]).toBeGreaterThan(cos);
+    // EXACTLY the non-dim prefix of the catalog inside that cone, and the
+    // equality is the whole law: one short and a bright star is unreachable, one
+    // over and a backdrop speck can carry ink.
+    let inCone = 0;
+    for (let i = 0; i < BRIGHT_COUNT; i++)
+      if (dirOf(SKY.stars[i].az, SKY.stars[i].alt)[0] >= cos) inCone++;
+    expect(CANDIDATE_DIRS.length).toBe(inCone);
+  });
+
+  it("draws from the middle of the frame far more often than the edge", () => {
+    // "priority in the center": the pick is weighted, not the pool. Measured
+    // against a UNIFORM draw over the same pool, which is the thing it replaces.
+    const rng = lcg(31);
+    const gamma = (i: number) => Math.acos(Math.min(1, CANDIDATE_DIRS[i][0]));
+    let weighted = 0;
+    let uniform = 0;
+    const n = 2000;
+    for (let k = 0; k < n; k++) {
+      weighted += gamma(sampleCdf(CANDIDATE_CDF, rng()));
+      uniform += gamma(
+        Math.min(
+          CANDIDATE_DIRS.length - 1,
+          Math.floor(rng() * CANDIDATE_DIRS.length),
+        ),
+      );
+    }
+    // 0.85 is a LAW bound, not a measurement: the shipped CENTRE_SIGMA_RAD lands
+    // at 0.63, widening it to 0.35 gives 0.71 and to 0.5 gives 0.81. Anything
+    // tighter would be a de-facto pin on that sigma and would fail on a routine
+    // bias tune, which is the owner's to make. What has to hold is only that the
+    // weighted draw sits nearer the axis than a uniform one over the same pool.
+    expect(weighted / n).toBeLessThan((uniform / n) * 0.85);
+    // the edge is rare, not barred: a pool this size still reaches its far half
+    const far = CANDIDATE_DIRS.filter((_, i) => gamma(i) > 0.7).length;
+    expect(far).toBeGreaterThan(0);
+  });
+
+  it("samples a cumulative table by its weights", () => {
+    // structure, not look: three items weighted 1 : 0 : 1 must never yield 1
+    const cdf = [1, 1, 2];
+    expect(sampleCdf(cdf, 0)).toBe(0);
+    expect(sampleCdf(cdf, 0.49)).toBe(0);
+    expect(sampleCdf(cdf, 0.51)).toBe(2);
+    expect(sampleCdf(cdf, 0.999)).toBe(2);
+    // and the builder is monotone increasing, so it is a usable table
+    const built = centreCdf(CANDIDATE_DIRS);
+    for (let i = 1; i < built.length; i++)
+      expect(built[i]).toBeGreaterThan(built[i - 1]);
   });
 
   it("is reproducible from a seed", () => {
     const run = () => {
       const rng = lcg(4242);
       return Array.from({ length: 12 }, () =>
-        pickPair(rng, CANDIDATE_DIRS, []),
+        pickPair(rng, CANDIDATE_DIRS, CANDIDATE_CDF, []),
       );
     };
     expect(run()).toEqual(run());
@@ -154,7 +209,7 @@ describe("pair picking", () => {
   it("only ever draws inside the separation window", () => {
     const rng = lcg(7);
     for (let k = 0; k < 400; k++) {
-      const pair = pickPair(rng, CANDIDATE_DIRS, []);
+      const pair = pickPair(rng, CANDIDATE_DIRS, CANDIDATE_CDF, []);
       expect(pair).not.toBeNull();
       const [i, j] = pair!;
       expect(i).not.toBe(j);
@@ -168,7 +223,7 @@ describe("pair picking", () => {
     const rng = lcg(99);
     const recent: string[] = [];
     for (let k = 0; k < 200; k++) {
-      const pair = pickPair(rng, CANDIDATE_DIRS, recent);
+      const pair = pickPair(rng, CANDIDATE_DIRS, CANDIDATE_CDF, recent);
       expect(pair, `draw ${k}`).not.toBeNull();
       const key = pairKey(pair![0], pair![1]);
       expect(recent).not.toContain(key);
@@ -179,20 +234,176 @@ describe("pair picking", () => {
     }
   });
 
+  it("never returns a stroke that is already on the sky", () => {
+    // A DUPLICATE PASSES EVERY OTHER GUARD, which is why it needs its own: the
+    // recent set remembers fewer spawns than a stroke stays visible for, and the
+    // clash test exempts a shared endpoint — so an exact repeat of a live pair
+    // would land as one doubled line. Driven over a pool small enough that the
+    // collision is not a rarity: six directions on a ring about the view axis,
+    // every pairing inside the separation window, three of them already up.
+    const rho = (MIN_SEP + MAX_SEP / 2) / 2; // ≥ MIN_SEP, and 2ρ ≤ MAX_SEP
+    const ring = Array.from({ length: 6 }, (_, k) => {
+      const roll = (k / 6) * Math.PI * 2;
+      return [
+        Math.cos(rho),
+        Math.sin(rho) * Math.cos(roll),
+        Math.sin(rho) * Math.sin(roll),
+      ] as const;
+    });
+    // the fixture only proves anything if every pairing really is drawable
+    for (let a = 0; a < ring.length; a++)
+      for (let b = a + 1; b < ring.length; b++) {
+        const sep = sepOf(ring[a], ring[b]);
+        expect(sep, `ring ${a}-${b}`).toBeGreaterThanOrEqual(MIN_SEP);
+        expect(sep, `ring ${a}-${b}`).toBeLessThanOrEqual(MAX_SEP);
+      }
+    const live = [
+      [0, 1],
+      [2, 3],
+      [4, 5],
+    ] as const;
+    const liveKeys = new Set(live.map(([a, b]) => pairKey(a, b)));
+    const rng = lcg(20260812);
+    const seen = new Set<string>();
+    for (let k = 0; k < 400; k++) {
+      const pair = pickPair(rng, ring, centreCdf(ring), [], () => false, live);
+      expect(pair, `draw ${k}`).not.toBeNull();
+      const key = pairKey(pair![0], pair![1]);
+      expect(liveKeys.has(key), `draw ${k} repeats live stroke ${key}`).toBe(
+        false,
+      );
+      seen.add(key);
+    }
+    // …and it refused ONLY those: every other pairing came back, so what is
+    // being measured is the duplicate guard and not a starved pool
+    expect(seen.size).toBe((ring.length * (ring.length - 1)) / 2 - live.length);
+  });
+
+  /** THE DRIVER'S SPAWN LOOP, in miniature: a sliding window of live strokes and
+   *  the clash test taken against all of them — the inputs
+   *  `createStoryConstellations` assembles each spawn tick. */
+  const soak = (
+    seed: number,
+    ticks: number,
+    onPick?: (
+      pair: [number, number],
+      live: readonly [number, number][],
+    ) => void,
+  ) => {
+    const rng = lcg(seed);
+    const live: [number, number][] = [];
+    let picked = 0;
+    for (let k = 0; k < ticks; k++) {
+      const pair = pickPair(
+        rng,
+        CANDIDATE_DIRS,
+        CANDIDATE_CDF,
+        [],
+        (i, j) =>
+          live.some(([a, b]) =>
+            arcsClash(
+              CANDIDATE_DIRS[i],
+              CANDIDATE_DIRS[j],
+              CANDIDATE_DIRS[a],
+              CANDIDATE_DIRS[b],
+              CLEAR_RAD,
+            ),
+          ),
+        live,
+      );
+      if (!pair) continue; // a starved tick is a legal answer
+      picked++;
+      onPick?.(pair, live);
+      live.push(pair);
+      // the ring buffer holds a dozen or so strokes at a time
+      if (live.length > 13) live.shift();
+    }
+    return picked;
+  };
+
+  it("never returns a pair the overlap test refuses", () => {
+    const picked = soak(2026, 300, (pair, live) => {
+      for (const [a, b] of live)
+        expect(
+          arcsClash(
+            CANDIDATE_DIRS[pair[0]],
+            CANDIDATE_DIRS[pair[1]],
+            CANDIDATE_DIRS[a],
+            CANDIDATE_DIRS[b],
+            CLEAR_RAD,
+          ),
+          `pick ${pair} clashes with ${a}-${b}`,
+        ).toBe(false);
+    });
+    // the test proves something only if the pool could actually feed the sky
+    expect(picked).toBeGreaterThan(200);
+  });
+
+  it("grows what is already on the sky far more often than it starts afresh", () => {
+    // THE OWNER'S RULE: "prioritize stars that already have a connection", so
+    // that what is on screen reads as a few connected figures rather than as
+    // scattered singles. Measured over the driver's own loop: how many picks
+    // share a star with a stroke that is still up.
+    let joined = 0;
+    const picked = soak(11, 300, (pair, live) => {
+      if (live.some(([a, b]) => new Set([a, b, ...pair]).size < 4)) joined++;
+    });
+    expect(picked).toBeGreaterThan(200);
+    expect(joined / picked).toBeGreaterThan(0.6);
+    // …and not ALL of them, or no second figure could ever start
+    expect(joined).toBeLessThan(picked);
+  });
+
+  it("never lets one star collect more than MAX_TOUCH strokes", () => {
+    // the bound that keeps a growing figure from turning into a starburst
+    soak(7, 300, (pair, live) => {
+      const touch = new Map<number, number>();
+      for (const s of live)
+        for (const k of s) touch.set(k, (touch.get(k) ?? 0) + 1);
+      for (const i of pair)
+        expect(touch.get(i) ?? 0, `star ${i} is already a hub`).toBeLessThan(
+          MAX_TOUCH,
+        );
+    });
+  });
+
+  it("refuses a star that is already carrying its limit", () => {
+    // structure, not probability: a saturated star is out of the pick whichever
+    // branch an attempt takes, as an anchor and as a far end alike
+    const rng = lcg(5);
+    // MAX_TOUCH strokes already ending on candidate 0, each with a different
+    // partner so nothing else is saturated with it
+    const live = Array.from(
+      { length: MAX_TOUCH },
+      (_, k) => [0, k + 1] as [number, number],
+    );
+    let picked = 0;
+    for (let k = 0; k < 200; k++) {
+      const pair = pickPair(
+        rng,
+        CANDIDATE_DIRS,
+        CANDIDATE_CDF,
+        [],
+        () => false,
+        live,
+      );
+      if (!pair) continue;
+      picked++;
+      expect(pair).not.toContain(0);
+    }
+    expect(picked).toBeGreaterThan(150);
+  });
+
   it("comes back null rather than spinning when nothing is legal", () => {
     const rng = lcg(1);
     // two directions 90° apart: outside the window, so no attempt can succeed
-    expect(
-      pickPair(
-        rng,
-        [
-          [1, 0, 0],
-          [0, 1, 0],
-        ],
-        [],
-      ),
-    ).toBeNull();
-    expect(pickPair(rng, [[1, 0, 0]], [])).toBeNull();
+    const two = [
+      [1, 0, 0],
+      [0, 1, 0],
+    ] as const;
+    expect(pickPair(rng, two, centreCdf(two), [])).toBeNull();
+    const one = [[1, 0, 0]] as const;
+    expect(pickPair(rng, one, centreCdf(one), [])).toBeNull();
   });
 
   it("is reproducible in the generator itself", () => {
@@ -205,42 +416,129 @@ describe("pair picking", () => {
   });
 });
 
-describe("the endpoint gaps", () => {
-  const MAX_MAG = 3.1; // the authored catalog's brightest, i.e. the widest disc
+describe("no two strokes may cross", () => {
+  // Unit vectors on the sphere, built from screen-ish angles about the view
+  // axis so the cases read the way they look on the page.
+  const at = (up: number, right: number) =>
+    [
+      Math.cos(up) * Math.cos(right),
+      Math.sin(up),
+      Math.cos(up) * Math.sin(right),
+    ] as const;
 
-  it("clears the disc on the worst case there is", () => {
-    // the shortest legal stroke drawn to the biggest disc in the catalog: a
-    // purely proportional gap (LINE_GAP × sep) would end UNDER that disc
-    const rho = starRho(MAX_MAG);
-    expect(LINE_GAP * MIN_SEP).toBeLessThan(rho); // the bug this law fixes
-    expect(lineInsetAt(MIN_SEP, rho) * MIN_SEP).toBeGreaterThan(rho);
+  it("catches a transversal crossing", () => {
+    // an X: one stroke bottom-left → top-right, the other top-left → bottom-right
+    expect(
+      arcsCross(at(-0.1, -0.1), at(0.1, 0.1), at(0.1, -0.1), at(-0.1, 0.1)),
+    ).toBe(true);
+    // …and the order of the two strokes, and of each stroke's ends, is immaterial
+    expect(
+      arcsCross(at(0.1, 0.1), at(-0.1, -0.1), at(-0.1, 0.1), at(0.1, -0.1)),
+    ).toBe(true);
+    expect(
+      arcsCross(at(0.1, -0.1), at(-0.1, 0.1), at(-0.1, -0.1), at(0.1, 0.1)),
+    ).toBe(true);
   });
 
-  it("clears every disc on every legal pair in the real pool", () => {
-    let pairs = 0;
-    for (let i = 0; i < CANDIDATE_DIRS.length; i++)
-      for (let j = i + 1; j < CANDIDATE_DIRS.length; j++) {
-        const sep = sepOf(CANDIDATE_DIRS[i], CANDIDATE_DIRS[j]);
-        if (sep < MIN_SEP || sep > MAX_SEP) continue;
-        pairs++;
-        for (const k of [i, j])
-          expect(
-            lineInsetAt(sep, CANDIDATE_RHO[k]) * sep,
-            `pair ${i}-${j} at star ${k}`,
-          ).toBeGreaterThan(CANDIDATE_RHO[k]);
-      }
-    expect(pairs).toBeGreaterThan(20); // the sweep actually swept something
+  it("lets two strokes MEET at a shared star", () => {
+    // the owner banned lines drawn ACROSS lines, not a chart's own junctions
+    const hub = at(0, 0);
+    expect(arcsCross(hub, at(0.1, 0.1), hub, at(-0.1, 0.12))).toBe(false);
+    expect(arcsCross(at(0.1, 0.1), hub, at(-0.1, 0.12), hub)).toBe(false);
+    // even when the two strokes leave the hub at a very shallow angle
+    expect(arcsCross(hub, at(0.1, 0.1), hub, at(0.1, 0.104))).toBe(false);
   });
 
-  it("falls back to the proportional gap on a long stroke, and is capped", () => {
-    // a wide pair round a faint star: the disc term is the smaller of the two
-    expect(lineInsetAt(MAX_SEP, starRho(1.2))).toBe(LINE_GAP);
-    // and no inset can ever eat a stroke from both ends at once
+  it("leaves disjoint strokes alone", () => {
+    expect(
+      arcsCross(at(0.2, -0.2), at(0.2, 0.2), at(-0.2, -0.2), at(-0.2, 0.2)),
+    ).toBe(false);
+    // a NEAR MISS: the second stroke stops just short of the first
+    expect(arcsCross(at(-0.1, 0), at(0.1, 0), at(0, -0.2), at(0, -0.001))).toBe(
+      false,
+    );
+    // …and crosses once it is extended past it
+    expect(arcsCross(at(-0.1, 0), at(0.1, 0), at(0, -0.2), at(0, 0.2))).toBe(
+      true,
+    );
+  });
+
+  it("keeps a near-parallel stroke off an existing one", () => {
+    // THE ARTIFACT THIS CATCHES, which crossing alone does not: two strokes a
+    // couple of pixels apart never intersect and still land on the page as one
+    // doubled line.
+    const a = at(0, -0.1);
+    const b = at(0, 0.1);
+    const near = [at(0.004, -0.08), at(0.004, 0.08)] as const;
+    expect(arcsCross(a, b, near[0], near[1])).toBe(false);
+    expect(arcsClash(a, b, near[0], near[1], CLEAR_RAD)).toBe(true);
+    // …and lets it through once it is a stroke's worth of sky away
+    const far = [at(0.05, -0.08), at(0.05, 0.08)] as const;
+    expect(arcsClash(a, b, far[0], far[1], CLEAR_RAD)).toBe(false);
+    // a crossing is a clash whatever the clearance
+    expect(arcsClash(a, b, at(-0.05, 0), at(0.05, 0.001), CLEAR_RAD)).toBe(
+      true,
+    );
+  });
+
+  it("still lets two strokes meet at a shared star", () => {
+    const hub = at(0, 0);
+    // the shared end is exempt — measured, it would read as zero clearance
+    expect(arcsClash(hub, at(0.1, 0.1), hub, at(-0.1, 0.12), CLEAR_RAD)).toBe(
+      false,
+    );
+    // …but a wedge thin enough to read as a doubled line is still refused
+    expect(arcsClash(hub, at(0.1, 0.1), hub, at(0.1, 0.104), CLEAR_RAD)).toBe(
+      true,
+    );
+  });
+
+  it("says no to a stroke against itself", () => {
+    // collinear great circles have no single intersection to test; `recent` is
+    // what keeps a repeat off the sky, not this
+    const a = at(0, 0);
+    const b = at(0.1, 0.1);
+    expect(arcsCross(a, b, a, b)).toBe(false);
+  });
+
+  it("cannot be fooled by the ANTIPODAL intersection", () => {
+    // two great circles meet twice. These arcs straddle each other's PLANE — the
+    // cheap sign test passes — but their crossing point is on the far side of
+    // the sphere, so nothing is drawn across anything.
+    const a = at(0, 0.4);
+    const b = at(0, 1.2);
+    const c = at(-0.3, -Math.PI / 2);
+    const d = at(0.3, -Math.PI / 2 + 0.2);
+    expect(arcsCross(a, b, c, d)).toBe(false);
+  });
+});
+
+describe("the endpoint gap", () => {
+  it("is the same angle whatever the stroke's length", () => {
+    // THE BUG THIS LAW FIXES: the gap used to be a FRACTION of the segment, so
+    // a long stroke stood off its stars further than a short one — which is
+    // what the owner read off the page.
+    for (const sep of [MIN_SEP, 0.12, 0.2, MAX_SEP])
+      expect(lineInsetAt(sep) * sep, `sep ${sep}`).toBeCloseTo(GAP_RAD, 12);
+  });
+
+  it("clears the biggest disc in the catalog with air to spare", () => {
+    const rho = starRho(3.1); // the authored table's brightest, i.e. widest
+    expect(GAP_RAD).toBeGreaterThan(rho * 1.5);
+    // …and every star the pool can actually offer, on the shortest legal stroke
+    for (const r of CANDIDATE_RHO) expect(GAP_RAD).toBeGreaterThan(r);
+  });
+
+  it("leaves a stroke to draw at the shortest legal separation", () => {
+    // the degenerate guard lives in the driver's window: both gaps together
+    // must not eat the segment
+    expect(2 * GAP_RAD).toBeLessThan(MIN_SEP * 0.5);
+    expect(2 * lineInsetAt(MIN_SEP)).toBeLessThan(1);
+  });
+
+  it("is capped, so no separation however degenerate can invert a stroke", () => {
     for (const sep of [1e-9, 0.001, MIN_SEP, 0.2, MAX_SEP, 3])
-      expect(
-        lineInsetAt(sep, starRho(MAX_MAG)),
-        `sep ${sep}`,
-      ).toBeLessThanOrEqual(GAP_MAX);
+      expect(lineInsetAt(sep), `sep ${sep}`).toBeLessThanOrEqual(GAP_MAX);
     expect(GAP_MAX * 2).toBeLessThan(1);
   });
 });
@@ -266,7 +564,7 @@ describe("the lines envelope", () => {
 });
 
 describe("the names", () => {
-  const every = [...LABELS, KEYHOLE_LABEL];
+  const every = [...LABELS];
   const placed = LABEL_ENTRIES.map((e) => e.text);
 
   it("are non-empty and never repeat", () => {
@@ -282,25 +580,17 @@ describe("the names", () => {
     expect(LABEL_ENTRIES.length + 1).toBeLessThanOrEqual(8);
   });
 
-  it("are the picked stars in pool order, then the Keyhole", () => {
-    expect(placed).toEqual([
-      ...LABELS.slice(0, LABEL_STARS.length),
-      KEYHOLE_LABEL,
-    ]);
+  it("are the picked stars, in pool order", () => {
+    expect(placed).toEqual(LABELS.slice(0, LABEL_STARS.length));
     for (let n = 0; n < LABEL_STARS.length; n++)
       expect(LABEL_ENTRIES[n].dir).toBe(CANDIDATE_DIRS[LABEL_STARS[n]]);
-    // a star's name takes the shared offset; only the Keyhole overrides it
-    for (let n = 0; n < LABEL_STARS.length; n++) {
-      expect(LABEL_ENTRIES[n].rightRad).toBeUndefined();
-      expect(LABEL_ENTRIES[n].downRad).toBeUndefined();
-    }
   });
 
   it("go on stars that are picked the same way every time", () => {
     const run = () =>
       pickLabelStars(CANDIDATE_DIRS, CANDIDATE_RHO, {
         eligible: inLabelFrame,
-        reserved: [KEYHOLE_DIR, QUOTE_DIR],
+        reserved: [QUOTE_DIR],
         max: LABELS.length,
       });
     expect(run()).toEqual(run());
@@ -317,19 +607,13 @@ describe("the names", () => {
   });
 
   it("are spread out — no two names inside LABEL_SEP of each other", () => {
-    // today's catalog yields five (LABELS is a pool, not a quota — see
-    // LABEL_STARS); the floor is what makes a sky with names on it
+    // today's catalog seats every name in the pool (LABELS is a pool, not a
+    // quota — see LABEL_STARS); the floor is what makes a sky with names on it
     expect(LABEL_STARS.length).toBeGreaterThanOrEqual(4);
     expect(LABEL_STARS.length).toBeLessThanOrEqual(LABELS.length);
     expect(new Set(LABEL_STARS).size).toBe(LABEL_STARS.length);
     for (let a = 0; a < LABEL_STARS.length; a++) {
-      // …and each clears the Keyhole's own heading, which is reserved before
-      // the first pick so its label cannot land on top of a star's
       const dir = CANDIDATE_DIRS[LABEL_STARS[a]];
-      expect(
-        sepOf(dir, KEYHOLE_DIR),
-        `label ${a} vs the Keyhole`,
-      ).toBeGreaterThan(LABEL_SEP);
       for (let b = a + 1; b < LABEL_STARS.length; b++)
         expect(
           sepOf(dir, CANDIDATE_DIRS[LABEL_STARS[b]]),
@@ -365,35 +649,13 @@ describe("the names", () => {
     ).toEqual([1]);
   });
 
-  it("step the Keyhole's name clear of its own shape", () => {
-    // THE BUG THIS PINS: the Keyhole's name anchors on the asterism's MEAN
-    // heading, so the shared offset (a couple of hundredths of a radian) left it
-    // lying across the middle of the shape as a permanent strike-through.
-    const keyhole = LABEL_ENTRIES.at(-1)!;
-    expect(keyhole.text).toBe(KEYHOLE_LABEL);
-    const drop = asterismDropRad("keyhole", KEYHOLE_DIR);
-    // the shape really does reach well below its own mean — otherwise this test
-    // would pass on a default offset and prove nothing
-    expect(drop).toBeGreaterThan(0.15);
-    expect(drop).toBeGreaterThan(SKY_TYPE_LOOK.label.downRad);
-    // …and the name clears the lowest star, its disc, and its own half-height
-    const halfBox = (SKY_TYPE_LOOK.label.boxPx * SKY_TYPE_LOOK.pxRad) / 2;
-    expect(keyhole.downRad!).toBeGreaterThan(drop + halfBox);
-    // it steps LEFT as well, so it reads as centred under the shape rather than
-    // hung off the bottom-right corner
-    expect(keyhole.rightRad!).toBeCloseTo(
-      -labelWidthRad(KEYHOLE_LABEL) / 2,
-      12,
-    );
-    expect(keyhole.rightRad!).toBeLessThan(0);
-    // and it is still on the screen after stepping down
-    expect(
-      Math.atan2(KEYHOLE_DIR[1], KEYHOLE_DIR[0]) - keyhole.downRad!,
-    ).toBeGreaterThan((-30 * Math.PI) / 180);
-  });
-
-  it("read a missing asterism as no drop at all", () => {
-    expect(asterismDropRad("no-such-shape", KEYHOLE_DIR)).toBe(0);
+  it("stand off their star by the one shared offset", () => {
+    // EVERY name now hangs off a POINT, so there is one placement rule and no
+    // per-entry override left to drift: right of the star and a little below it.
+    expect(SKY_TYPE_LOOK.label.rightRad).toBeGreaterThan(0);
+    expect(SKY_TYPE_LOOK.label.downRad).toBeGreaterThan(0);
+    for (const e of LABEL_ENTRIES)
+      expect(Object.keys(e).sort()).toEqual(["dir", "text"]);
   });
 
   it("share the strokes' envelope exactly", () => {
@@ -427,11 +689,6 @@ describe("the type's ink", () => {
       expect(inkOf(label.ink, light)).toBeLessThan(0.9);
       expect(inkOf(quote.ink, light)).toBeLessThanOrEqual(1);
     }
-  });
-
-  it("picks the stage's number", () => {
-    expect(inkOf({ dark: 0.1, light: 0.9 }, true)).toBe(0.9);
-    expect(inkOf({ dark: 0.1, light: 0.9 }, false)).toBe(0.1);
   });
 });
 
@@ -474,5 +731,25 @@ describe("the quote envelope", () => {
     expect(quoteEnvAt(atFrac(tR, 0.5))).toBe(1);
     expect(quoteEnvAt(tR.p1)).toBe(0);
     expect(quoteEnvAt(tR.p1 + 0.05)).toBe(0);
+  });
+});
+
+describe("the sky ink's attach window", () => {
+  // Newly EXPORTED for story/cost.ts, which counts the stroke draw and the
+  // sprite slots at p and may not re-spell this window. Pinned where it lives.
+
+  it("spans the whole chapter, padded at both ends", () => {
+    expect(SPAN_P0).toBeLessThan(coR.p0);
+    expect(SPAN_P1).toBeGreaterThan(tR.p1);
+    expect(coR.p0 - SPAN_P0).toBeCloseTo(SPAN_P1 - tR.p1, 12);
+  });
+
+  it("holds every mark this module draws", () => {
+    // nothing of the chapter's ink is nonzero outside it — lines, labels, quote
+    for (const at of [constellationEnvAt, labelEnvAt, quoteEnvAt]) {
+      expect(at(SPAN_P0)).toBe(0);
+      expect(at(SPAN_P1)).toBe(0);
+    }
+    expect(constellationEnvAt(atFrac(coR, 0.5))).toBeGreaterThan(0);
   });
 });

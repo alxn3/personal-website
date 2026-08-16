@@ -105,7 +105,7 @@ export interface PathViz {
   /** Adjacent-seat-rank radial band overlaps while both pieces are in flight. */
   interference(animId: string): Promise<InterferenceResult>;
   /** Which wedge corner departs the seated surface last (leads the stick), per
-   *  shell, in each of two animations (defaults: assemble vs rollout). */
+   *  shell, in each of two animations (defaults: assemble vs x-rose). */
   curlCorners(idA?: string, idB?: string): Promise<CurlCornerResult>;
   dispose(): void;
 }
@@ -422,6 +422,15 @@ export function createPathViz(
 
   /** Turn the read-back walk into the overlay's line geometry. */
   function buildGeometry(matrices: THREE.Matrix4[][]) {
+    // FREE THE LAST BUILD FIRST. Replacing a geometry's attributes does NOT
+    // free the old ones on the WebGPU backend — it releases buffers only from
+    // the geometry's dispose EVENT, and its Info.memoryMap holds strong refs —
+    // so every rebuild used to orphan ~238 KB of attribute + GPU buffer
+    // (measured: a perfect +3-attributes staircase per refresh, surviving
+    // forced GC). dispose() purges the backend's records; the geometry object
+    // stays usable and re-uploads on the next render.
+    pathGeo.dispose();
+    tickGeo.dispose();
     const path = localPath!;
     // world-space track, [step][sample]
     const world = new Float32Array(STEPS * count * 3);

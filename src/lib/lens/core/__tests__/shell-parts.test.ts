@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import fs from "node:fs";
-import { isPeelExtra, isPeelTube, isShellPart } from "../parts";
+import {
+  isPeelExtra,
+  isPeelKeep,
+  isPeelRest,
+  isPeelTube,
+  isShellPart,
+} from "../parts";
+import { PART } from "../names";
 
 // The shell gate's cast, pinned against the names the SHIPPED GLBs actually
 // carry — the same source ops/__tests__/shipped-glb.test.ts reads, for the same
@@ -34,13 +41,23 @@ const NAMES = [
 const REAL = new Set(NAMES);
 const basePart = (n: string) => n.replace(/_Seg\d+$/, "");
 
+describe("the node-name table", () => {
+  it("names only parts the shipped models actually carry", () => {
+    // core/names.ts is where a model-side rename lands. A name that stops
+    // existing must fail HERE — as a table entry pointing at nothing — rather
+    // than as a predicate that quietly matches no mesh and a departure table
+    // whose row is never read.
+    for (const name of Object.values(PART))
+      expect(REAL.has(name), `${name} is a real node`).toBe(true);
+  });
+});
+
 /** Every PART (wedges folded back onto their group name) the gate takes off. */
 const SHELL_PARTS = [
   "Band_Mid",
   "Barrel_Base",
   "Barrel_Inner",
   "DecalT_BadgeC",
-  "DecalT_BadgeDisc",
   "DecalT_Bezel",
   "DecalT_BezelMIJ",
   "DecalT_Brand",
@@ -55,7 +72,8 @@ const SHELL_PARTS = [
   "DecalT_Zoom_28",
   "DecalT_Zoom_35",
   "DecalT_Zoom_50",
-  "Decal_Dot2",
+  "Decal_BadgeDisc",
+  "Decal_DotMIJ",
   "Decal_HoodDash",
   "Ring_Focus",
   "Ring_Zoom",
@@ -73,7 +91,7 @@ describe("isShellPart", () => {
       "Ring_Zoom_Seg4",
       "DecalT_Brand",
       "DecalT_Zoom_50",
-      "Decal_Dot2",
+      "Decal_DotMIJ",
     ]) {
       expect(REAL.has(n) || REAL.has(basePart(n)), `${n} is a real node`).toBe(
         true,
@@ -94,7 +112,7 @@ describe("isShellPart", () => {
       "Chassis_Fixed_Seg2", // likewise (r 29.4 vs the skin's 30.8)
       "PCB_Rear",
       "Mount_Bayonet",
-      "Optics_Cell_G3_Seg5",
+      "Cell_G3_Seg5",
       "Baffle_Rear_Seg0",
       "Acc_CapFront", // accessories have their own owner
       "Acc_Hood",
@@ -110,9 +128,9 @@ describe("isShellPart", () => {
     // The `^` in `^Ring_` is what keeps these out — the collision the gate
     // would fail SILENTLY on, hiding internals behind the shell's envelope.
     for (const n of [
-      "Shim_Ring_0",
-      "Shim_Ring_1",
-      "Shim_Ring_1_Seg3",
+      "Shim_Ring_01",
+      "Shim_Ring_02",
+      "Shim_Ring_02_Seg3",
       "Mount_BrassRing",
       "Mount_BrassRing_Seg2",
       "Acc_Filter_Ring",
@@ -136,19 +154,16 @@ describe("isShellPart", () => {
 });
 
 describe("isPeelExtra", () => {
-  it("is exactly the three baffle rings the shipped models carry", () => {
+  it("is exactly the two optics traps the shipped models carry", () => {
+    // Baffle_Rear is the KEEP-set's now — the rear plate stays with the back
     const extra = [...new Set(NAMES.filter(isPeelExtra).map(basePart))].sort();
-    expect(extra).toEqual([
-      "Baffle_Rear",
-      "Optics_Baffle_Front",
-      "Optics_Baffle_G2",
-    ]);
-    // three family nodes + three rings of five wedges
-    expect(NAMES.filter(isPeelExtra)).toHaveLength(18);
+    expect(extra).toEqual(["Baffle_Front", "Baffle_G2"]);
+    // two family nodes + two rings of five wedges
+    expect(NAMES.filter(isPeelExtra)).toHaveLength(12);
   });
 
   it("leaves the rest of the optics group behind", () => {
-    for (const n of ["Optics_Cell_G3_Seg5", "Optics_G2", "Shim_Ring_1"]) {
+    for (const n of ["Cell_G3_Seg5", "Optics_G2", "Shim_Ring_02"]) {
       expect(REAL.has(n) || REAL.has(basePart(n)), `${n} is a real node`).toBe(
         true,
       );
@@ -158,24 +173,35 @@ describe("isPeelExtra", () => {
 });
 
 describe("isPeelTube", () => {
-  it("is exactly the two closed tubes the skin was wrapped around", () => {
+  it("is the tubes AND the inner cladding down to the glass", () => {
     const tubes = [...new Set(NAMES.filter(isPeelTube).map(basePart))].sort();
-    expect(tubes).toEqual(["Cam_Barrel", "Chassis_Fixed"]);
-    // two family nodes + a ring of seven wedges and a ring of five
-    expect(NAMES.filter(isPeelTube)).toHaveLength(14);
+    expect(tubes).toEqual([
+      "Cam_Barrel",
+      "Cell_Collar",
+      "Cell_Flange",
+      "Cell_G3",
+      "Chassis_Fixed",
+      "Iris_CamPlate",
+      "Iris_Housing",
+      "LightTrap",
+      "OpticsCage",
+      "RearTube",
+    ]);
+    // ten family nodes + seven 7-cut rings + three 5-cut rings of wedges
+    expect(NAMES.filter(isPeelTube)).toHaveLength(52 + 6 + 8 + 8);
   });
 
-  it("stops at the cage — the next closed layer in stays", () => {
-    // Removing Cam_OpticsCage was tried and rejected (core/parts isPeelTube):
-    // it takes the lens's body away without uncovering any more glass, since
-    // the elements it hides are wrapped in their own cells either way.
+  it("stops at its own cast — the rest-cast and the keep-set are not tubes", () => {
+    // The rear tube, the shims and the focus metalwork leave too, but on the
+    // REST cast (isPeelRest) with their own windows; the keep-set (iris,
+    // mount) never leaves at all. Neither may ride this predicate.
     for (const n of [
-      "Cam_OpticsCage_Seg3",
-      "Cam_LightTrap_Seg0",
-      "Cam_RearTube_Seg2",
-      "Optics_Cell_G3_Seg5",
+      "Shim_Ring_02_Seg3",
       "Mount_ChassisPlate_Seg1", // NOT Chassis_Fixed — the `^` is load-bearing
-      "Iris_Housing_Seg2",
+      "Iris_Blade_03", // the working star stays — KEEP-set
+      "Iris_ActuatorGear",
+      "Optics_G4_Focus", // the focus GROUP carries a moving element — mechanism
+      "Focus_Carrier",
     ]) {
       expect(REAL.has(n) || REAL.has(basePart(n)), `${n} is a real node`).toBe(
         true,
@@ -195,23 +221,62 @@ describe("isPeelTube", () => {
   });
 });
 
-describe("the three casts together", () => {
-  it("share no piece — each gets its own band of the shell fade", () => {
+describe("the casts together", () => {
+  it("share no piece — each gets its own band of a fade channel", () => {
     // core/scene gives each its own slice, so an overlap would put a piece in
     // two bands and the later branch would silently win.
     for (const n of NAMES) {
-      const casts = [isShellPart(n), isPeelExtra(n), isPeelTube(n)].filter(
-        Boolean,
-      );
+      const casts = [
+        isShellPart(n),
+        isPeelExtra(n),
+        isPeelTube(n),
+        isPeelRest(n),
+      ].filter(Boolean);
       expect(casts.length, n).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it("with the keep-set, WHITELIST the whole model (owner's law)", () => {
+    // Every model name is either KEPT for the card scene (glass, iris,
+    // mount/PCB — "the connector, the glass elements and the aperture
+    // assembly"), in one of the four departing casts, or one of the pure
+    // GROUP nodes (which carry no mesh and are never gated — their meshes are
+    // classified under their own names). Nothing may fall through: a new part
+    // added to the model must be placed, or this fails.
+    // lens_work MIGRATION STEP 5 added three more: the two `Grp_` graph
+    // empties and `Optics_G1` (the first NESTED one — a child of Barrel_Inner,
+    // holding Element_01/02).
+    const GROUPS = new Set([
+      "Grp_FocusDrive",
+      "Grp_MountRear",
+      "Optics_G1",
+      "Optics_G2",
+      "Optics_G3",
+      "Optics_G5",
+      "Optics_G4_Focus",
+      "Focus_Carrier",
+    ]);
+    for (const n of NAMES) {
+      if (n.startsWith("Acc_")) continue; // accessories have their own owner
+      const placed =
+        isPeelKeep(n) ||
+        isShellPart(n) ||
+        isPeelExtra(n) ||
+        isPeelTube(n) ||
+        isPeelRest(n) ||
+        GROUPS.has(n);
+      expect(placed, `${n} is unplaced — whitelist it or cast it`).toBe(true);
     }
   });
 
   it("take a real slice of the model, not everything and not nothing", () => {
     const leaving = NAMES.filter(
-      (n) => isShellPart(n) || isPeelExtra(n) || isPeelTube(n),
+      (n) => isShellPart(n) || isPeelExtra(n) || isPeelTube(n) || isPeelRest(n),
     );
-    expect(leaving).toHaveLength(48 + 18 + 14);
-    expect(leaving.length).toBeLessThan(NAMES.length / 2);
+    expect(leaving).toHaveLength(48 + 12 + 74 + 1);
+    // More NODE names leave than stay now (the cladding is heavily wedge-cut),
+    // but the keep-set — glass, iris, mount, PCB — must remain: cap the slice
+    // so the casts can never quietly swallow the model.
+    expect(leaving.length).toBeLessThan(NAMES.length * 0.75);
   });
 });

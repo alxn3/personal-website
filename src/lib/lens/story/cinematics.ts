@@ -1,54 +1,39 @@
 import * as THREE from "three/webgpu";
-import { rangeOf, atFrac } from "./story";
-import { clamp01, smoothstep } from "../core/math";
+import { smoothstep } from "../core/math";
 import { displaceSeatedPoint } from "../ops/cpu";
 import { isGlassElement } from "../core/parts";
 
 // ============================================================================
 // Cinematic extras (inspired by ./example) layered over the mechanism rig:
-// refraction rays, ambient dust, the sketch-in ink entrance, and the caps-on
-// finale. Everything here is presentation only — nothing in this module moves a
-// mechanism part.
+// refraction rays and ambient dust. Everything here
+// is presentation only — nothing in this module moves a mechanism part, and the
+// only `.visible` flags it writes are those of nodes it builds itself.
+//
+// THE STORY'S ENDING CARRIES NO ACCESSORY. It used to fly the two caps onto the
+// reassembled lens over the head of the capsOn scene; the finale is now the
+// origami rose alone (story/envelopes.ts ROSE_PULSE) and the caps blocked part
+// of the flower (owner). The caps remain an accessory group `/lens` can toggle
+// through core/scene.ts's `setAccessory` — nothing here resolves them.
 // ============================================================================
 
-// Scroll position where the caps-on fly-in starts — derived from the story
-// table rather than hardcoded (so a scene-duration change upstream can't
-// silently break it): 0.54 through the capsOn scene reproduces the signed-off
-// absolute p ≈ 0.93 under today's holds.
-// ...and it finishes WITH that scene rather than at a hardcoded global 1 — the
-// two coincide only for as long as capsOn is the story's last beat.
-const CAP_P0 = atFrac(rangeOf("capsOn"), 0.54);
-const CAP_P1 = rangeOf("capsOn").p1;
-
 export interface LensCinematics {
-  /** Drive the extras for one frame from the eased mechanism/story values. */
-  update(explodeT: number, storyP: number, nowMs: number): void;
-  /** Kick off the sketch-in entrance over the given ink edge lines (no-op if an
-   *  entrance is already running). */
-  startEntrance(lines: THREE.LineSegments[]): void;
+  /** Drive the extras for one frame from the eased mechanism value. */
+  update(explodeT: number, nowMs: number): void;
   /** Re-tint the presentation extras (dust motes, refraction rays) for the site
    *  theme — the dark-stage cream dust vanishes on a light stage and vice versa. */
   setTheme(light: boolean): void;
   /** Show/hide the ambient dust motes. Always on by default (the story never
    *  calls this); the /lens fly-through demo clears the stage so the starfield
    *  behind the lens reads. Dispose-safe — the only thing it writes is the
-   *  `.visible` flag of a node this module owns outright, exactly like the
-   *  caps-on finale's two writes. */
+   *  `.visible` flag of a node this module owns outright. */
   setDust(visible: boolean): void;
-  /** DEV (/lens hero-camera preview): run the caps-on finale outside story
-   *  mode. Turning it OFF reseats the caps at their rest positions; the caller
-   *  re-applies its own cap visibility (the finale toggles it per-frame). */
-  setStoryPreview(on: boolean): void;
   dispose(): void;
 }
 
 export function createCinematics(
   scene: THREE.Scene,
   gltfScene: THREE.Object3D,
-  storyMode: boolean,
-  accessoriesReady?: Promise<void>,
 ): LensCinematics {
-  const node = (name: string) => gltfScene.getObjectByName(name);
   const disposables: { dispose: () => void }[] = [];
 
   // Glass elements, sorted along the optical axis — threaded by the refraction rays.
@@ -56,24 +41,6 @@ export function createCinematics(
   gltfScene.traverse((o) => {
     if (o instanceof THREE.Mesh && isGlassElement(o.name))
       glassElements.push(o);
-  });
-
-  // Front/rear caps: in the story's "caps on" finale they slide down the optical
-  // axis and seat onto the reassembled lens. Rest positions captured for the slide.
-  // The caps live in the accessories GLB, which loads in the BACKGROUND (they are
-  // undefined until it resolves), so these are re-resolved off accessoriesReady.
-  // The finale runs LATE (storyP ≈ 0.93+) — long after even a slow load — but the
-  // guards below keep it inert (caps stay null) until the refs land, and the await
-  // guarantees they do. Rest Y is read at resolve time, before the finale moves it.
-  let capFront = node("Acc_CapFront");
-  let capRear = node("Acc_CapRear");
-  let capFrontBaseY = capFront ? capFront.position.y : 0;
-  let capRearBaseY = capRear ? capRear.position.y : 0;
-  accessoriesReady?.then(() => {
-    capFront = node("Acc_CapFront");
-    capRear = node("Acc_CapRear");
-    capFrontBaseY = capFront ? capFront.position.y : 0;
-    capRearBaseY = capRear ? capRear.position.y : 0;
   });
 
   // site theme (light = no `.dark` on <html>): dust/ray tints per theme, applied
@@ -159,43 +126,7 @@ export function createCinematics(
     applyTheme();
   }
 
-  // Sketch-in entrance: when the ink shading is first applied, the edge lines
-  // stroke on staggered (like a technical drawing drawing itself).
-  let entranceStart: number | null = null;
-  let entranceLines: THREE.LineSegments[] = [];
-  let entranceCounts: number[] = [];
-
-  function startEntrance(lines: THREE.LineSegments[]) {
-    if (entranceStart !== null || entranceLines.length > 0) return; // already running
-    entranceLines = lines;
-    entranceCounts = lines.map(
-      (l) =>
-        (l.geometry.getAttribute("position") as THREE.BufferAttribute).count,
-    );
-    entranceStart = performance.now();
-  }
-
-  function runEntrance(nowMs: number) {
-    if (entranceStart === null) return;
-    const entT = Math.min(1, (nowMs - entranceStart) / 2200);
-    const N = Math.max(1, entranceLines.length);
-    entranceLines.forEach((l, i) => {
-      const ti = clamp01(entT * 1.75 - (i / N) * 0.75);
-      const dc = Math.floor(ti * entranceCounts[i]);
-      l.visible = dc > 0; // avoid a zero-vertex draw (WebGPU warns)
-      l.geometry.setDrawRange(0, dc);
-    });
-    if (entT >= 1) {
-      entranceLines.forEach((l) => {
-        l.visible = true;
-        l.geometry.setDrawRange(0, Infinity);
-      });
-      entranceStart = null;
-      entranceLines = [];
-    }
-  }
-
-  function update(explodeT: number, storyP: number, nowMs: number): void {
+  function update(explodeT: number, nowMs: number): void {
     // refraction rays — thread the optical axis through the (world-space) glass.
     // The explode deform runs IN-SHADER, so the seated centre above is where the
     // element USED to be: displace it through the same op field the render runs
@@ -245,43 +176,10 @@ export function createCinematics(
     // ambient dust: slow drift + gentle bob
     dust.rotation.y = nowMs * 0.00002;
     dust.position.y = Math.sin(nowMs * 0.0003) * 0.25;
-
-    // sketch-in entrance (runs once, kicked off by startEntrance)
-    runEntrance(nowMs);
-
-    // caps-on finale: the lens has reassembled — slide the caps down the axis to
-    // seat. The ONE `.visible` write left in this module, and it stays here
-    // because it owns its two nodes outright: the caps are ACCESSORIES, which
-    // the visibility owner leaves to their own owners (the page's accessory
-    // choice, and this finale while the story runs).
-    if (storyMode || preview) {
-      // caps fly in only after the rotate-to-camera has mostly settled (the
-      // capsOn transit ends ≈0.95), so the beat reads: face the viewer → cap on
-      const capT = smoothstep(CAP_P0, CAP_P1, storyP);
-      const capOn = capT > 0.004;
-      if (capFront) {
-        capFront.visible = capOn;
-        capFront.position.y = capFrontBaseY + (1 - capT) * 95;
-      }
-      if (capRear) {
-        capRear.visible = capOn;
-        capRear.position.y = capRearBaseY - (1 - capT) * 95;
-      }
-    }
   }
 
   function setDust(visible: boolean) {
     dust.visible = visible;
-  }
-
-  // hero-camera preview flag (see LensCinematics.setStoryPreview)
-  let preview = false;
-  function setStoryPreview(on: boolean) {
-    preview = on;
-    if (!on) {
-      if (capFront) capFront.position.y = capFrontBaseY;
-      if (capRear) capRear.position.y = capRearBaseY;
-    }
   }
 
   function dispose() {
@@ -292,10 +190,8 @@ export function createCinematics(
 
   return {
     update,
-    startEntrance,
     setTheme,
     setDust,
-    setStoryPreview,
     dispose,
   };
 }

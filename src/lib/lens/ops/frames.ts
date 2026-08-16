@@ -93,7 +93,7 @@
 // never do.
 
 import * as THREE from "three/webgpu";
-import { isSegWedge, partClassOf } from "../core/parts";
+import { isGraphGroup, isSegWedge, partClassOf } from "../core/parts";
 import { PART_CLASS } from "./ops";
 
 /** The generated attributes: THREE Float32 vectors, each field held constant
@@ -205,7 +205,7 @@ export const SHELL_ADOPT: Record<string, string[]> = {
   Mount_Bayonet: [
     "Mount_Screws",
     "Mount_FlangeScrews",
-    "Mount_ScrewBores",
+    "Mount_ScrewCounterbores",
     "Mount_Notch",
     "Mount_ContactShelf",
     "Mount_Contacts",
@@ -468,11 +468,18 @@ function measureComponents(unit: Unit): LocalPiece[] {
 
 // ── Naming: class and ladder group ───────────────────────────────────────────
 
-/** The name chain from a node up to (not including) the root. */
+/** The name chain from a node up to (not including) the root — every name that
+ *  is a PART IDENTITY, so the `Grp_*` graph empties are skipped (core/parts
+ *  `isGraphGroup`). They group the node graph without owning a rung: their
+ *  members keep their own, which is what makes `groupOf` below give
+ *  `Focus_Motor` and the six rear-mount parts their nine separate ladder rungs
+ *  instead of collapsing them onto two. `classOf` reaches the same answer either
+ *  way (a `Grp_` name classes as nothing), but the skip is here, once, rather
+ *  than left implicit in a regex that could widen. */
 function nameChain(obj: THREE.Object3D, root: THREE.Object3D): string[] {
   const names: string[] = [];
   for (let o: THREE.Object3D | null = obj; o && o !== root; o = o.parent)
-    if (o.name) names.push(o.name);
+    if (o.name && !isGraphGroup(o.name)) names.push(o.name);
   return names;
 }
 
@@ -497,9 +504,18 @@ function classOf(mesh: THREE.Object3D, root: THREE.Object3D): number {
 /** The ladder group a mesh belongs to: the TOPMOST named ancestor below the root
  *  (its own name if it has no named ancestor). Topmost, not nearest: the model
  *  nests real sub-assemblies (Band_Mid and Barrel_Base under Chassis_Fixed,
- *  Element_01/02 and the front baffle under Barrel_Inner) that are welded to
- *  their parent and must ride ONE rung with it — which is exactly the grouping
- *  the authored tier table did by listing only top-level parts. */
+ *  Element_01/02 — through the `Optics_G1` empty — and the front baffle under
+ *  Barrel_Inner) that are welded to their parent and must ride ONE rung with
+ *  it — which is exactly the grouping the authored tier table did by listing
+ *  only top-level parts.
+ *
+ *  `Optics_G1` is the model's first NESTED group empty and it is deliberately
+ *  NOT a `Grp_`: topmost-wins therefore lands its two elements on
+ *  `Barrel_Inner`'s rung, exactly as the un-nested pair did (26 groups, not 27).
+ *  A `Grp_` ancestor is invisible here — see nameChain — so the five real
+ *  re-parents of lens_work MIGRATION STEP 5 are the only merges this derivation
+ *  sees: PCB_Components onto PCB_Rear, Mount_Contacts onto Mount_ContactShelf,
+ *  and the three screw sets onto Mount_Bayonet. */
 function groupOf(mesh: THREE.Object3D, root: THREE.Object3D): string {
   const chain = nameChain(mesh, root);
   return chain.length > 0 ? chain[chain.length - 1] : "";
@@ -607,7 +623,24 @@ function adoptJobs(
     const objs = features
       .map((n) => root.getObjectByName(n))
       .filter((o): o is THREE.Object3D => o != null);
-    if (objs.length > 0) jobs.push({ shell, features: objs, wedges: null });
+    if (objs.length === 0) continue;
+    // A SEGMENTED shell hosts on its own `_SegN` wedges — the decal walk's rule.
+    // The open pool ("every non-feature piece under the shell") predates the
+    // nested sub-assemblies: `Chassis_Fixed` holds `Band_Mid` and its ring
+    // neighbours, so a nearest-meridian search over the whole subtree snapped
+    // the focus motor to an OUTER-skin piece — a different rank layer, so the
+    // motor rode the peel band its real host sits outside of (owner-caught,
+    // twice). The pool stays open only for an unsegmented shell.
+    const segs: THREE.Object3D[] = [];
+    shell.traverse((o) => {
+      if (isSegWedge(o.name) && o.name.startsWith(`${shell.name}_Seg`))
+        segs.push(o);
+    });
+    jobs.push({
+      shell,
+      features: objs,
+      wedges: segs.length > 0 ? segs : null,
+    });
   }
   // Printed markings: same adoption, host MEASURED off the segmentation instead
   // of named. A decal with no segmented ancestor keeps its own derived frame —
@@ -869,6 +902,17 @@ export function deriveFrames(
   const toRoot = new THREE.Matrix4();
   const p = new THREE.Vector3();
   for (const unit of units) {
+    // Accessories NEVER join this pass (they get their own scoped pass, root =
+    // the accessory — scene.ts). They load in the BACKGROUND and merge whenever
+    // their fetch lands, so without this skip the body census depended on a
+    // race: a load where the hood/filter merged first stretched the rank
+    // normalization span by their larger radii and rescaled EVERY body rank —
+    // the calibrated rank bands then selected a different cast per load (and
+    // per backend, since the WebGPU adapter wait shifts the timing). The
+    // `!== root` guard keeps the scoped accessory pass itself framing: there
+    // the root IS the accessory, and classOf reads the root's own name.
+    if (unit.node !== root && classOf(unit.node, root) === PART_CLASS.accessory)
+      continue;
     const perIsland = featureRoots.some((f) => isUnder(unit.node, f));
     const locals = perIsland ? measureComponents(unit) : measureWhole(unit);
     // ONE matrix takes every measurement of this unit to root space.

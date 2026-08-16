@@ -4,6 +4,10 @@ import { NUM } from "../algebra";
 // These pin the GLSL semantics the NUM backend must share with the TSL
 // backend: the number backend is the executable spec, so every op here must
 // match what `three/tsl` computes on the GPU for the same inputs.
+//
+// ONLY the ops whose GLSL meaning DIVERGES from the obvious JS one are here.
+// The plain arithmetic (`add`, `min`, `sin`, `lift`…) is a one-line lambda per
+// op with no second reading available, so a test of it restates the code.
 describe("NUM algebra — GLSL semantics", () => {
   it("step is 0 iff x < edge (edge-inclusive)", () => {
     expect(NUM.step(0.5, 0.5)).toBe(1);
@@ -45,34 +49,5 @@ describe("NUM algebra — GLSL semantics", () => {
     expect(NUM.sign(0)).toBe(0);
     expect(NUM.sign(-3)).toBe(-1);
     expect(NUM.sign(3)).toBe(1);
-  });
-});
-
-describe("NUM algebra — core arithmetic", () => {
-  it("lift and lit are identity on numbers", () => {
-    expect(NUM.lift(3)).toBe(3);
-    expect(NUM.lit(3)).toBe(3);
-  });
-
-  it("add/sub/mul/div/neg", () => {
-    expect(NUM.add(2, 3)).toBe(5);
-    expect(NUM.sub(2, 3)).toBe(-1);
-    expect(NUM.mul(2, 3)).toBe(6);
-    expect(NUM.div(6, 3)).toBe(2);
-    expect(NUM.neg(3)).toBe(-3);
-  });
-
-  it("min/max", () => {
-    expect(NUM.min(2, 3)).toBe(2);
-    expect(NUM.max(2, 3)).toBe(3);
-  });
-
-  it("trig, pow, sqrt, floor, abs", () => {
-    expect(NUM.sin(0)).toBe(0);
-    expect(NUM.cos(0)).toBe(1);
-    expect(NUM.pow(2, 10)).toBe(1024);
-    expect(NUM.sqrt(9)).toBe(3);
-    expect(NUM.floor(2.9)).toBe(2);
-    expect(NUM.abs(-4)).toBe(4);
   });
 });

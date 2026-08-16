@@ -31,14 +31,20 @@ export const CAP_BAND_SELECTOR = ".cap-band";
  *  edge: a −100% TOP margin shrinks the root down onto it. That line, not a
  *  slice, is what makes this path scene-accurate.
  *
- *  A band for scene [a, b] occupies document [a·S, b·S + 100dvh], where S is the
+ *  A band for scene [a, b] occupies document [a·S, b·S + 100svh], where S is the
  *  track's scrollable length (story.ts — the trailing viewport is the sticky
- *  caption's pin room). It straddles the bottom line exactly while
- *  scrollY ∈ [a·S − 100dvh, b·S]. Bands overlap, so applyCapFades keeps the
- *  FIRST one in document order: band N lights when N−1 releases at
- *  b(N−1)·S = (p0 + PAD)·S and releases at (p1 + PAD)·S — its own scene, shifted
- *  by one PAD of scroll (~159px at 1440×900) and nothing else. No viewport-height
- *  term survives, so it holds at every screen size.
+ *  caption's pin room). The observer's line, though, is the LIVE viewport bottom
+ *  — an implicit IntersectionObserver root is the LAYOUT viewport, whose height
+ *  is the DYNAMIC one on iOS — so a band straddles it while
+ *  scrollY ∈ [a·S − 100dvh, b·S + (100svh − 100dvh)]. Bands overlap, so
+ *  applyCapFades keeps the FIRST one in document order: band N lights when N−1
+ *  releases at b(N−1)·S = (p0 + PAD)·S and releases at (p1 + PAD)·S — its own
+ *  scene, shifted by one PAD of scroll (~233px at 1440×900). The only
+ *  viewport-height term left is (100svh − 100dvh): zero except on an iOS Safari
+ *  with the toolbar hidden, where it is NEGATIVE, up to ~80px in magnitude — a
+ *  fraction of a pad, and it
+ *  moves a fade THRESHOLD, never a box, so the worst it can do is hand a
+ *  caption over slightly early. Nothing here to tune at any screen size.
  *
  *  Anchoring to the viewport TOP instead (`0px 0px -100% 0px`) shifts every
  *  window a full viewport later; a symmetric inset — the obvious "is it on

@@ -6,16 +6,16 @@ import {
   passageOrder,
   poseCamX,
   travelRemap,
-} from "../../optics/fly-core";
+} from "../fly-core";
 
 // No DOM shim: optics/fly-core.ts is pure math (core/math + the prescription
-// table), unlike demos.ts, whose module scope reached for `window` through
-// scene-kit's reduced-motion probe.
+// table).
 
 /**
  * The fly-through's PURE half: where the camera is, which element it is
- * arriving at, and how p is stretched over the flight. The pose rig, the
- * material swap and both shaders need a renderer and are verified in the demo.
+ * arriving at, and how p is stretched over the flight. These are the numeric
+ * laws the story's dive (story/fly.ts) rides — they outlived the /lens demo
+ * that first exercised them.
  */
 
 const NEAR_PLANE = 0.1; // world units — core/scene's camera near
@@ -164,6 +164,27 @@ describe("fly-through / the ruler", () => {
       0,
       12,
     );
+  });
+
+  it("(k2) is a pure AXIAL displacement — which is what lets the LENS do the moving", () => {
+    // The story does not fly this camera: it parks one at −distFar and slides
+    // the MODEL to (−distFar − camX) instead (story/fly.ts). Those are the same
+    // frames only while the path stays ON the axis — a Y or Z component would
+    // need a rotation no dolly can express — so this is the tripwire on the
+    // precondition, not on the arithmetic.
+    for (let i = 0; i <= 40; i++) {
+      const pose = flyPose(i / 40);
+      const y = pose.distance * Math.sin(pose.elevation) + (pose.targetY ?? 0);
+      const z =
+        pose.distance * Math.cos(pose.elevation) * Math.cos(pose.azimuth);
+      expect(y, `world Y at p ${i / 40}`).toBeCloseTo(0, 12);
+      expect(z, `world Z at p ${i / 40}`).toBeCloseTo(0, 12);
+    }
+    // …and the run the dolly has to cover: the park behind the mount to the
+    // finale out front, distFar + xEnd = 25 world units of travel.
+    expect(poseCamX(flyPose(0))).toBeCloseTo(-FLY.distFar, 12);
+    expect(poseCamX(flyPose(1))).toBeCloseTo(FLY.xEnd, 12);
+    expect(poseCamX(flyPose(1)) - poseCamX(flyPose(0))).toBeCloseTo(25, 12);
   });
 
   it("(l) keeps the interior window inside the barrel run", () => {

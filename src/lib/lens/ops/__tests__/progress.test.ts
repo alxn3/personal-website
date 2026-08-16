@@ -492,16 +492,21 @@ describe("which shipped recipes use during", () => {
         i.kind === "group" && (i.progress !== undefined || carries(i.items)),
     );
 
-  it("(l) exactly one does — `peel`, whose stagger IS its window", () => {
+  it("(l) exactly two do — `peel` and `rose`, whose staggers ARE their windows", () => {
     // The rest are inert, so their goldens cannot move through this machinery
     // at all. `peel` is the exception on purpose (ops/recipes states why: both
-    // of the gate's stagger inputs are degenerate on the peel's cast), so its
-    // window is the thing to keep honest — (l′) below.
+    // of the gate's stagger inputs are degenerate on the peel's cast), and
+    // `rose` is the same idiom keyed on whorl = rank01^ROSE_WHORL_EXP — raw
+    // rank is NOT a usable wave key on this cast (every visible petal sits at
+    // rank 0.875…1; the exponent spreads that band and folds the interior
+    // hardware toward the heart) — each window is the thing to keep honest:
+    // (l′) and (l″) below.
+    const DURING_RECIPES = ["peel", "rose"];
     for (const recipe of Object.values(RECIPES))
       expect(
         carries(recipe.build(ctxAt(0.5), recipe.knobDefaults)),
         recipe.name,
-      ).toBe(recipe.name === "peel");
+      ).toBe(DURING_RECIPES.includes(recipe.name));
   });
 
   it("(l′) peel's window is legal at every meridian and every stagger", () => {
@@ -528,6 +533,36 @@ describe("which shipped recipes use during", () => {
           1 + 1e-12,
         );
         validatePipeline(items, `peel-${at}`);
+      }
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it("(l″) rose's window is legal at every rank and every stagger", () => {
+    // The same invariants as (l′), for the rank-keyed window: from ≥ 0 and
+    // to > from at every whorl depth, at both ends of KNOB_LIMITS' [0, 0.85]
+    // — and to ≤ 1, so the innermost whorl finishes its bloom by channel 1
+    // rather than hanging half-open forever.
+    const recipe = RECIPES.rose;
+    const spy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // the rank grid samples the CAST's real ranks: the visible petals live at
+    // rank 0.875…1 (see ROSE_WHORL_EXP in ops/recipes.ts), so a grid spread
+    // over [0,1] would collapse under the whorl exponent and probe one window
+    // three times — 0 and the petal band are the corners that exist.
+    for (const stagger of [0, 0.45, 0.6, 0.85])
+      for (const rank01 of [0, 0.88, 0.92, 0.96, 1]) {
+        const items = recipe.build(
+          { ...ctxAt(0.5), rank01 },
+          { ...recipe.knobDefaults, stagger },
+        );
+        const g = items[0] as { progress: { from: number; to: number } };
+        const at = `stagger ${stagger} rank01 ${rank01}`;
+        expect(g.progress.from, `${at}: from`).toBeGreaterThanOrEqual(0);
+        expect(g.progress.to, `${at}: width`).toBeGreaterThan(g.progress.from);
+        expect(g.progress.to, `${at}: ends by 1`).toBeLessThanOrEqual(
+          1 + 1e-12,
+        );
+        validatePipeline(items, `rose-${at}`);
       }
     expect(spy).not.toHaveBeenCalled();
     spy.mockRestore();
