@@ -62,7 +62,7 @@ table.
 constellations  0.6088      13   12.9     7.4     0.0     25      24        0.0         12      yes   yes                            focus story
         trails  0.7109       0    0.0     0.0     0.0     14      13        0.0         14        —   yes           assemble explode focus story
         rewrap  0.8815     194   74.3    87.0    67.0    384     383       74.3        374      yes   yes  aperture assemble explode focus story
-        capsOn  0.9827     194   74.3    87.0    67.0    374     374       74.3        374        —     —   aperture assemble explode rose story
+        capsOn  0.9827     194   74.3    87.0    67.0    374     374       74.3        374        —     —            aperture explode rose story
 ```
 
 ## At every edge
@@ -81,89 +81,90 @@ visible glass meshes still wearing a transmissive material: any at all costs a
 full framebuffer copy per frame.
 
 ```text
-     p           scene  meshes  kTris  kVerts  kLineV  draws  model  ovl  sky  transp  glassTx  post  cards                         channels
-------  --------------  ------  -----  ------  ------  -----  -----  ---  ---  ------  -------  ----  -----  -------------------------------
-0.0000            hero     194   74.3    87.0    67.0    374    370    4    0     374        0     —      0                                —
-0.0061            hero     194   74.3    87.0    67.0    374    370    4    0     374        0     —      0                            story
-0.0306            hero     194   74.3    87.0    67.0    374    370    4    0     374        0     —      0                            story
-0.0412            hero     194   74.3    87.0    67.0    374    370    4    0     374        0     —      0                            story
-0.0551            hero     194   74.3    87.0    67.0    374    370    4    0     374        0     —      0                            story
-0.0612            zoom     194   74.3    87.0    67.0    382    370   12    0     382        0     —      8                            story
-0.0750            zoom     194   74.3    87.0    67.0    382    370   12    0     382        0     —      8                            story
-0.0812            zoom     194   74.3    87.0    67.0    382    370   12    0     382        0     —      8                       story zoom
-0.1071            zoom     194   74.3    87.0    67.0    382    370   12    0     382        0     —      8                       story zoom
-0.1182            zoom     194   74.3    87.0    67.0    382    370   12    0     382        0     —      8                       story zoom
-0.1331            zoom     194   74.3    87.0    67.0    382    370   12    0     382        0     —      8                       story zoom
-0.1347            zoom     194   74.3    87.0    67.0    382    370   12    0     382        0     —      8                       story zoom
-0.1531            peel     194   74.3    87.0    67.0    382    370   12    0     382        0     —      8                       story zoom
-0.1731            peel     194   74.3    87.0    67.0    382    370   12    0     382        0     —      8                  peel story zoom
-0.1792            peel     194   74.3    87.0    67.0    382    370   12    0     382        0     —      8                  peel story zoom
-0.1816            peel     194   74.3    87.0    67.0    382    370   12    0     382        0     —      8                  peel story zoom
-0.1857            peel     194   74.3    87.0    67.0    382    370   12    0     382        0     —      8                       peel story
-0.2147            peel     194   74.3    87.0    67.0    382    370   12    0     382        0     —      8                       peel story
-0.2233            peel     194   74.3    87.0    67.0    382    370   12    0     382        0     —      8                       peel story
-0.2280            peel     194   74.3    87.0    67.0    382    370   12    0     382        0     —      8        aperture focus peel story
-0.2347           cards     194   74.3    87.0    67.0    382    370   12    0     382        0     —      8        aperture focus peel story
-0.2435           cards     194   74.3    87.0    67.0    382    370   12    0     382        0     —      8             aperture focus story
-0.2547           cards     194   74.3    87.0    67.0    382    370   12    0     382        0     —      8    aperture assemble focus story
-0.2718           cards     194   74.3    87.0    67.0    382    370   12    0     382        0     —      8    aperture assemble focus story
-0.2824           cards      13   12.9     7.4     1.9     38     26   12    0      38        0     —      8    aperture assemble focus story
-0.2842           cards      13   12.9     7.4     1.9     38     26   12    0      38        0     —      8    aperture assemble focus story
-0.2878           cards      13   12.9     7.4     1.9     38     26   12    0      38        0     —      8    aperture assemble focus story
-0.2913           cards      13   12.9     7.4     1.9     38     26   12    0      38        0     —      8             aperture focus story
-0.2931           cards      13   12.9     7.4     1.9     38     26   12    0      38        0     —      8             aperture focus story
-0.3001           cards      76   31.7    37.1    23.7    164    152   12    0     164        0     —      8             aperture focus story
-0.3010           cards      76   31.7    37.1    23.7    164    152   12    0     164        0     —      8             aperture focus story
-0.3031           cards      76   31.7    37.1    23.7    164    152   12    0     164        0     —      8             aperture focus story
-0.3231       internals      76   31.7    37.1    23.7    164    152   12    0     164        0     —      8             aperture focus story
-0.3431       internals      76   31.7    37.1    23.7    156    152    4    0     156        0     —      0             aperture focus story
-0.3803       internals      76   31.7    37.1    23.7    156    152    4    0     156        0     —      0             aperture focus story
-0.3946       internals      76   31.7    37.1    23.7    156    152    4    0     156        0     —      0             aperture focus story
-0.3984       internals      76   31.7    37.1    23.7    156    152    4    0     156        0     —      0             aperture focus story
-0.4136       internals      76   31.7    37.1    23.7    156    152    4    0     156        0     —      0             aperture focus story
-0.4184      flythrough      76   31.7    37.1    23.7    156    152    4    0     156        0     —      0             aperture focus story
-0.4372      flythrough      76   31.7    37.1     0.0     80     76    4    0      17       13     —      0                   aperture story
-0.4374      flythrough      76   31.7    37.1     0.0     80     76    4    0      17       13     —      0                   aperture story
-0.4384      flythrough      76   31.7    37.1     0.0     80     76    4    0      17       13     —      0                   aperture story
-0.4422      flythrough      95   35.6    42.5     0.0     99     95    3    1      16       13    on      0                   aperture story
-0.4476      flythrough     141   46.2    57.2     0.0    145    141    3    1      16       13    on      0                   aperture story
-0.5034      flythrough     141   46.2    57.2     0.0    145    141    3    1      16       13    on      0                            story
-0.5446      flythrough     141   46.2    57.2     0.0    153    141   11    1      24       13    on      0                      focus story
-0.5646  constellations      13   12.9     7.4     0.0     25     13   11    1      24       13    on      0                      focus story
-0.5846  constellations       0    0.0     0.0     0.0     12      0   11    1      11        0    on      0                      focus story
-0.6088  constellations       0    0.0     0.0     0.0     12      0   11    1      11        0    on      0                      focus story
-0.6331  constellations       0    0.0     0.0     0.0     14      0   13    1      13        0    on      0                      focus story
-0.6531          trails       0    0.0     0.0     0.0     14      0   13    1      13        0    on      0                      focus story
-0.6588          trails       0    0.0     0.0     0.0     14      0   13    1      13        0    on      0                      focus story
-0.6646          trails       0    0.0     0.0     0.0     14      0   13    1      13        0    on      0              explode focus story
-0.6704          trails       0    0.0     0.0     0.0     14      0   13    1      13        0    on      0              explode focus story
-0.6731          trails       0    0.0     0.0     0.0     14      0   13    1      13        0    on      0     assemble explode focus story
-0.6820          trails       0    0.0     0.0     0.0     14      0   13    1      13        0    on      0     assemble explode focus story
-0.7109          trails       0    0.0     0.0     0.0     14      0   13    1      13        0    on      0     assemble explode focus story
-0.7224          trails       0    0.0     0.0     0.0     14      0   13    1      13        0    on      0     assemble explode focus story
-0.7456          trails       0    0.0     0.0     0.0     14      0   13    1      13        0    on      0     assemble explode focus story
-0.7487          trails       0    0.0     0.0     0.0     14      0   13    1      13        0    on      0     assemble explode focus story
-0.7687          rewrap       0    0.0     0.0     0.0     14      0   13    1      13        0    on      0     assemble explode focus story
-0.7745          rewrap       0    0.0     0.0     0.0     14      0   13    1      13        0    on      0     assemble explode focus story
-0.7751          rewrap       0    0.0     0.0     0.0     14      0   13    1      13        0    on      0     assemble explode focus story
-0.7803          rewrap     194   74.3    87.0     0.0    208    194   13    1     207       13    on      0     assemble explode focus story
-0.7872          rewrap     194   74.3    87.0     0.0    208    194   13    1      26       13    on      0     assemble explode focus story
-0.7887          rewrap     194   74.3    87.0    67.0    384    370   13    1     383       13    on      0     assemble explode focus story
-0.7976          rewrap     194   74.3    87.0    67.0    376    370    5    1     375       13    on      0     assemble explode focus story
-0.8057          rewrap     194   74.3    87.0    67.0    376    370    5    1     375        0    on      0     assemble explode focus story
-0.8103          rewrap     194   74.3    87.0    67.0    376    370    5    1     375        0    on      0     assemble explode focus story
-0.8288          rewrap     194   74.3    87.0    67.0    375    370    4    1     374        0    on      0     assemble explode focus story
-0.8358          rewrap     194   74.3    87.0    67.0    375    370    4    1     374        0    on      0     assemble explode focus story
-0.8612          rewrap     194   74.3    87.0    67.0    374    370    4    0     374        0     —      0  aperture assemble explode story
-0.8644          rewrap     194   74.3    87.0    67.0    374    370    4    0     374        0     —      0  aperture assemble explode story
-0.8815          rewrap     194   74.3    87.0    67.0    374    370    4    0     374        0     —      0  aperture assemble explode story
-0.8844          capsOn     194   74.3    87.0    67.0    374    370    4    0     374        0     —      0  aperture assemble explode story
-0.8982          capsOn     194   74.3    87.0    67.0    374    370    4    0     374        0     —      0  aperture assemble explode story
-0.9044          capsOn     194   74.3    87.0    67.0    374    370    4    0     374        0     —      0  aperture assemble explode story
-0.9133          capsOn     194   74.3    87.0    67.0    374    370    4    0     374        0     —      0           aperture explode story
-0.9561          capsOn     194   74.3    87.0    67.0    374    370    4    0     374        0     —      0              aperture rose story
-0.9734          capsOn     194   74.3    87.0    67.0    374    370    4    0     374        0     —      0              aperture rose story
-0.9827          capsOn     194   74.3    87.0    67.0    374    370    4    0     374        0     —      0              aperture rose story
-0.9884          capsOn     194   74.3    87.0    67.0    374    370    4    0     374        0     —      0              aperture rose story
-1.0000          capsOn     194   74.3    87.0    67.0    374    370    4    0     374        0     —      0              aperture rose story
+     p           scene  meshes  kTris  kVerts  kLineV  draws  model  ovl  sky  transp  glassTx  post  cards                            channels
+------  --------------  ------  -----  ------  ------  -----  -----  ---  ---  ------  -------  ----  -----  ----------------------------------
+0.0000            hero     194   74.3    87.0    67.0    374    370    4    0     374        0     —      0                                   —
+0.0061            hero     194   74.3    87.0    67.0    374    370    4    0     374        0     —      0                               story
+0.0306            hero     194   74.3    87.0    67.0    374    370    4    0     374        0     —      0                               story
+0.0412            hero     194   74.3    87.0    67.0    374    370    4    0     374        0     —      0                               story
+0.0551            hero     194   74.3    87.0    67.0    374    370    4    0     374        0     —      0                               story
+0.0612            zoom     194   74.3    87.0    67.0    382    370   12    0     382        0     —      8                               story
+0.0750            zoom     194   74.3    87.0    67.0    382    370   12    0     382        0     —      8                               story
+0.0812            zoom     194   74.3    87.0    67.0    382    370   12    0     382        0     —      8                          story zoom
+0.1071            zoom     194   74.3    87.0    67.0    382    370   12    0     382        0     —      8                          story zoom
+0.1182            zoom     194   74.3    87.0    67.0    382    370   12    0     382        0     —      8                          story zoom
+0.1331            zoom     194   74.3    87.0    67.0    382    370   12    0     382        0     —      8                          story zoom
+0.1347            zoom     194   74.3    87.0    67.0    382    370   12    0     382        0     —      8                          story zoom
+0.1531            peel     194   74.3    87.0    67.0    382    370   12    0     382        0     —      8                          story zoom
+0.1731            peel     194   74.3    87.0    67.0    382    370   12    0     382        0     —      8                     peel story zoom
+0.1792            peel     194   74.3    87.0    67.0    382    370   12    0     382        0     —      8                     peel story zoom
+0.1816            peel     194   74.3    87.0    67.0    382    370   12    0     382        0     —      8                     peel story zoom
+0.1857            peel     194   74.3    87.0    67.0    382    370   12    0     382        0     —      8                          peel story
+0.2147            peel     194   74.3    87.0    67.0    382    370   12    0     382        0     —      8                          peel story
+0.2233            peel     194   74.3    87.0    67.0    382    370   12    0     382        0     —      8                          peel story
+0.2280            peel     194   74.3    87.0    67.0    382    370   12    0     382        0     —      8           aperture focus peel story
+0.2347           cards     194   74.3    87.0    67.0    382    370   12    0     382        0     —      8           aperture focus peel story
+0.2382           cards     194   74.3    87.0    67.0    382    370   12    0     382        0     —      8           aperture focus peel story
+0.2547           cards     194   74.3    87.0    67.0    382    370   12    0     382        0     —      8  aperture assemble focus peel story
+0.2665           cards     194   74.3    87.0    67.0    382    370   12    0     382        0     —      8       aperture assemble focus story
+0.2701           cards     194   74.3    87.0    67.0    382    370   12    0     382        0     —      8       aperture assemble focus story
+0.2718           cards     194   74.3    87.0    67.0    382    370   12    0     382        0     —      8       aperture assemble focus story
+0.2833           cards      87   32.8    38.5    25.1    186    174   12    0     186        0     —      8       aperture assemble focus story
+0.2895           cards      76   31.7    37.1    23.7    164    152   12    0     164        0     —      8       aperture assemble focus story
+0.2913           cards      76   31.7    37.1    23.7    164    152   12    0     164        0     —      8       aperture assemble focus story
+0.3001           cards      76   31.7    37.1    23.7    164    152   12    0     164        0     —      8                aperture focus story
+0.3010           cards      76   31.7    37.1    23.7    164    152   12    0     164        0     —      8                aperture focus story
+0.3031           cards      76   31.7    37.1    23.7    164    152   12    0     164        0     —      8                aperture focus story
+0.3231       internals      76   31.7    37.1    23.7    164    152   12    0     164        0     —      8                aperture focus story
+0.3431       internals      76   31.7    37.1    23.7    156    152    4    0     156        0     —      0                aperture focus story
+0.3803       internals      76   31.7    37.1    23.7    156    152    4    0     156        0     —      0                aperture focus story
+0.3946       internals      76   31.7    37.1    23.7    156    152    4    0     156        0     —      0                aperture focus story
+0.3984       internals      76   31.7    37.1    23.7    156    152    4    0     156        0     —      0                aperture focus story
+0.4136       internals      76   31.7    37.1    23.7    156    152    4    0     156        0     —      0                aperture focus story
+0.4184      flythrough      76   31.7    37.1    23.7    156    152    4    0     156        0     —      0                aperture focus story
+0.4372      flythrough      76   31.7    37.1     0.0     80     76    4    0      17       13     —      0                      aperture story
+0.4374      flythrough      76   31.7    37.1     0.0     80     76    4    0      17       13     —      0                      aperture story
+0.4384      flythrough      76   31.7    37.1     0.0     80     76    4    0      17       13     —      0                      aperture story
+0.4422      flythrough      95   35.6    42.5     0.0     99     95    3    1      16       13    on      0                      aperture story
+0.4476      flythrough     141   46.2    57.2     0.0    145    141    3    1      16       13    on      0                      aperture story
+0.5034      flythrough     141   46.2    57.2     0.0    145    141    3    1      16       13    on      0                               story
+0.5446      flythrough     141   46.2    57.2     0.0    153    141   11    1      24       13    on      0                         focus story
+0.5646  constellations      13   12.9     7.4     0.0     25     13   11    1      24       13    on      0                         focus story
+0.5846  constellations       0    0.0     0.0     0.0     12      0   11    1      11        0    on      0                         focus story
+0.6088  constellations       0    0.0     0.0     0.0     12      0   11    1      11        0    on      0                         focus story
+0.6331  constellations       0    0.0     0.0     0.0     14      0   13    1      13        0    on      0                         focus story
+0.6531          trails       0    0.0     0.0     0.0     14      0   13    1      13        0    on      0                         focus story
+0.6588          trails       0    0.0     0.0     0.0     14      0   13    1      13        0    on      0                         focus story
+0.6646          trails       0    0.0     0.0     0.0     14      0   13    1      13        0    on      0                 explode focus story
+0.6704          trails       0    0.0     0.0     0.0     14      0   13    1      13        0    on      0                 explode focus story
+0.6731          trails       0    0.0     0.0     0.0     14      0   13    1      13        0    on      0        assemble explode focus story
+0.6820          trails       0    0.0     0.0     0.0     14      0   13    1      13        0    on      0        assemble explode focus story
+0.7109          trails       0    0.0     0.0     0.0     14      0   13    1      13        0    on      0        assemble explode focus story
+0.7224          trails       0    0.0     0.0     0.0     14      0   13    1      13        0    on      0        assemble explode focus story
+0.7456          trails       0    0.0     0.0     0.0     14      0   13    1      13        0    on      0        assemble explode focus story
+0.7487          trails       0    0.0     0.0     0.0     14      0   13    1      13        0    on      0        assemble explode focus story
+0.7687          rewrap       0    0.0     0.0     0.0     14      0   13    1      13        0    on      0        assemble explode focus story
+0.7745          rewrap       0    0.0     0.0     0.0     14      0   13    1      13        0    on      0        assemble explode focus story
+0.7751          rewrap       0    0.0     0.0     0.0     14      0   13    1      13        0    on      0        assemble explode focus story
+0.7803          rewrap     194   74.3    87.0     0.0    208    194   13    1     207       13    on      0        assemble explode focus story
+0.7872          rewrap     194   74.3    87.0     0.0    208    194   13    1      26       13    on      0        assemble explode focus story
+0.7887          rewrap     194   74.3    87.0    67.0    384    370   13    1     383       13    on      0        assemble explode focus story
+0.7976          rewrap     194   74.3    87.0    67.0    376    370    5    1     375       13    on      0        assemble explode focus story
+0.8057          rewrap     194   74.3    87.0    67.0    376    370    5    1     375        0    on      0        assemble explode focus story
+0.8103          rewrap     194   74.3    87.0    67.0    376    370    5    1     375        0    on      0        assemble explode focus story
+0.8288          rewrap     194   74.3    87.0    67.0    375    370    4    1     374        0    on      0        assemble explode focus story
+0.8358          rewrap     194   74.3    87.0    67.0    375    370    4    1     374        0    on      0        assemble explode focus story
+0.8612          rewrap     194   74.3    87.0    67.0    374    370    4    0     374        0     —      0     aperture assemble explode story
+0.8644          rewrap     194   74.3    87.0    67.0    374    370    4    0     374        0     —      0     aperture assemble explode story
+0.8728          rewrap     194   74.3    87.0    67.0    374    370    4    0     374        0     —      0              aperture explode story
+0.8815          rewrap     194   74.3    87.0    67.0    374    370    4    0     374        0     —      0              aperture explode story
+0.8844          capsOn     194   74.3    87.0    67.0    374    370    4    0     374        0     —      0              aperture explode story
+0.8901          capsOn     194   74.3    87.0    67.0    374    370    4    0     374        0     —      0              aperture explode story
+0.9044          capsOn     194   74.3    87.0    67.0    374    370    4    0     374        0     —      0              aperture explode story
+0.9480          capsOn     194   74.3    87.0    67.0    374    370    4    0     374        0     —      0                      aperture story
+0.9561          capsOn     194   74.3    87.0    67.0    374    370    4    0     374        0     —      0                      aperture story
+0.9734          capsOn     194   74.3    87.0    67.0    374    370    4    0     374        0     —      0                 aperture rose story
+0.9827          capsOn     194   74.3    87.0    67.0    374    370    4    0     374        0     —      0                 aperture rose story
+0.9942          capsOn     194   74.3    87.0    67.0    374    370    4    0     374        0     —      0                 aperture rose story
+1.0000          capsOn     194   74.3    87.0    67.0    374    370    4    0     374        0     —      0                 aperture rose story
 ```

@@ -3,18 +3,10 @@ import { smoothstep } from "../core/math";
 import { displaceSeatedPoint } from "../ops/cpu";
 import { isGlassElement } from "../core/parts";
 
-// ============================================================================
-// Cinematic extras (inspired by ./example) layered over the mechanism rig:
-// refraction rays and ambient dust. Everything here
-// is presentation only — nothing in this module moves a mechanism part, and the
-// only `.visible` flags it writes are those of nodes it builds itself.
-//
-// THE STORY'S ENDING CARRIES NO ACCESSORY. It used to fly the two caps onto the
-// reassembled lens over the head of the capsOn scene; the finale is now the
-// origami rose alone (story/envelopes.ts ROSE_PULSE) and the caps blocked part
-// of the flower (owner). The caps remain an accessory group `/lens` can toggle
-// through core/scene.ts's `setAccessory` — nothing here resolves them.
-// ============================================================================
+// Cinematic extras layered over the mechanism rig: refraction rays and ambient
+// dust. Presentation only — nothing here moves a mechanism part, and the only
+// `.visible` flags it writes belong to nodes it builds itself. The story's
+// ending carries no accessory; the caps stay a `/lens`-only accessory group.
 
 export interface LensCinematics {
   /** Drive the extras for one frame from the eased mechanism value. */
@@ -22,10 +14,8 @@ export interface LensCinematics {
   /** Re-tint the presentation extras (dust motes, refraction rays) for the site
    *  theme — the dark-stage cream dust vanishes on a light stage and vice versa. */
   setTheme(light: boolean): void;
-  /** Show/hide the ambient dust motes. Always on by default (the story never
-   *  calls this); the /lens fly-through demo clears the stage so the starfield
-   *  behind the lens reads. Dispose-safe — the only thing it writes is the
-   *  `.visible` flag of a node this module owns outright. */
+  /** Show/hide the ambient dust motes, on by default. Dispose-safe — it writes
+   *  only the `.visible` flag of a node this module owns outright. */
   setDust(visible: boolean): void;
   dispose(): void;
 }
@@ -47,21 +37,18 @@ export function createCinematics(
   // at creation and on setTheme
   let light = !document.documentElement.classList.contains("dark");
 
-  // Refraction rays: 3 warm lines tracing the light path through the glass, fading
-  // in only when the lens is fully exploded ("only the light path is left").
-  // Each element's SEATED bounding-box centre, resolved ONCE into the element's
-  // own local frame — pose-independent, so the per-frame walk is a displacement
-  // plus a matrix instead of a Box3 sweep. Its node origin sits at its parent's
-  // origin (lens_mechanism.md §4 — geometry is baked in place), so the bbox
-  // centre is what threads the glass; getWorldPosition would thread the GROUP
-  // empties and stop short of it.
+  // Refraction rays: 3 warm lines tracing the light path through the glass,
+  // fading in only when the lens is fully exploded. Each element's SEATED bbox
+  // centre, resolved ONCE into its own local frame so the per-frame walk is a
+  // displacement plus a matrix rather than a Box3 sweep. It must be the bbox
+  // centre: an element's node origin sits at its parent's (geometry is baked in
+  // place), so getWorldPosition would thread the GROUP empties instead.
   const raySeated = glassElements.map((m) => {
     const c = new THREE.Box3().setFromObject(m).getCenter(new THREE.Vector3());
     return m.worldToLocal(c); // the same matrix both ways ⇒ exact, pose or not
   });
-  // Reused across frames by the rays update below (hoisted so a deep-explode
-  // frame allocates nothing). rayPts is fully overwritten each frame before it
-  // is sorted, so the previous frame's sort order never leaks in.
+  // Hoisted so a deep-explode frame allocates nothing. Fully overwritten each
+  // frame before it is sorted, so the previous sort order never leaks in.
   const rayPts = glassElements.map(() => new THREE.Vector3());
 
   const rays: THREE.Line[] = [];
@@ -127,15 +114,12 @@ export function createCinematics(
   }
 
   function update(explodeT: number, nowMs: number): void {
-    // refraction rays — thread the optical axis through the (world-space) glass.
+    // refraction rays — thread the optical axis through the world-space glass.
     // The explode deform runs IN-SHADER, so the seated centre above is where the
     // element USED to be: displace it through the same op field the render runs
-    // (ops/cpu.ts, mesh-local like the shader's `positionLocal`), then take it to
-    // world through the element's own live matrix, which carries the mechanism's
-    // object motion exactly once. Skipping that threaded the SEATED column while
-    // the render drew one stretched tens of mm along the axis — in the one beat
-    // where the glass and these rays are all that is on screen. 13 points, NUM
-    // backend, only while the explode is deep enough to show rays.
+    // (ops/cpu.ts, mesh-local like the shader's `positionLocal`), then take it
+    // to world through the element's own live matrix, which carries the
+    // mechanism's object motion exactly once.
     const rayOp = smoothstep(0.62, 0.96, explodeT);
     if (rayOp > 0.001 && glassElements.length) {
       for (let i = 0; i < glassElements.length; i++) {

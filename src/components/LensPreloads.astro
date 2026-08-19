@@ -1,12 +1,10 @@
 ---
 // Preload the lens model during HTML parse — these fetches otherwise wait for
-// the module script to boot + the WebGPU init (hundreds of ms on a real network
-// before the lens can appear). crossorigin="anonymous" matches three's fetch()
-// request (mode cors, same-origin credentials); without it the preload wouldn't
-// match and would be downloaded twice. Model paths are owned by core/model.ts
-// (MODEL_URL / ACCESSORIES_URL).
-// The accessories GLB is /lens-only — the hero never shows a hood, filter or
-// cap, so it neither preloads nor fetches it (SceneOptions.accessories).
+// the module script to boot plus the WebGPU init. crossorigin="anonymous"
+// matches three's own fetch() (mode cors, same-origin credentials); without it
+// the preload would not match and the file downloads twice.
+// The accessories GLB is /lens-only — the hero never shows one, so it neither
+// preloads nor fetches it.
 import { MODEL_URL, ACCESSORIES_URL } from "../lib/lens";
 
 interface Props {

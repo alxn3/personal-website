@@ -20,7 +20,7 @@ import {
   zoomAt,
 } from "../envelopes";
 import { revealRollAt, turnAt } from "../reveal";
-import { peelBodyFadeAt, peelRollAt, peelValueAt } from "../peelcards";
+import { peelRollAt, peelValueAt } from "../peelcards";
 import { internalsEnvAt } from "../internals";
 import {
   EXIT_END,
@@ -200,16 +200,13 @@ describe("the writer maps, as the report sees them", () => {
     for (const p of PS) {
       const s = storyStateAt(p);
       const below = p < DIVE_P0;
-      expect(s.look.bodyFadeOwner, `owner ${p}`).toBe(
-        below ? "peelcards" : "fly",
-      );
+      expect(s.look.bodyFadeOwner, `owner ${p}`).toBe(below ? "driver" : "fly");
       expect(s.look.bodyFade, `bodyFade ${p}`).toBe(
-        below ? peelBodyFadeAt(p) : flyBodyFadeAt(p),
+        below ? 1 : flyBodyFadeAt(p),
       );
     }
-    // the seam itself: both sides are exactly 1 where they meet, which is what
-    // makes the tile gapless rather than merely adjacent
-    expect(peelBodyFadeAt(DIVE_P0)).toBe(1);
+    // the seam itself: the driver's half is a constant 1 and the fly opens on
+    // 1, which is what makes the tile stepless as well as gapless
     expect(flyBodyFadeAt(DIVE_P0)).toBe(1);
   });
 

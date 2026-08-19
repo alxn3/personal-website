@@ -1,23 +1,14 @@
-// ============================================================================
-// Model-contract tripwire (dev-only): assert at load every structural
-// assumption the code makes about the GLBs, so a lens_work re-export that
-// breaks one fails LOUDLY at boot instead of surfacing weeks later as a
-// silent no-op, a mis-styled part, or a NaN. Report-only: violations are
-// console.error'd, never thrown — a broken contract should scream, not brick
-// the bench. Wired from core/scene.ts behind import.meta.env.DEV.
+// DEV ONLY — dynamically imported, so none of it reaches a visitor's bundle.
+// A model-contract tripwire: assert at load every structural assumption the
+// code makes about the GLBs, so a re-export that breaks one fails LOUDLY at
+// boot. Report-only — violations are console.error'd, never thrown.
 //
 // The required-name list is DERIVED from the two code-side tables that address
-// parts BY NAME — the mechanism's drive table (ops/mechanism MECHANISM_PARTS)
-// and the bolted-hardware adoption map (ops/frames SHELL_ADOPT). If the code
-// stops needing a name, the tripwire fails loudly and gets updated: the safe
-// drift direction, unlike a silently incomplete hand-list. Nothing about the
-// explode ladder is listed any more — it is DERIVED from geometry (frames.ts),
-// so there is no authored tier table left to keep honest.
+// parts BY NAME (MECHANISM_PARTS and SHELL_ADOPT), so a name the code stops
+// needing fails loudly and gets updated — the safe drift direction.
 //
-// ORDERING: run this AFTER ops/frames deriveFrames (core/scene.ts's
-// prepareModelMaterials) — the second half of the contract reads the frame
-// attributes that pass stamps.
-// ============================================================================
+// ORDERING: run AFTER ops/frames deriveFrames — the second half of the contract
+// reads the frame attributes that pass stamps.
 import * as THREE from "three/webgpu";
 import { MECHANISM_PARTS } from "../ops/mechanism";
 import { SHELL_ADOPT, frameOf, type DerivedFrames } from "../ops/frames";
@@ -43,22 +34,11 @@ const ACCESSORY_PARTS = [
 /** parts.ts documents "the 13 lens elements" — a changed count means the
  *  optics grouping (isolate, refraction ray path) no longer matches. */
 const GLASS_ELEMENT_MESHES = 13;
-/** Floor on the DERIVED explode ladder's group count. Nothing here re-authors
- *  the tier names (that is exactly the hand-list frames.ts replaced) — it only
- *  asserts the derivation still found a ladder's worth of them. A re-export that
- *  drops whole part groups (a renamed prefix, a collapsed hierarchy) shows up as
- *  a COUNT collapse long before it shows up as a visibly wrong explode.
- *
- *  2026-08-12, lens_work MIGRATION STEP 5: the shipped body derives 26 groups,
- *  down from 31 — five parts were re-parented onto the hosts they are fastened
- *  to (PCB_Components → PCB_Rear, Mount_Contacts → Mount_ContactShelf, the three
- *  screw sets → Mount_Bayonet) and now ride those rungs. The floor moves 25 → 20
- *  rather than to 25 again: a floor one below the count fails on the next
- *  intended merge, and this tripwire is for a COLLAPSE (a whole family losing
- *  its names), not for the model's ordinary consolidation. 20 still catches
- *  anything that halves the ladder. The derivation is measured against the
- *  actual file in ops/__tests__/frames.test.ts, which is where an exact count
- *  belongs. */
+/** Floor on the DERIVED explode ladder's group count — this asserts only that
+ *  the derivation still found a ladder's worth of groups, so a re-export that
+ *  drops whole part families shows up as a COUNT collapse. Kept well below the
+ *  live count so ordinary consolidation does not trip it; the exact count is
+ *  measured in ops/__tests__/frames.test.ts. */
 const LADDER_GROUPS_MIN = 20;
 /** Cap on how many same-kind offenders get named before the report summarizes:
  *  a systematic break (a whole pass that didn't run) would otherwise print one
@@ -137,30 +117,21 @@ function frameScan(
   return v;
 }
 
-/** The DERIVED half of the contract: after ops/frames has measured the model,
- *  every renderable mesh must carry a frame, the sector span the sheet ops
- *  normalize theta over must be positive, and the derived explode ladder must
- *  still have a ladder's worth of groups. A zero span is a NaN source for every
- *  op that normalizes over it — detected once at boot instead of guarded per op.
- *
- *  R (the radius every cylindrical op normalizes over) is NOT checked: frames.ts
- *  floors it at R_MIN on the way out, so a `R > 0` branch here is unreachable by
- *  construction — the guard belongs at the derivation, and it is there. */
+/** The DERIVED half of the contract: every renderable mesh must carry a frame,
+ *  the sector span the sheet ops normalize theta over must be positive (a zero
+ *  span is a NaN source for every op that normalizes over it), and the ladder
+ *  must still have a ladder's worth of groups. R is NOT checked — frames.ts
+ *  floors it at R_MIN, so the guard belongs at the derivation. */
 function frameViolations(
   root: THREE.Object3D,
   frames: DerivedFrames,
 ): string[] {
-  // ACCESSORIES ARE NOT THIS SCOPE'S BUSINESS — and checking them here is a
-  // RACE. They load in the background and merge into the same scene graph, then
-  // get their own scoped deriveFrames + material pass (core/scene.ts's
-  // accessoriesReady handler, which re-runs deriveFrames and unified.integrate).
-  // This report runs off a DYNAMIC IMPORT, so its
-  // resolution can land after the merge but before that pass, and every
-  // accessory mesh would then read as "carries no derived frame" — a false
-  // alarm on a healthy model. The accessory scope below checks them instead: it
-  // runs off the SAME promise, and its handler is registered strictly later
-  // than scene.ts's (which is registered synchronously at init), so the frame
-  // pass has provably run by then.
+  // ACCESSORIES ARE NOT THIS SCOPE'S BUSINESS — checking them here is a RACE.
+  // They merge into the scene graph before their own scoped deriveFrames pass,
+  // and this report runs off a dynamic import that can resolve in between, so
+  // every accessory mesh would read as unframed. The accessory scope below
+  // checks them off the SAME promise, with its handler registered strictly
+  // later than scene.ts's, so the frame pass has provably run.
   const v: string[] = frameScan(root, underAccessory);
   if (frames.ladderRungs.size < LADDER_GROUPS_MIN)
     v.push(
@@ -179,9 +150,8 @@ function report(scope: string, v: string[]): void {
 
 /** Run the tripwire on a loaded, FRAMED model: the body immediately, the
  *  accessories once their background load lands (accessoriesReady must be the
- *  never-rejecting handle — scene.ts's caught version). `frames` is deriveFrames'
- *  own return value, passed through rather than re-read off window.__lensOps —
- *  the contract must not depend on a dev probe existing. */
+ *  never-rejecting handle). `frames` is passed through rather than re-read off
+ *  a dev probe, which the contract must not depend on existing. */
 export function reportModelContract(
   model: LensModel,
   frames: DerivedFrames,
@@ -197,11 +167,9 @@ export function reportModelContract(
     const missing = ACCESSORY_PARTS.filter(
       (n) => !model.scene.getObjectByName(n),
     );
-    // The frame half of the accessory contract, deferred to here for the
-    // ordering reason in frameViolations: by now core/scene's own
-    // accessoriesReady handler has run each accessory root through deriveFrames
-    // and folded it into the merged material (unified.integrate), so an unframed
-    // accessory mesh is a real derivation failure.
+    // The frame half of the accessory contract, deferred here for the ordering
+    // reason in frameViolations: core/scene's own handler has run by now, so an
+    // unframed accessory mesh is a real derivation failure.
     const roots = ACCESSORY_PARTS.map((n) => model.scene.getObjectByName(n));
     report("accessories", [
       ...missing.map((n) => `accessory missing: ${n}`),

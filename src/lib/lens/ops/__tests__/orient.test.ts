@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { NUM } from "../algebra";
 import { fixtureGateAt } from "./fixture-gate";
+import { frameAt, polarOf, vertexAt } from "./fixture-state";
 import {
   group,
   rot,
@@ -21,20 +22,16 @@ import {
 
 const T0 = 0.3;
 
-const V0: VertexState<number> = {
-  theta: 0.42,
-  radius: 2,
+const V0: VertexState<number> = vertexAt(0.42, 2, {
   axial: 0.5,
   rot: 0.1,
   aim: T0,
   rem: 0,
-};
-const F0: PieceFrame<number> = {
-  theta: T0,
-  radius: 1.5,
+});
+const F0: PieceFrame<number> = frameAt(T0, 1.5, {
   axial: 0.2,
   orient: T0,
-};
+});
 
 function makeCtx(over: Partial<OpCtx<number>> = {}): OpCtx<number> {
   const rank01 = over.rank01 ?? 0.5;
@@ -68,12 +65,12 @@ function makeCtx(over: Partial<OpCtx<number>> = {}): OpCtx<number> {
 describe("rot — the direction class", () => {
   it("(a) rot moves no geometry and turns no normal; it writes both aims", () => {
     const out = runPipeline([rot<number>(0.7)], V0, F0, makeCtx());
-    expect(out.v.theta).toBe(V0.theta);
-    expect(out.v.radius).toBe(V0.radius);
+    expect(out.v.x).toBe(V0.x);
+    expect(out.v.z).toBe(V0.z);
     expect(out.v.axial).toBe(V0.axial);
     expect(out.v.rot).toBe(V0.rot); // the normal is untouched
-    expect(out.f.theta).toBe(F0.theta);
-    expect(out.f.radius).toBe(F0.radius);
+    expect(out.f.x).toBe(F0.x);
+    expect(out.f.z).toBe(F0.z);
     expect(out.f.axial).toBe(F0.axial);
     // …and the ONE thing it does write, on both levels.
     expect(out.v.aim).toBeCloseTo(T0 + 0.7, 12);
@@ -170,15 +167,27 @@ describe("rot — the direction class", () => {
         ctx,
       );
       const dir = T0 + a;
-      const px = V0.radius * Math.cos(V0.theta) + D * Math.cos(dir);
-      const pz = V0.radius * Math.sin(V0.theta) + D * Math.sin(dir);
-      expect(out.v.theta, `a = ${a}`).toBeCloseTo(Math.atan2(pz, px), 12);
-      expect(out.v.radius, `a = ${a}`).toBeCloseTo(Math.hypot(px, pz), 12);
+      const px = V0.x + D * Math.cos(dir);
+      const pz = V0.z + D * Math.sin(dir);
+      expect(polarOf(out.v).theta, `a = ${a}`).toBeCloseTo(
+        Math.atan2(pz, px),
+        12,
+      );
+      expect(polarOf(out.v).radius, `a = ${a}`).toBeCloseTo(
+        Math.hypot(px, pz),
+        12,
+      );
       // The frame rides the identical cartesian add.
-      const fx = F0.radius * Math.cos(F0.theta) + D * Math.cos(dir);
-      const fz = F0.radius * Math.sin(F0.theta) + D * Math.sin(dir);
-      expect(out.f.theta, `a = ${a}`).toBeCloseTo(Math.atan2(fz, fx), 12);
-      expect(out.f.radius, `a = ${a}`).toBeCloseTo(Math.hypot(fx, fz), 12);
+      const fx = F0.x + D * Math.cos(dir);
+      const fz = F0.z + D * Math.sin(dir);
+      expect(polarOf(out.f).theta, `a = ${a}`).toBeCloseTo(
+        Math.atan2(fz, fx),
+        12,
+      );
+      expect(polarOf(out.f).radius, `a = ${a}`).toBeCloseTo(
+        Math.hypot(fx, fz),
+        12,
+      );
     }
   });
 

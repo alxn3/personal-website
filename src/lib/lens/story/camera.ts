@@ -2,15 +2,14 @@ import * as THREE from "three/webgpu";
 import { RANGES, STORY_R, rangeOf, type Pose, type Waypoint } from "./story";
 import { clamp01, smoothstep, lerp, deg } from "../core/math";
 
-// --- scroll-story camera path -------------------------------------------------
-// In the loaded/displayed frame the optical axis is world +X (front element at
-// +X), radial plane Y–Z. Each scene keys an orbit position (in units of STORY_R
-// — the table's own unit, story/story.ts) so the camera shoots it from the right
-// angle, with a "transit → hold" pattern.
-// Very narrow fov + matching pullback ≈ orthographic elevation. 3° (was 6°): the
-// residual perspective parallax on a PARKED lens scales with tan(fov/2), and at 6°
-// the off-centre hero showed a visible ~2° side-tilt instead of a flat elevation.
-// The pullback grows to ~10× — core/scene's camera.far is sized for it.
+// The scroll-story camera path, derived from the STORY table. In the displayed
+// frame the optical axis is world +X, radial plane Y–Z; each scene keys an
+// orbit position in units of STORY_R, with a "transit → hold" pattern.
+
+// A very narrow fov plus a matching pullback ≈ an orthographic elevation. It
+// has to be this narrow: residual parallax on a PARKED lens scales with
+// tan(fov/2), and at 6° the off-centre hero showed a visible side-tilt. The
+// pullback grows to ~10×, which core/scene's camera.far is sized for.
 const ORTHO_FOV = 3;
 
 export interface StorySample {
@@ -21,16 +20,13 @@ export interface StorySample {
 
 const ORIGIN: [number, number, number] = [0, 0, 0];
 
-// CHORDAL Catmull-Rom (Hermite with chord-scaled tangents) — multi-waypoint
-// transits spline through their vias with this (per component) so the path is C1
-// through each waypoint IN THE CHORD-LENGTH PARAMETER the sampler advances by.
-// Two dead ends this replaces: per-segment lerp was continuous but the velocity
-// DIRECTION snapped at every via; and a UNIFORM Catmull-Rom is only C1 in its
-// uniform parameter — mapped onto chord length its speed JUMPS at every knot by
-// the ratio of the adjacent leg lengths (~2.6× at the rewrap→capsOn junction),
-// which read as stutter right as the finale came together.
+// CHORDAL Catmull-Rom (Hermite with chord-scaled tangents): multi-waypoint
+// transits spline through their vias per component, so the path is C1 in THE
+// CHORD-LENGTH PARAMETER the sampler advances by. A uniform Catmull-Rom is C1
+// only in its uniform parameter — remapped onto chord length its speed jumps at
+// every knot by the ratio of the adjacent leg lengths.
 interface Chain {
-  path: Waypoint[]; // endpoints are full Poses; the interior vias only carry the four splined fields
+  path: Waypoint[]; // endpoints are full Poses; vias carry only the splined fields
   chord: number[]; // leg lengths (pos-space)
   cum: number[]; // cumulative, cum[0] = 0
 }
@@ -48,8 +44,8 @@ function buildChain(path: Waypoint[]): Chain {
   return { path, chord, cum };
 }
 
-// tangent at knot i, in d/d(chord-length) — a plain function (not a closure
-// built per call) so the per-frame chain branch below allocates nothing
+// tangent at knot i, in d/d(chord-length) — a plain function rather than a
+// per-call closure, so the per-frame chain branch allocates nothing
 function knotTan(c: Chain, i: number, get: (pose: Waypoint) => number): number {
   const n = c.path.length;
   return i <= 0
@@ -60,7 +56,7 @@ function knotTan(c: Chain, i: number, get: (pose: Waypoint) => number): number {
         (c.chord[i - 1] + c.chord[i]);
 }
 
-// value of `get` at parameter t within segment `seg`, tangents in d/d(chord-length)
+// `get` at parameter t within segment `seg`; tangents in d/d(chord-length)
 function chainAt(
   c: Chain,
   seg: number,
@@ -80,8 +76,7 @@ function chainAt(
   );
 }
 
-// the chain branch's field readers, hoisted — fresh arrows per frame were the
-// last per-frame allocation in sampleStory
+// the chain branch's field readers, hoisted so sampleStory allocates nothing
 const GET_PX = (o: Waypoint) => o.pos[0];
 const GET_PY = (o: Waypoint) => o.pos[1];
 const GET_PZ = (o: Waypoint) => o.pos[2];
@@ -92,13 +87,10 @@ const GET_FOV = (o: Waypoint) => o.fov;
 const GET_XS = (o: Waypoint) => o.xs;
 const GET_RAD = (o: Waypoint) => Math.hypot(o.pos[0], o.pos[1], o.pos[2]);
 
-// Each scene's camera move, RESOLVED ONCE at module load: which chain it rides
-// (its own transit, or the fused link it heads/tails), the poses the move
-// leaves from and settles into, and — for fused chains — the p-window of the
-// one shared ease. All of it is a pure function of the static, validated STORY
-// table; sampleStory runs on every rendered frame in story mode, and deriving
-// these there (path spreads, a fresh Chain, per-component closures) was steady
-// GC pressure on the sacred path for values that never change.
+// Each scene's camera move, RESOLVED ONCE at module load: which chain it rides,
+// the poses it leaves from and settles into, and (fused chains only) the
+// p-window of the one shared ease. A pure function of the validated STORY
+// table, so it must not be re-derived in sampleStory, which runs every frame.
 type ScenePlan = {
   linked: boolean; // this scene rides a fused head→tail chain
   flattenNever: boolean; // a linked HEAD is in motion its whole range
@@ -153,20 +145,14 @@ const PLANS: readonly ScenePlan[] = RANGES.map((r, i) => {
   return { ...base, pStart, pEnd, simple: null, chain: buildChain(path) };
 });
 
-// The camera path is DERIVED from the scene table (story/story.ts): each scene eases
-// from the previous scene's settle pose, through any `via` waypoints, to its own
-// settle pose over the first `transit` of the scene, then holds. A scene marked
-// `linkNext` instead FUSES with its successor: one waypoint chain, one ease, from
-// the head scene's start to the end of the tail scene's transit — because the
-// per-scene pattern necessarily decelerates to a dead stop at every scene boundary
-// (an eased transit ends at zero velocity and the next re-accelerates from zero),
-// which is right for park-and-hold scenes but a visible hitch when the story wants
-// one continuous move across the boundary (rewrap → capsOn). A fused head may also
-// HOLD before its move starts (`camHold`) — the only way a linked scene can be
-// still, since its own transit is ignored. No hand-tuned per-key `p` values — the
-// ranges come from the durations. `outPos` is the orbit OFFSET
-// from `outTarget` (the scene's look-at, default the lens centre at the origin) —
-// the caller places the camera at target + offset and looks at target.
+// The camera pose at `p`: each scene eases from the previous scene's settle
+// pose, through any `via` waypoints, to its own over the scene's first
+// `transit`, then holds — unless it is part of a `linkNext` chain, which fuses
+// two scenes into one ease so the boundary is not a dead stop. There are no
+// hand-tuned per-key p values; the ranges come from the durations.
+//
+// `outPos` is the orbit OFFSET from `outTarget` (the scene's look-at, default
+// the origin): the caller places the camera at target + offset and looks at it.
 export function sampleStory(
   p: number,
   outPos: THREE.Vector3,
@@ -182,29 +168,25 @@ export function sampleStory(
   const { first, last } = plan;
   const local = clamp01((p - r.p0) / Math.max(1e-6, r.p1 - r.p0));
 
-  // THE CHAIN CAN BE HELD BEFORE IT STARTS (`camHold`, story/story.ts): the
-  // move leaves from part way into the head scene instead of from its first
-  // frame, and still ends where it did. Below that point moveT is exactly 0,
-  // and a chain at moveS 0 evaluates to its FIRST waypoint bit-for-bit (the
-  // Hermite basis at t = 0 is [1,0,0,0], and the radius/fov/up/target lerps
-  // all collapse to their `first` value) — so the hold is not "nearly the
-  // parked pose", it IS the pose the previous scene ended on, byte for byte.
-  // That is the whole point: the rewrap holds the sky's own park through the
-  // reveal (story/story.ts REVEAL_END_F).
+  // A chain can be HELD before it starts (`camHold`): below that point moveT is
+  // exactly 0, and a chain at moveS 0 evaluates to its FIRST waypoint
+  // bit-for-bit (the Hermite basis at t = 0 is [1,0,0,0] and every lerp
+  // collapses to `first`), so the hold IS the previous scene's parked pose
+  // rather than an approximation of it.
   const moveT = plan.linked
     ? clamp01((p - plan.pStart) / Math.max(1e-6, plan.pEnd - plan.pStart))
     : sc.transit > 0
       ? clamp01(local / sc.transit)
       : 1;
   // one eased transit parameter shared by the orbit AND the xs/ys park shifts,
-  // so the lateral slide starts/stops with the same velocity profile as the orbit
+  // so the lateral slide has the orbit's velocity profile
   const moveS = smoothstep(0, 1, moveT);
 
   let baseLen: number;
   let fovKey: number;
   let xsKey: number;
   if (plan.simple) {
-    // simple transit — exact endpoint lerp (unchanged fast path for parked scenes)
+    // simple transit — exact endpoint lerp
     const [a, b] = plan.simple;
     outPos.set(
       lerp(a.pos[0], b.pos[0], moveS),
@@ -223,9 +205,8 @@ export function sampleStory(
     fovKey = lerp(a.fov, b.fov, moveS);
     xsKey = lerp(a.xs, b.xs, moveS);
   } else {
-    // waypoint chain — chord-length parameterization (constant travel speed along
-    // the chain; the old equal-parameter split made speed JUMP wherever adjacent
-    // legs differed in length) + a chordal spline through the waypoints.
+    // waypoint chain — chord-length parameterization (constant travel speed
+    // along the chain) plus a chordal spline through the waypoints
     const chain = plan.chain;
     const n = chain.path.length;
     const s = moveS * chain.cum[n - 1];
@@ -237,8 +218,8 @@ export function sampleStory(
       chainAt(chain, seg, st, GET_PY),
       chainAt(chain, seg, st, GET_PZ),
     );
-    // orbit, don't chord: the RADIUS is splined separately and re-applied to the
-    // splined direction, so wide angular legs (the capsOn spin) don't cut inward
+    // orbit, don't chord: the RADIUS is splined separately and re-applied to
+    // the splined direction, so wide angular legs don't cut inward
     baseLen = chainAt(chain, seg, st, GET_RAD) * STORY_R;
     outUp.set(
       chainAt(chain, seg, st, GET_UX),
@@ -246,17 +227,15 @@ export function sampleStory(
       chainAt(chain, seg, st, GET_UZ),
     );
     fovKey = chainAt(chain, seg, st, GET_FOV);
-    // xs is live on splined transits (per-via park shifts ease through the chain)
+    // xs is live on splined transits — per-via park shifts ease through
     xsKey = chainAt(chain, seg, st, GET_XS);
   }
 
-  // "flatten" to an orthographic elevation only while PARKED on the hold — 0 during
-  // every transit (perspective while orbiting) and eased back to 0 before the scene
-  // ends, so the next scene begins in perspective (continuous across the boundary).
-  // The HEAD of a linked chain is in motion for its whole range and never flattens;
-  // the TAIL parks after its own transit (the chain ends there by construction) and
-  // flattens like any other scene. The LAST scene keeps its flatten to the very
-  // end — it hands off to the page below, not to another scene's transit.
+  // "Flatten" to an orthographic elevation only while PARKED: 0 during every
+  // transit and eased back to 0 before the scene ends, so the next scene begins
+  // in perspective. A linked HEAD is in motion its whole range and never
+  // flattens; the LAST scene keeps its flatten to the end, since it hands off
+  // to the page below rather than to another scene's transit.
   const flattenIn =
     plan.flattenNever || sc.transit >= 1
       ? 0
@@ -272,8 +251,8 @@ export function sampleStory(
   outPos.setLength(baseLen * back);
   outUp.normalize();
 
-  // the orbit centre eases first → last with the same profile as the park
-  // shifts (via waypoints don't carry targets — the endpoints define the slide)
+  // the orbit centre eases first → last on the park shifts' profile; via
+  // waypoints carry no target, so the endpoints define the slide
   const ta = first.target ?? ORIGIN;
   const tb = last.target ?? ORIGIN;
   outTarget.set(
@@ -309,14 +288,11 @@ export function applyStoryFraming(
 ): void {
   const { fov, xs, ys } = sample;
   camera.up.copy(storyUp);
-  // Camera stays ON-AXIS looking at the scene's orbit target (the lens centre
-  // at the origin unless a Pose sets `target`); the park (xs, and ys for
-  // detail reframing, both in units of STORY_R; xs park-scaled for portrait)
-  // is applied as an OFF-CENTRE PROJECTION WINDOW instead of by shifting the
-  // camera + target. Shifting the camera kept the lens off the projection
-  // centre, whose perspective parallax read as a slight TILT on the parked
-  // "flat" elevations (the hero most visibly). A view offset pans the 2D
-  // projection — zero parallax at any park, a true elevation.
+  // The camera stays ON-AXIS looking at the scene's orbit target; the park (xs
+  // and ys, in units of STORY_R) is applied as an OFF-CENTRE PROJECTION WINDOW
+  // rather than by shifting the camera and target. Shifting leaves the lens off
+  // the projection centre, whose parallax reads as a tilt on a parked "flat"
+  // elevation; a view offset pans the 2D projection with zero parallax.
   camera.position.copy(storyTarget).add(storyPos);
   camera.lookAt(storyTarget);
   camera.fov = fov;
@@ -324,13 +300,12 @@ export function applyStoryFraming(
   const halfH =
     (Math.tan((fov * Math.PI) / 360) * storyPos.length()) / camera.zoom;
   const halfW = halfH * camera.aspect;
-  const sh = xs * STORY_R * parkScale; // + shoves the lens LEFT (as before)
+  const sh = xs * STORY_R * parkScale; // + shoves the lens LEFT
   const sv = ys * STORY_R;
-  // Portrait lift: as the horizontal park fades out (parkScale → 0 on narrow
-  // screens), shift the lens UP a little instead — the scene content collapses
-  // into a bottom band on phones, and this keeps the lens clear of it. NOT in
-  // the hero, whose intro type is TOP-anchored on phones (lifting the lens
-  // there shoves it into the text) — the lift eases in as the hero ends.
+  // Portrait lift: as the horizontal park fades out on narrow screens, shift
+  // the lens UP instead, clear of the bottom content band. It must NOT apply in
+  // the hero, whose intro type is top-anchored on phones, so it eases in as the
+  // hero ends.
   const heroEnd = rangeOf("hero").p1;
   const lift =
     (1 - parkScale) *

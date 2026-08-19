@@ -5,21 +5,16 @@
 //   build(ctx, knobs) → the ORDERED op list (the recipe IS its order)
 //   knobDefaults → the physical values the host binds as uniforms
 //
-// The knob defaults are PHYSICAL values — radians, model-mm and fractions of R
-// — not slider positions; mapping a 0..100 UI onto them is the host's business.
+// The knob defaults are PHYSICAL values — radians, model-mm, fractions of R —
+// not slider positions; mapping a 0..100 UI onto them is the host's business.
 //
-// gateSpec is a FUNCTION of the knobs because the assemble gate's stagger,
-// part-stagger, split, overlap and snap are LIVE sliders as well as gate
-// inputs; a static spec could only ever bake the defaults. The window is
-// DERIVED (1 − stagger − partStagger) so offset + window ≡ 1 for any slider
-// value, which is what keeps the channel-0 identity exact.
+// gateSpec is a FUNCTION of the knobs because the gate inputs are LIVE sliders
+// too. assemble's window is DERIVED (1 − stagger − partStagger) so offset +
+// window ≡ 1 for any slider value, which keeps the channel-0 identity exact.
 //
-// `build` receives the piece ctx for symmetry with the ops (and so a future
-// recipe can specialize per piece). Every op reads ctx when it RUNS; the only
-// thing the recipes read at BUILD time is `ctx.wrapDir`, which is a plain
-// number on both backends (the seam handedness is a house constant, not a
-// per-piece measurement) — that is what lets a recipe fix the SIGN of a rotation
-// at the call site instead of every rotation op inheriting the wrap convention.
+// Every op reads ctx when it RUNS; the only thing a recipe reads at BUILD time
+// is `ctx.wrapDir`, a plain number on both backends, which lets a recipe fix
+// the SIGN of a rotation at its call site rather than in the op.
 
 import type { Algebra } from "./algebra";
 import type { GateSpec } from "./gate";
@@ -37,6 +32,7 @@ import {
   selRank,
   selSector,
   spread,
+  straight,
   swirl,
   tilt,
   type OpCtx,
@@ -48,6 +44,7 @@ import {
   selNotAccessory,
   selNotOptical,
   selSheet,
+  selNotKept,
   stickerPeelOps,
 } from "./house";
 
@@ -56,70 +53,60 @@ import {
 const TAU = 6.283185307179586;
 const PI = 3.141592653589793;
 
-// ── ASSEMBLE constants (formation.ts:111-176, 297-307) ─────────────────────
+// ── ASSEMBLE constants ─────────────────────────────────────────────────────
 const ASSEMBLE_SNAP_EXP = 2.0;
-const ASSEMBLE_FLIGHT_START = 0.1; // the classic's per-shell fly-in foot
+const ASSEMBLE_FLIGHT_START = 0.1; // per-shell fly-in foot
 const ASSEMBLE_ROLL_END = 0.9; // the curl finishes, THEN the sheet breathes
-const ASSEMBLE_SWIRL_EXP = 0.65; // the classic's pow(t, 0.65)
+const ASSEMBLE_SWIRL_EXP = 0.65; // the whip ease
 const ASSEMBLE_WRAP_SHEAR = 0.9; // diagonal roll front (corner peel)
 const ASSEMBLE_MASK_FEATHER = 0.3; // sector-edge softening (rad)
 const ASSEMBLE_CURL_MAX = PI; // cap on the end-roll — past a half turn it hides
 const ASSEMBLE_PIN_END = 0.25; // the reel-in pin is spent by 25% stuck
 const ASSEMBLE_LADDER_GAIN = 0.4; // rung → model-mm, scaled by the depth knob
 
-// ── EXPLODE constants (the NEW recipe — no classic to match) ────────────────
-const EXPLODE_LAYER_STAGGER = 0.3;
-const EXPLODE_WINDOW = 0.7;
-// The house split (the peel's gate takes the same 0.95). It must stay
-// BELOW rollEnd + overlap: at split = 1 the stick ramp's denominator
-// (rollEnd − split + overlap) is exactly 0, so the seated state (win = 1)
-// computes stick = 0/0 = NaN where it must be exactly 1 — the identity anchor.
+// ── EXPLODE constants ───────────────────────────────────────────────────────
+/** the ending's stagger, by LAYER then by the piece's own phase inside it —
+ *  the three shares sum to 1 so both channel ends stay saturating identities */
+const EXPLODE_LAYER_STAGGER = 0.42;
+const EXPLODE_PART_STAGGER = 0.24;
+const EXPLODE_WINDOW = 0.34;
+// The house split. It MUST stay below rollEnd + overlap, or the stick ramp's
+// denominator is 0 and the seated state computes NaN where the identity anchor
+// requires exactly 1 (ops/gate.ts).
 const EXPLODE_SPLIT = 0.95;
 const EXPLODE_SNAP_EXP = 2.0;
 
-// ── PEEL gate constants — the travelling-front shape the retired `rollout`
-// recipe shared with it (formation.ts:188-199). Inert at snap 0, but the gate
-// signature still takes an exponent.
+// ── PEEL gate constants — the travelling-front shape. Inert at snap 0, but the
+// gate signature still takes an exponent.
 const PEEL_SPLIT = 0.95;
 const PEEL_SNAP_EXP = 2.0;
 /** the peel's own rank feather — see the peel recipe's selRank comment */
 const PEEL_RANK_FEATHER = 0.005;
 
-// ── PEEL constants — the story's sticker peel ──────────────────────────────
-// q of the freed run, INVERTED (ops/house stickerPeelOps negates it). 1 would
-// unroll to a mirror of the seated barrel; above 1 the lip rolls BACK tighter
-// than the shell it came off, which is what reads as a sticker rather than as an
-// unwrapped tube. Tuned live against the peel scene.
+// q of the freed run, INVERTED (ops/house stickerPeelOps negates it). Above 1
+// the lip rolls BACK tighter than the shell it came off, which is what reads as
+// a sticker rather than as an unwrapped tube.
 const PEEL_CURL = 2.6;
 
-// ── ROSE constants — the origami-bloom prototype's gate, bare like peel's:
-// the wave is a `during` window keyed on the whorl key, not the gate's own
-// staggers.
+// ── ROSE constants — the origami-bloom gate, bare like peel's: the wave is a
+// `during` window keyed on the whorl key, not the gate's own staggers.
 const ROSE_SPLIT = 0.95;
 const ROSE_SNAP_EXP = 2.0;
 // THE WHORL KEY's exponent. rank01 is normalised over the model's WHOLE radius
-// range, and on this lens every shell that reads as a petal lives in its top
-// eighth: the barrel/cam/chassis/band skins sit at R 27–31 of a 31mm model
-// (rank01 0.87…1), everything below rank 0.8 is internal hardware. A linear key
-// therefore spends the wave on parts nobody sees and hands the visible whorls
-// nearly the SAME value — no bloom order, no tier, no matter how the knobs are
-// turned. rank01^8 spreads that top band over 0.34…1 and collapses the rest
-// toward 0, so the wave, the taper and the tier all key on what is on screen.
+// range, and every shell that reads as a petal lives in its top eighth — so a
+// linear key spends the wave on parts nobody sees and hands the visible whorls
+// nearly the same value. The power spreads that top band out and collapses the
+// rest toward 0, so wave, taper and tier all key on what is on screen.
 const ROSE_WHORL_EXP = 8;
-// THE CREASE BAND's default, model-mm of material each hard fold is taken
-// over — a KNOB now (`band`), because the right width is a trade: narrow
-// reads as a drawn knife line, but the fold's radius is ≈ band/fold-angle,
-// and where that radius drops below a shell's WALL THICKNESS the inner
-// surface has less arc than it needs and folds past the fold's centre — the
-// owner's "overlap at the crease" on thick panels. Widening the band past
-// the wall thickness clears it (paper cannot fold tighter than its thickness
-// either). Zero would divide (crease's width is a denominator) — the knob is
-// in KNOB_LIMITS with a hard floor.
+// THE CREASE BAND's default, model-mm of material each hard fold is taken over.
+// A knob (`band`), because the width is a trade: narrow reads as a drawn knife
+// line, but the fold's radius is ≈ band/fold-angle, and where that drops below
+// a shell's WALL THICKNESS the inner surface has less arc than it needs and
+// folds past the fold's centre. Zero would divide — KNOB_LIMITS has the floor.
 const ROSE_CREASE_DEFAULT_MM = 1.2;
 // The corner FLICK's axial ramp: the reflex fold is absent over the petal's
-// seated half and full at its free tip, which is what makes the fold-back a
-// triangular fang at the corner instead of a hem down the whole edge. Bounds
-// are on yN + 0.5 (0 at the rear edge, 1 at the front).
+// seated half and full at its free tip, which makes the fold-back a triangular
+// fang rather than a hem down the whole edge. Bounds are on yN + 0.5.
 const ROSE_FLICK_FROM = 0.45;
 const ROSE_FLICK_TO = 1;
 
@@ -141,25 +128,15 @@ export interface Recipe<S> {
 export function makeRecipes<S>(
   A: Algebra<S>,
 ): Record<Recipe<S>["name"], Recipe<S>> {
-  // THE HOUSE SELECTORS (selSheet / selNotAccessory / selNotOptical) and the
-  // roll-step / fold bend CHAINS live in ops/house.ts — the shared vocabulary
-  // every recipe here composes from.
+  // The house selectors and bend chains every recipe composes from are in
+  // ops/house.ts.
   //
-  // (the derivations that used to sit here are in that file, unchanged)
-  //
-  // ── the ASSEMBLE wrap's terms (formation.ts:850-903, verbatim) ────────────
-  // The chain itself is four ops in the pipeline below; these are the numbers it
-  // walks on. Every read is of the EFFECTIVE ctx — flight and stick already
-  // folded through the active selection weight — because `walk` hands the whole
-  // chain one effective ctx and MEMOIZES this derivation on it: the six ops that
-  // read these terms build them ONCE, which is the difference between one
-  // subgraph and six in the compiled shader (TSL has no CSE across node
-  // objects).
-  //
-  // Terms, in order: a breathing barrel (the sheet swells as it homes), a
+  // ── the ASSEMBLE wrap's terms ─────────────────────────────────────────────
+  // The numbers the chain below walks on: a breathing barrel, a
   // counter-rotating seam re-aim, the diagonal shear front that varies the
-  // rolled length with axial height, and the end-roll itself (capped at CURL_MAX
-  // of material, curvature reversed).
+  // rolled length with axial height, and the end-roll. Every read is of the
+  // EFFECTIVE ctx, and the derivation is MEMOIZED on it so the six ops reading
+  // these terms build one shader subgraph rather than six.
   const wrapTerms = (
     knobs: Record<string, S>,
   ): ((ctx: OpCtx<S>) => {
@@ -216,8 +193,8 @@ export function makeRecipes<S>(
         ),
         Rb,
         qMain: A.div(ctx.R, rf),
-        // With NO roll left the main arc must carry the overrun too: extend it
-        // past any vertex (the classic's step-gate on intoRoll).
+        // With NO roll left the main arc must carry the overrun too, so it is
+        // extended past any vertex.
         mainLen: A.add(A.sub(ctx.L, rollLen), A.mul(A.sub(1, hasRoll), 1e5)),
         qRoll: A.neg(A.div(ctx.R, rollR)),
         curlLen: A.mul(A.mul(rollR, ASSEMBLE_CURL_MAX), hasRoll),
@@ -240,37 +217,32 @@ export function makeRecipes<S>(
       flightStart: ASSEMBLE_FLIGHT_START,
       rollEnd: ASSEMBLE_ROLL_END,
     }),
-    // THE DEFAULT SELECTION. The shrink-wrap runs on the segmented shells and
-    // whatever rides them; the tier ladder moves every piece. Without that
-    // split the glass column, the iris mechanism and every
-    // axisymmetric ring throw and swirl alongside the shells and the reassembly
-    // reads as chaos instead of a layer-by-layer wrap-on. So the whole sheet
-    // pipeline lives inside ONE group scoped by `selSheet` (see its derivation
-    // above), and the ladder sits OUTSIDE it, unmasked.
+    // THE DEFAULT SELECTION: the shrink-wrap runs on the segmented shells and
+    // whatever rides them, the tier ladder moves every piece. So the whole
+    // sheet pipeline sits in ONE group scoped by `selSheet`, with the ladder
+    // OUTSIDE it — without that split the optics throw and swirl alongside the
+    // shells, and the reassembly reads as chaos rather than a wrap-on.
     build: (_ctx, knobs) => {
       const wrap = wrapTerms(knobs);
       return [
         group<S>([
-          // Optional sector solo, fully open by default (width ≥ TAU ⇒ exactly 1).
-          // INSIDE the group on purpose: the classic mask gated the shader flight
-          // only, never the rig ladder, so a soloed sector must not strand the
-          // rest of the model off its rung.
+          // Optional sector solo, fully open by default (width ≥ TAU ⇒ 1).
+          // INSIDE the group on purpose: a soloed sector must not strand the
+          // rest of the model off its ladder rung.
           selSector<S>(
             knobs.maskCenter,
             knobs.maskWidth,
             ASSEMBLE_MASK_FEATHER,
           ),
-          // Adopted shell hardware (screws, motor) carries the adopted flag, so it
-          // stays in this set and flies with its wedge — the classic's stamped
-          // behaviour. Glass, the iris mechanism, accessories, full rings and
-          // every axisymmetric solid fall out and ride the ladder alone.
           selSheet(A),
-          // THE WRAP, the sheet's own shape, first: the chain rebuilds
-          // theta/radius from the material coordinate, so every transform after
-          // it moves the BENT sheet. Aim at the seam, anchor the chain on the
-          // breathing barrel, then walk three arcs — the main (nearly seated)
-          // arc, the reversed end-roll of which only `curlRamp` of the material
-          // actually bends, and a straight tail for whatever is left.
+          // …and off the KEEP-set while `keepScope` is up: the cards scene's
+          // departure reveals that mechanism in place and may not move it.
+          selNotKept(A, knobs.keepScope),
+          // THE WRAP, the sheet's own shape, FIRST: the chain rebuilds the
+          // point from the material coordinate, so every transform after it
+          // moves the BENT sheet. Aim at the seam, anchor on the breathing
+          // barrel, then walk the main arc, the reversed end-roll, and a
+          // straight tail for whatever is left.
           rot<S>((c) => wrap(c).seamTurn),
           anchor<S>((c) => wrap(c).Rb),
           arc<S>(
@@ -279,36 +251,31 @@ export function makeRecipes<S>(
           ),
           // participation = curlRamp is the wrap's own law: only that share of
           // the roll's material bends, the rest trails straight off the exit
-          // tangent (a pure κ(d) replica diverged by up to 7.5mm).
+          // tangent. A pure κ(d) profile cannot reproduce it.
           arc<S>(
             (c) => wrap(c).qRoll,
             (c) => wrap(c).curlLen,
             { participation: (c) => wrap(c).curlRamp },
           ),
-          arc<S>(0),
-          // Put the PIECE's direction back on its own meridian. A re-aim threads
-          // forward like every other piece of state, and `sep` below is a slide
-          // along the sector centre, not along the seam — so the chain's aim has
-          // to be spent explicitly rather than scoped away.
+          straight<S>(),
+          // Put the PIECE's direction back on its own meridian: a re-aim
+          // threads FORWARD, and `sep` below slides along the sector centre,
+          // not the seam, so the chain's aim must be spent explicitly.
           rot<S>((c) => A.neg(wrap(c).seamTurn)),
-          // sep — the slow unpinned slide along the sector centre (uSeparate).
+          // sep — the slow unpinned slide along the sector centre.
           spread<S>(knobs.sep),
           // The REEL-IN group: the fast throw along the seam meridian and the
-          // fly-in swirl both home by 25% stuck. In the classic that was a
-          // `pinned` flag on each op; here it is one material selector scoping
-          // both — safe ONLY because stick is a PER-PIECE quantity (it comes from
-          // the gate, which reads per-piece rank/phase), so the group's weight is
-          // uniform across the piece's vertices exactly as the flag was. A
-          // per-VERTEX selector here would scale the two rigid motions per vertex
-          // and tear the piece apart.
+          // fly-in swirl both home by ASSEMBLE_PIN_END of stick. One material
+          // selector scopes both, safe ONLY because stick is PER-PIECE so the
+          // group's weight is uniform across a piece's vertices — a per-VERTEX
+          // selector would scale the two rigid motions per vertex and tear the
+          // piece apart.
           group<S>([
             selFront<S>((c) =>
               A.sub(1, A.smoothstep(0, ASSEMBLE_PIN_END, c.stick)),
             ),
-            // Aim the throw down the SEAM meridian — one halfSpan off the seat,
-            // the same turn the chain above took and gave back. The re-aim
-            // threads forward out of this group, which nothing after it reads
-            // (the ladder is axial).
+            // Aim the throw down the SEAM meridian. The re-aim threads forward
+            // out of this group, which nothing after it reads.
             rot<S>((c) => c.halfSpan),
             spread<S>(knobs.spreadThrow),
             swirl<S>(knobs.swirl, {
@@ -317,10 +284,13 @@ export function makeRecipes<S>(
             }),
           ]),
         ]),
-        // Axial depth from the rig's tier ladder, scaled by the Depth slider —
-        // UNSCOPED, so the axial choreography covers the whole model exactly as
-        // the classic rig ladder did.
-        ladder<S>("attr", A.mul(ASSEMBLE_LADDER_GAIN, knobs.depth)),
+        // Axial depth from the tier ladder, scaled by the Depth knob. Unscoped
+        // but for the keep-set, so the axial choreography covers the whole
+        // model in the sky chapter and leaves the mechanism alone in the cards.
+        group<S>([
+          selNotKept(A, knobs.keepScope),
+          ladder<S>("attr", A.mul(ASSEMBLE_LADDER_GAIN, knobs.depth)),
+        ]),
       ];
     },
     knobDefaults: {
@@ -333,6 +303,7 @@ export function makeRecipes<S>(
       depth: 1,
       stagger: 0.6,
       partStagger: 0,
+      keepScope: 0,
       split: 0.95,
       overlap: 0.9,
       snap: 0,
@@ -343,131 +314,73 @@ export function makeRecipes<S>(
 
   const explode: Recipe<S> = {
     name: "explode",
-    // A near-uniform gate: a light rank stagger and a wide window, no snap. The
-    // flight ramp owns all but the last 5% of the window and nothing in this
-    // pipeline reads stick — but the split still keeps the stick denominator
-    // positive so the channel-0 identity is exact rather than NaN. All five
-    // numbers (and the knob defaults) are WAVE-3 TUNING TARGETS: they get set
-    // against the reference teardown shots at the visual gate.
+    // A STAGGERED gate: pieces arrive one after another, by layer and then by
+    // their own phase inside it — the ending's read is each piece spiralling
+    // home in turn, not one radial collapse. The three shares sum to 1, so
+    // every piece still saturates at channel 0 and 1. Nothing here reads stick,
+    // but the split keeps its denominator positive so the identity is exact.
     gateSpec: () => ({
       layerStagger: EXPLODE_LAYER_STAGGER,
+      partStagger: EXPLODE_PART_STAGGER,
       windowFrac: EXPLODE_WINDOW,
       split: EXPLODE_SPLIT,
       snap: 0,
       snapExp: EXPLODE_SNAP_EXP,
     }),
-    // THE DEFAULT SELECTION, in assemble's own idiom: an exemption is a
-    // per-recipe DEFAULT SELECTION, not a flag baked into the ops (spec
-    // decision 4). Two scopes, from the classic teardown's own behaviour:
+    // THE DEFAULT SELECTION, in assemble's idiom — an exemption is a per-recipe
+    // selection, never a flag baked into an op. Two scopes:
     //
     //   1. A selector at the pipeline HEAD drops accessories from everything,
-    //      the ladder included — they are removable attachments, not parts of
-    //      the teardown (see selNotAccessory).
+    //      the ladder included — they are removable attachments.
     //   2. A group scopes the three RADIAL ops away from glass and the iris
-    //      mechanism, which the classic moved on the axial ladder ALONE.
+    //      mechanism, which move on the axial ladder ALONE.
     //
-    // The ladder therefore sits OUTSIDE the group (accessories excluded, the
-    // optics still on it) exactly as assemble's does. Moving it past the orbit
-    // is motion-neutral: it only ever adds to `axial`, and no op here reads
-    // `axial` — the whole pipeline is radial-plane work plus this one slide.
+    // The ladder therefore sits OUTSIDE the group. Its position past the orbit
+    // is motion-neutral: it only adds to `axial`, which no op here reads.
     build: (ctx, knobs) => [
       selNotAccessory(A),
       group<S>([
         selNotOptical(A),
-        // The dilation: every piece pushes out along its own sector centre. A
-        // plain dilate, deliberately unstaggered — a per-rank stagger
-        // ((dilate + (rank01 − 0.5)·1.1)) is a tuning to make against
-        // reference, not a default. dilate and sep are ONE spread: consecutive
-        // spreads compose additively (displacement is linear in frac), and the
-        // fused form skips a full polar round-trip per vertex (2 atan2 + 2
-        // sqrt); both knobs stay independently tunable inside the add.
+        // The dilation: every piece pushes out along its own sector centre.
+        // `dilate` and `sep` are ONE spread — consecutive spreads compose
+        // additively (displacement is linear in frac), and the fused form skips
+        // a polar round-trip per vertex while both knobs stay tunable.
         spread<S>(A.add(knobs.dilate, knobs.sep)),
         // THE SPIRAL. `orbit`'s angle is `flight × spin`, so this is a rigid
-        // revolution about the bore that is FULL at channel 1 and exactly 0 at
-        // channel 0 — per piece, on the same gate that stages the radius. A
-        // piece therefore does not slide straight in as the channel falls: it
-        // sweeps round as it comes, and every piece unwinds on its own window.
-        // The story's ending is what the angle is tuned for (owner: "the pieces
-        // to fly in in a spiral") — it plays there with nothing else turning,
-        // the model's own reveal roll being spent a beat earlier. It winds UP
-        // invisibly: the channel's rise is under the sky chapter's body cover,
-        // and a rigid revolution of the whole cast has no read of its own once
-        // established, so only the unwind is ever seen.
+        // revolution about the bore, exactly 0 at channel 0 and per piece on
+        // the same gate that stages the radius: each sweeps round as it comes
+        // rather than sliding straight in.
         orbit<S>(A.mul(knobs.spin, ctx.wrapDir)),
       ]),
       ladder<S>("attr", knobs.axialGain),
     ],
-    // spin 0.7 rad ≈ 40° of sweep per piece, UP from a token 0.06 (3.4°, which
-    // read as nothing). THE taste knob for the spiral; it feeds no gate divisor,
-    // so it is unbounded and safe to retune. The /lens explode slider wears it
-    // too — the teardown swirls now, which is the classic's own behaviour.
+    // `spin` is THE taste knob for the spiral; it feeds no gate divisor, so it
+    // is unbounded and safe to retune.
     knobDefaults: { dilate: 2.4, sep: 0.55, axialGain: 0.4, spin: 0.7 },
   };
 
   // The STORY's shell peel — the STICKER chain (ops/house stickerPeelOps),
-  // scoped so glass/iris/accessories and axisymmetric bodies can never unroll;
-  // the shell cast (sub-span wedges + decals at the outer ranks) is the only
-  // participant.
+  // scoped so only the shell cast (sub-span wedges + decals at the outer ranks)
+  // can unroll.
   //
-  // THE BAND, RE-MEASURED off the shipped model's baked `_opA.w` (rank01 is a
-  // 0.01 mm bucket of each piece's MEDIAN vertex radius, frames.ts rankKeyOf —
-  // these were read off a live `__lensModel` walk under `?probe`; the same
-  // numbers are now reachable offline through story/__tests__/piece-flow.test.ts,
-  // which reads the shipped vertices directly). THE WHOLE SHELL CAST, all 25 wedges
-  // and all 18 markings, and the two casts either side of it for context —
-  // `selRank`'s weight at rankLo 0.97 / feather 0.005 in the last column:
-  //
-  //     rank     R mm   pieces                                     weight
-  //     1.00000  30.80  Band_Mid_Seg2/3 + 4 decals                  1
-  //     0.99931  30.78  Ring_Focus_Seg0..4                          1
-  //     0.99550  30.67  Band_Mid_Seg4 + DecalT_Brand/_Serial        1
-  //     0.99516  30.66  Band_Mid_Seg0/1                             1
-  //   ← rankLo 0.97, feather 0.005: the ramp is [0.965, 0.970]
-  //     0.96990  29.93  Ring_Zoom_Seg1/4 + DecalT_MinF/_Zoom_50     0.9987
-  //     0.96955  29.92  Ring_Zoom_Seg0/2/3 + 5 decals               0.9772
-  //     0.95329  29.45  Barrel_Base_Seg0..4 + 2 decals              0
-  //     0.93772  29.00  Chassis_Fixed_Seg0..4 (+ the adopted        0
-  //                       Focus_Motor / Focus_GuideRods)
-  //     0.91903  28.46  Cam_Barrel_Seg0..6 — seven distinct ranks   0
-  //       …0.89273  27.70   INTERLEAVED with the four below
-  //     0.89965  27.90  Barrel_Inner_Seg0/3 + 3 decals              0
-  //     0.89896  27.88  Barrel_Inner_Seg1                           0
-  //     0.88581  27.50  Barrel_Inner_Seg2                           0
-  //     0.88270  27.41  Barrel_Inner_Seg4                           0
-  //
-  // SO THE HARD LOW EDGE IS WHAT MAKES THE CAST, and not by a comfortable
-  // margin: rankLo 0.97 lands INSIDE the Ring_Zoom pair. Something DOES live in
-  // the feather's reach [0.965, 0.970] — five wedges and seven markings, curling
-  // at 0.9772 and 0.9987 rather than at 1, which is a couple of percent of a
-  // curl and reads as nothing.
-  //
-  // AND THAT IS THE WHOLE REASON FOR THE TIGHT FEATHER, rather than the house
-  // 0.1 the other recipes take: the gap the edge has to fit in is [0.95329,
-  // 0.96955], only 0.016 wide, so a ramp broad enough to pass Ring_Zoom at a
-  // flat 1 necessarily reaches past Barrel_Base as well. Measured at feather
-  // 0.1: Ring_Zoom 1.0000 but Barrel_Base 0.9255, Chassis_Fixed 0.7546,
-  // Cam_Barrel_Seg1 0.4855, Barrel_Inner 0.04–0.21 — half the mechanism on some
-  // fraction of a curl. The 0.005 feather buys a clean stop above 0.95329 for
-  // the price of those two hundredths.
+  // THE BAND is a rank window, and its low edge has to be SHARP: the gap it
+  // must fit in — between the outermost rings and the cladding under them — is
+  // only ~0.016 of rank01 wide, so the house 0.1 feather the other recipes take
+  // would reach past the cladding and put half the mechanism on some fraction
+  // of a curl. Hence PEEL_RANK_FEATHER.
   //
   // WHAT THEREFORE DOES NOT CURL, though it all drifts away rigidly with the
-  // shell cast (story/peelcards.ts): `Barrel_Base` (5) and `Barrel_Inner` (5),
-  // plus the 5 markings printed on them. Barrel_Inner is the surprise and the
-  // reason is the METRIC: it reaches the outer radius at its lip like the rest
-  // of the skin, but it carries the whole inner surface of the barrel too, so
-  // its MEDIAN vertex radius (27.4–27.9 mm) drops it below Chassis_Fixed and
-  // in among Cam_Barrel — a shell part ranked inside the cladding. Every decal
-  // shares its host's rank EXACTLY (frames.ts binds them to a host wedge), so a
-  // marking always curls with the wedge it is printed on and no ink is ever
-  // left floating. Widening the band to take Barrel_Base needs rankLo ≈ 0.95;
-  // taking Barrel_Inner as well needs ≈ 0.88, which is under Cam_Barrel and
-  // Chassis_Fixed both — a different cast, not a wider one.
+  // shell cast (story/peelcards.ts): `Barrel_Base`, `Barrel_Inner` and the
+  // markings on them. Barrel_Inner is the surprise, and the reason is the
+  // METRIC — it reaches the outer radius at its lip, but carries the barrel's
+  // whole inner surface too, so its MEDIAN vertex radius ranks it in among the
+  // cladding. Widening the band far enough to take it reaches under two more
+  // shells as well: a different cast, not a wider one.
   //
-  // THE STICKER CHAIN, not the flat unroll the retired `rollout` recipe used:
-  // a wedge half-peeled flat reads as a plate hovering off the barrel rather
-  // than as something coming OFF it. The sticker chain frees the same material
-  // at −PEEL_CURL instead — the lip inverts at the crease and the freed body
-  // rolls back away from the shell, which is the gesture the scene is about.
+  // THE STICKER CHAIN, not a flat unroll: a wedge half-peeled flat reads as a
+  // plate hovering off the barrel rather than as something coming OFF it. The
+  // sticker chain frees the same material at −PEEL_CURL, so the lip inverts at
+  // the crease and the freed body rolls back away from the shell.
   const peel: Recipe<S> = {
     name: "peel",
     // A BARE gate — no stagger of its own. See the `during` in `build`: the
@@ -482,50 +395,32 @@ export function makeRecipes<S>(
       snapExp: PEEL_SNAP_EXP,
       // no overlap — the peel chain reads only flight (stick is unused)
     }),
-    // ONE `during` scope, which is a group in assemble's idiom: the
-    // participation selectors scope the peel chain and nothing else, so a term
-    // added to this pipeline after it (an axial slide, a drift) moves the whole
-    // model unless it says otherwise. Selectors FIRST inside it — `arc` is a
-    // modifier, and a spatial selector after one reads a stale frame
-    // (validatePipeline).
+    // ONE `during` scope: the participation selectors scope the peel chain and
+    // nothing else, so a term added after it moves the whole model unless it
+    // says otherwise. Selectors FIRST inside it — `arc` is a modifier, and a
+    // spatial selector after one reads a stale frame (validatePipeline).
     //
-    // THE STAGGER IS THE `during` WINDOW, not the gate's. The gate staggers on
-    // `rank01` and `layerPhase`, and BOTH are degenerate on the peel's cast:
+    // THE STAGGER IS THE `during` WINDOW, not the gate's, because the gate's
+    // two stagger inputs are both degenerate on this cast: it IS the outer
+    // skin, so every piece measures rank01 within a few hundredths of 1, and
+    // the 0.01mm rank bucket puts most wedges in a layer of ONE, whose
+    // layerPhase is 0 by construction.
     //
-    //   • the cast IS the outer skin, so every piece of it measures rank01
-    //     within 0.07 of 1 — a rank-keyed offset spreads the departures over
-    //     seven percent of one window;
-    //   • the 0.01mm rank bucket puts most wedges in a layer of ONE (measured on
-    //     the shipped model: 68 of its 100 layers are singletons), and a layer of
-    //     one has layerPhase 0 by construction.
-    //
-    // Raise either knob and the whole shell still leaves as one block. So the
-    // fan is keyed on the piece's MERIDIAN, which is the one intrinsic that
-    // really does separate them — `peelOrder`, 0 → 1 once around the barrel in
-    // the house winding direction. The five families of a sector share a window
-    // and the sectors go one after another, so the skin peels AROUND the lens
-    // and each sector's column is free before the next one starts. `stagger` is
-    // how much of the channel the fan spends and the window is the remainder, so
-    // `from` ≥ 0 and the last piece's `to` is exactly 1: both identity ends stay
-    // exact.
-    //
-    // (story/peelcards.ts's outward drift keys its own windows on the SAME
-    // peelOrder, so a strip leaves on the heels of its own unroll rather than on
-    // somebody else's.)
+    // So the fan keys on the piece's MERIDIAN — `peelOrder`, 0 → 1 once around
+    // the barrel — which is the one intrinsic that really does separate them:
+    // the skin peels AROUND the lens, each sector free before the next starts.
+    // `stagger` is how much of the channel the fan spends and the window is the
+    // remainder, so both identity ends stay exact. story/peelcards.ts's outward
+    // drift keys on the SAME peelOrder.
     build: (ctx, knobs) => {
       const from = A.mul(peelOrder(A, ctx.t0, ctx.wrapDir), knobs.stagger);
       return [
         during<S>({ from, to: A.add(from, A.sub(1, knobs.stagger)) }, [
           selSheet(A),
-          // The band IS the scope, and its low edge is SHARP
-          // (PEEL_RANK_FEATHER — a house 0.1 feather is far too wide here).
-          // The wide default feather once reached a whole layer below the
-          // band, and everything ADOPTED onto that layer (frames.ts
-          // SHELL_ADOPT copies the host's rank) rode the unroll at near-full
-          // weight and snapped home on the channel's release (owner-caught).
-          // The feather's reach is [0.965, 0.97] and the nearest rank under it
-          // is Barrel_Base at 0.9533 (the table above) — nothing lives in the
-          // reach, so the peel keeps its hard edge.
+          // The band IS the scope, and its low edge is SHARP: a wide feather
+          // reaches a whole layer below the band, and everything ADOPTED onto
+          // that layer (which copies its host's rank) then rides the unroll at
+          // near-full weight and snaps home on the channel's release.
           selRank<S>(knobs.rankLo, knobs.rankHi, PEEL_RANK_FEATHER),
           ...stickerPeelOps(A, knobs.curl),
         ]),
@@ -534,84 +429,48 @@ export function makeRecipes<S>(
     knobDefaults: { curl: PEEL_CURL, stagger: 0.72, rankLo: 0.97, rankHi: 1 },
   };
 
-  // ── ROSE — the origami bloom (a LOOK prototype; no story wiring) ──────────
-  // The model is already a rose in section: 8+ concentric wedge-cut whorls of
-  // alternating 5- and 7-petal counts with offset seam meridians (the skin's
-  // seg0 sits at −65.9°, the cam whorl's at −26.4° — ~39.5° of stagger between
-  // adjacent whorls). `selSheet` admits exactly that nest — every sub-span
-  // wedge, everything adopted onto one, every decal — and bars glass, the iris
-  // mechanism, accessories and bodies of revolution. So the cast IS the flower;
-  // this recipe only has to open it.
+  // ── ROSE — the origami bloom ──────────────────────────────────────────────
+  // The model is already a rose in section: concentric wedge-cut whorls of
+  // alternating petal counts with offset seam meridians, and `selSheet` admits
+  // exactly that nest. So the cast IS the flower and this recipe only has to
+  // open it.
   //
-  // THE BLOOM ORDER is the `during` window, keyed on the WHORL KEY (rank01
-  // re-keyed by ROSE_WHORL_EXP — see its note: on this model the shells that
-  // read as petals all sit in the top eighth of rank01, so the raw rank is not
-  // a usable wave key even though it is non-degenerate) — INSIDE OUT: the heart
-  // opens first and the rim last, petals of one whorl together. `stagger` is how
-  // much of the channel the wave spends; the window is the remainder, so both
-  // identity ends stay exact (from ≥ 0, last `to` = 1).
+  // THE BLOOM ORDER is the `during` window, keyed on the WHORL KEY, INSIDE OUT:
+  // the heart opens first and the rim last. That puts the wave in step with the
+  // ARRIVAL — the explode gate stages its fall by rank, seating low ranks
+  // FIRST, so a petal that flies in early is the petal that folds early.
+  // `stagger` is how much of the channel the wave spends and the window is the
+  // remainder, so both identity ends stay exact.
   //
-  // INSIDE OUT IS THE OWNER'S DIRECTION ("build the rose up petal by petal
-  // inside out"), and it is the way a real one opens — a bud's heart parts
-  // before its outer whorls lie back. It also puts the wave in step with the
-  // ARRIVAL: the explode channel's own gate stages its fall by `rank01 ×
-  // layerStagger`, which seats low ranks FIRST, so a petal that flies in early
-  // is the petal that folds early and the two read as one motion per piece
-  // rather than as a landing followed by a bloom. The key is `whorl` itself
-  // now, where it used to be `1 − whorl`; nothing else about the wave changed.
-  //
-  // THE PETAL is a FOLD PATTERN and a hinge. The reference photo (a folded
-  // Kawasaki rose) shows each petal as a set of FLAT FACETS separated by crisp
-  // fold lines — a central plane with side planes broken back at a hard
-  // dihedral — so the petal's cross-section is a shallow tent with KINKS, not
-  // the smooth arc a curvature profile alone can make. The chain walks ACROSS
-  // the wedge (the material coordinate d is angular), so a fold line in the
-  // chain is a crease running ALONG the petal, base to tip: exactly the
-  // reference's creases. Segments, in material order from the seam:
+  // THE PETAL is a FOLD PATTERN and a hinge: flat facets separated by crisp
+  // fold lines, a shallow tent with KINKS rather than the smooth arc a
+  // curvature profile alone can make. The chain walks ACROSS the wedge (the
+  // material coordinate d is angular), so a fold in the chain is a crease
+  // running ALONG the petal, base to tip. Segments, from the seam:
   //   • a seated base run (q = 1) — the petal stays attached to its whorl;
-  //   • side panel, CREASE, centre panel, CREASE, side panel — all three flat
-  //     (q: 1 → 0) and the two folds carrying the turn the panels no longer do.
-  //     `crease` states the fold in RADIANS beyond the seated barrel, so
-  //     `crease · halfSpan` per fold puts exactly the seated turn onto the two
-  //     hard lines at crease = 1 — but the seated base run and the bands' own
-  //     seated turn ride on top, so the SECTOR break-even (petal covers what
-  //     it was cut from) sits near crease ≈ 0.37 at the shipped panel splits;
-  //     the shipped 1.24 over-folds to ~1.9× the sector, a tighter tent.
-  //   • a reflex CREASE and the flat tab beyond it — the corner flick. Keyed on
+  //   • side panel, CREASE, centre panel, CREASE, side panel — all three flat,
+  //     the two folds carrying the turn the panels no longer do. `crease`
+  //     states the fold in RADIANS beyond the seated barrel, so the product
+  //     with halfSpan puts the seated turn on the hard lines at crease = 1. The
+  //     base run and bands ride on top, so the SECTOR break-even is lower.
+  //   • a reflex CREASE and the flat tab beyond it — the corner flick, keyed on
   //     the axial fraction (ROSE_FLICK_*) so it is a triangular fang at the
-  //     petal's free corners rather than a hem down the whole edge; `curl` is
-  //     its angle. (This is where the prototype's rolled lip went: a rolled arc
-  //     reads soft, and the photo's corners SNAP.)
+  //     petal's free corners rather than a hem down the whole edge.
   //   • `tilt` about a shared axial hinge station INSIDE the barrel's own
-  //     extent — the petal falls open backward about a receptacle every petal
-  //     grows from, the one motion the radial-plane algebra could not express.
-  //     The station is load-bearing for the look: the radial displacement of a
-  //     vertex is (y − hinge)·sin a, so a station behind the model (the
-  //     prototype's −30) puts every vertex's lever arm on ONE sign and the
-  //     tilt degenerates to a bodily outward slide. That slide costs three
-  //     ways: the visible cast is flung into a wide annulus around the barred
-  //     glass heart (the empty ring read as "gaps between the layers"); the
-  //     slide is equal for equal y, so neighbouring whorls' radii collapse
-  //     relative to their new size and the tier dies; and the tangential
-  //     stretch (theta is never written — a whorl keeps its angular extent
-  //     and stretches with the ring) varies along y, distorting each petal.
-  //     A station inside the extent flips the lever-arm sign mid-piece: front
-  //     edge out, rear edge in — a hinge.
-  //     `taper` opens outer whorls further than inner ones, so at full bloom
-  //     the centre still cups (a bud's heart) while the outer whorls lie back.
-  //   • `spread` + `orbit` — the petal slides off its whorl and the bloom
-  //     carries a light phyllotaxis twist in the house winding. `spin` stays
-  //     small (it opens sightlines faster than it opens the flower), but
-  //     `open` is no longer the tighten era's near-zero: an over-folded petal
-  //     (crease > sector break-even) is NARROWER than its share of the ring,
-  //     so the slide now separates a whorl's faceted cone into distinct
-  //     overlapping petals while the layers beneath close what it opens —
-  //     the knobDefaults comment carries the numbers.
+  //     extent. The station is load-bearing: radial displacement is
+  //     (y − hinge)·sin a, so a station BEHIND the model puts every lever arm
+  //     on one sign and the tilt degenerates to a bodily outward slide. Inside
+  //     the extent the sign flips mid-piece — front edge out, rear edge in, a
+  //     hinge. `taper` opens outer whorls further, so the centre still cups.
+  //   • `spread` + `orbit` — the petal slides off its whorl with a light
+  //     phyllotaxis twist. `spin` stays small (it opens sightlines faster than
+  //     it opens the flower); `open` separates an over-folded whorl's faceted
+  //     cone into distinct petals while the layers beneath close the gap.
   const rose: Recipe<S> = {
     name: "rose",
-    // A bare gate, peel's reasoning: no stagger of its own (the `during`
-    // window IS the stagger), the house split/snapExp so channel 0 keeps the
-    // stick denominator positive and the identity exact.
+    // A bare gate, peel's reasoning: no stagger of its own (the `during` window
+    // IS the stagger), the house split so channel 0 keeps the stick denominator
+    // positive and the identity exact.
     gateSpec: () => ({
       layerStagger: 0,
       windowFrac: 1,
@@ -620,25 +479,21 @@ export function makeRecipes<S>(
       snapExp: ROSE_SNAP_EXP,
     }),
     build: (ctx, knobs) => {
-      // The WHORL KEY — rank01 re-keyed onto the shells that read as petals
-      // (ROSE_WHORL_EXP). Everything rank-keyed in this recipe uses it.
+      // The WHORL KEY — rank01 re-keyed onto the shells that read as petals.
+      // Everything rank-keyed in this recipe uses it.
       const whorl = A.pow(ctx.rank01, ROSE_WHORL_EXP);
       // INSIDE OUT: whorl 0 (the heart) opens at from = 0, whorl 1 (the rim) at
-      // from = stagger — the reverse of the tightened bloom's outer-first wave.
+      // from = stagger.
       const from = A.mul(whorl, knobs.stagger);
       // The hinge angle, tapered by whorl depth: outer (whorl = 1) opens the
       // full `lift`, the innermost keeps (1 − taper) of it.
       const angle = A.mul(knobs.lift, A.mix(A.sub(1, knobs.taper), 1, whorl));
       // THE FOLD PATTERN's material budget, per piece. `base` is the seated run
       // and `facet` the flicked tab beyond the last fold; the tent divides what
-      // is left — `creasePos` of it as the centre panel, the rest split evenly
-      // between the two side panels. Each panel gives up one crease band, so
-      // the segments still sum to L and the tab is the unbounded remainder.
-      // max(0, …) is the guard the KNOB_LIMITS on `creasePos` cannot give: an
-      // arc with a negative length would walk the chain BACKWARDS.
-      // Built ONCE per piece for the whole chain (memoCtx — the GPU's only CSE):
-      // six segments each re-deriving the same three terms would be six
-      // subgraphs in the shader.
+      // is left, `creasePos` of it as the centre panel. Each panel gives up one
+      // crease band, so the segments sum to L. The max(0, …) is the guard
+      // KNOB_LIMITS cannot give: a negative arc length walks the chain
+      // BACKWARDS. Built ONCE per piece, or six segments become six subgraphs.
       const tent = memoCtx<S, { side: S; mid: S; flat: S; fold: S }>((c) => {
         const rest = A.mul(
           c.L,
@@ -648,12 +503,10 @@ export function makeRecipes<S>(
         return {
           side: A.max(0, A.sub(A.mul(A.sub(rest, mid), 0.5), knobs.band)),
           mid: A.max(0, A.sub(mid, knobs.band)),
-          // Flat at full flight, the seated barrel at rest — the identity every
-          // chain op in the house shares.
+          // Flat at full flight, seated barrel at rest — the house identity.
           flat: A.mix(1, 0, c.flight),
-          // Each side crease turns `crease` × the piece's OWN half-span, so a
-          // 5-cut and a 7-cut whorl both refold onto their own sector instead
-          // of one count being over-folded by a shared angle.
+          // Each crease turns `crease` × the piece's OWN half-span, so a 5-cut
+          // and a 7-cut whorl each refold onto their own sector.
           fold: A.mul(A.mul(c.flight, knobs.crease), c.halfSpan),
         };
       });
@@ -694,43 +547,28 @@ export function makeRecipes<S>(
             knobs.band,
           ),
           arc<S>((c) => tent(c).flat),
-          // Spend the seam aim: tilt hinges in the meridian plane regardless,
-          // but `spread` below slides along the working direction and the bloom
-          // wants it down the sector centre.
+          // Spend the seam aim: `spread` below slides along the working
+          // direction, and the bloom wants it down the sector centre.
           rot<S>((c) => A.neg(c.halfSpan)),
           tilt<S>(angle, { pivot: knobs.hinge }),
           spread<S>(knobs.open),
           orbit<S>(A.mul(knobs.spin, ctx.wrapDir)),
         ]),
         // THE TIER. Every whorl hinges off the SAME receptacle station, so
-        // without this the ranks all reach the same height and the outermost
-        // rim hides every rank inside it in profile: a rank-keyed axial step
-        // turns the nest into a dome, and that is what makes each rank's
-        // silhouette readable from the side.
+        // without a rank-keyed axial step every rank reaches the same height
+        // and the outermost rim hides the rest in profile. The step turns the
+        // nest into a dome, which makes each rank readable from the side.
         //
-        // ANCHORED AT THE HEART (`1 − 2·whorl`): the innermost ranks — the
-        // glass heart's neighbourhood, which the whorl key collapses to 0 —
-        // take exactly `+rise`, and the outermost takes `−rise`, so the rim
-        // hangs a full `rise` BELOW the heart's station instead of level with
-        // it. The alternative anchor (`1 − whorl`, the tighten era's) lifted
-        // the core off a glass column that is barred from the cast and so
-        // never travels: the bloom climbed away from its own stem and the rear
-        // elements stood bare under the flower's underside (~19 mm of column
-        // below the lowest petal at these defaults). Dropping the WHOLE cast
-        // instead would have cured that end and bared the front element at the
-        // other; keying the drop to the rank cures it with the centre — heart,
-        // cells and interior hardware, all at whorl ≈ 0 — held bit-for-bit
-        // where the owner tuned it. The rim's own drop is what closes over the
-        // rear stack. `rise` is therefore the tier's HALF depth now: heart-to-
-        // rim spans 2·rise.
+        // ANCHORED AT THE HEART (`1 − 2·whorl`): innermost ranks take `+rise`,
+        // outermost `−rise`, so the rim hangs a full `rise` BELOW the heart —
+        // `rise` is the tier's HALF depth. Lifting the core instead climbs away
+        // from a glass column that is barred from the cast and never travels,
+        // baring the rear elements; the rim's own drop is what covers them.
         //
-        // OUTSIDE the whorl wave, deliberately: the `during` window is the
-        // BLOOM ORDER, and a tier gated by it would only exist once a rank's
-        // own window opened — the dome would assemble last, exactly where the
-        // pose is least in need of it. On the channel's own flight the dome
-        // steps up through the whole scrub, mid-bloom included. LAST in the
-        // chain, so it is a clean lift along the axis rather than a longer
-        // lever on the hinge the tilt then swings.
+        // OUTSIDE the whorl wave, deliberately: gated by the `during` window
+        // the dome would assemble last, where the pose least needs it. LAST in
+        // the chain, so it is a clean axial lift rather than a longer lever on
+        // the hinge the tilt then swings.
         group<S>([
           selSheet(A),
           approach<S>(A.mul(knobs.rise, A.sub(1, A.mul(whorl, 2)))),
@@ -740,55 +578,32 @@ export function makeRecipes<S>(
     // Physical units: fractions of L (base, facet), fraction of the tent's own
     // material (creasePos), multiples of the piece's half-span (crease),
     // radians (curl, lift, spin), model-mm (hinge, rise), fractions of R
-    // (open), channel share (stagger).
-    // TASTE KNOBS, tuned live on the /lens bench (the "Rose bloom" animation
-    // hands each a slider).
+    // (open), channel share (stagger). All taste knobs, tuned on the /lens
+    // bench where the "Rose bloom" animation hands each one a slider.
     knobDefaults: {
       stagger: 0.34,
-      // OWNER-TUNED 2026-08-14 round 3 (was 0.18): a shorter seated run —
-      // the petal's folds start closer to its whorl.
-      base: 0.1,
-      // the flicked tab beyond the last fold — the fang's own length
-      facet: 0.22,
-      // 1 = the two hard lines carry exactly the petal's seated turn; the
-      // sector break-even (petal still covers what it was cut from) is lower,
-      // ≈ 0.37, because the base run and the crease bands' own seated turn
-      // ride on top. 1.24 over-folds to ~1.9× the sector — which is what
-      // breaks a whorl's continuous faceted cone into separate petals (the
-      // reference's own geometry: a folded petal is narrower than its share
-      // of the ring, and the layers under it are what close the gap).
+      base: 0.1, // the seated run, before the petal's folds start
+      facet: 0.22, // the flicked tab beyond the last fold — the fang's length
+      // 1 puts exactly the petal's seated turn on the two hard lines. Past the
+      // sector break-even a petal is NARROWER than its share of the ring, which
+      // is what breaks a whorl's continuous faceted cone into separate petals.
       crease: 1.24,
       creasePos: 0.42,
       band: ROSE_CREASE_DEFAULT_MM,
-      // the flick's angle, radians of reflex at the free corners
-      curl: 1.5,
+      curl: 1.5, // the flick's reflex angle at the free corners
       lift: 1.34,
       taper: 0.7,
-      // INSIDE the barrel's own axial extent (the shells run y 1…76), which is
-      // what makes this a hinge instead of a lever: the slide is
-      // (y − hinge)·sin a, so at the prototype's −30 every lever arm shared a
-      // sign and the whole whorl translated outward into a wide empty annulus
-      // around the glass heart — the see-through gaps between layers. At 20
-      // the sign flips mid-piece and the petal rotates in place.
+      // INSIDE the barrel's own axial extent, which is what makes this a hinge
+      // rather than a lever — see `tilt` in the recipe header.
       hinge: 20,
-      // UP from the tightened bloom's 0.05, and the reversal is deliberate:
-      // that value was the only thing holding the whorls closed while the
-      // petals were smooth flattened plates, and a slide of 0.05·R was all the
-      // ring could take. Over-folded petals (crease > 1) are narrower than
-      // their sector, so the slide now SEPARATES them into petals instead of
-      // opening the ring — and the shots at mid-bloom and full open show the
-      // nest still closed (no background through the whorls), which is the
-      // gap-closure floor this may not regress.
-      // open 0.15, taper 0.7, rise 22: OWNER-TUNED on the bench (2026-08-14,
-      // second round, off the slider readouts) AFTER the tier's re-anchor —
-      // tuning inside the new mechanism was its visual sign-off.
+      // The slide SEPARATES over-folded petals rather than opening the ring.
+      // The nest must stay closed at mid-bloom and full open (no background
+      // through the whorls); that gap closure is a floor, not a preference.
       open: 0.15,
       spin: 0.25,
-      // The tier's HALF depth (see the op): +rise at the heart, −rise at the
-      // rim. At 22 the rim still reaches past the bottom of the barred glass
-      // column (whose lowest point sits just below y 0), so the rear elements
-      // stay buried in a side view — with less of the stretch the first-cut
-      // ±38 gave the bloom.
+      // The tier's HALF depth: +rise at the heart, −rise at the rim. The rim
+      // must still reach past the bottom of the barred glass column, or the
+      // rear elements stand bare in a side view.
       rise: 22,
     },
   };

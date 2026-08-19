@@ -6,6 +6,7 @@ import { RANGES, rangeOf } from "../story";
 import { flyPoseAt } from "../fly";
 import { FLY, poseCamX } from "../../optics/fly-core";
 import { CHANNEL_DEFAULTS } from "../../core/scene";
+import { RECIPE_NAMES } from "../../ops/host";
 import {
   isDecal,
   isPeelExtra,
@@ -545,12 +546,12 @@ describe("the cost at the story's edges", () => {
     }
   });
 
-  it("leaves only the glass column through the body fade's valley", () => {
-    // The peel→cards crossfade takes the whole lens away under the card shell,
-    // but the body fade's hard tail spares the elements by design: they carry
-    // their own opacity and their alphaTest is what stops a faded one writing
-    // depth (core/scene.ts). So they are still SUBMITTED — 13 draws, and the
-    // transmission copy with them — while painting nothing.
+  it("leaves only the glass column under the DIVE's own body cover", () => {
+    // The only stretch that hides the model is story/fly.ts's cover, over the
+    // dive's last tenth. The fade's hard tail spares the elements by design:
+    // they carry their own opacity and their alphaTest is what stops a faded
+    // one writing depth (core/scene.ts). So they are still SUBMITTED — 13
+    // draws, and the transmission copy with them — while painting nothing.
     const p = COST_SAMPLE_PS.find((q) => storyStateAt(q).look.bodyFade <= 0);
     expect(p, "the valley is sampled").toBeDefined();
     const c = at(p!);
@@ -677,19 +678,11 @@ describe("the cost module's coverage", () => {
       expect([...seen], c).not.toContain(c);
   });
 
-  it("names the deform set the hero actually pins", () => {
-    // components/LensStory.astro's `recipes:` — if the hero's pinned set moves,
-    // the map's kVerts × recipes arithmetic moves with it
-    const hero = readFileSync(
-      new URL("../../../../components/LensStory.astro", import.meta.url),
-      "utf8",
-    );
-    const m = hero.match(/recipes:\s*\[([^\]]*)\]/)!;
-    const pinned = m[1]
-      .split(",")
-      .map((s) => s.trim().replace(/["']/g, ""))
-      .filter(Boolean);
-    expect(pinned).toEqual([...DEFORM_RECIPES]);
+  it("names the deform set the shader actually carries", () => {
+    // The hero no longer selects a subset — the emitted deform carries every
+    // recipe and gates each on its own channel — so the set this map's
+    // kVerts × recipes arithmetic assumes is simply the whole table.
+    expect([...DEFORM_RECIPES]).toEqual([...RECIPE_NAMES]);
   });
 
   it("samples every scene edge and every hold centre", () => {

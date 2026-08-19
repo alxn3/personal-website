@@ -286,8 +286,8 @@ describe("fly-through / the ruler", () => {
     expect(FLY.pAperture[1]).toBeLessThan(FLY.pEnter);
     // …and open before the sky is FULLY up: the trace clips every ray outside
     // the iris clear radius, so a still-shut stop must not be the thing
-    // metering the risen starfield (the fades may overlap — owner tuned the
-    // open to land late, just before glass entry)
+    // metering the risen starfield (the fades may overlap — the open is tuned
+    // to land late, just before glass entry)
     expect(FLY.pAperture[1]).toBeLessThan(FLY.pSkyIn[1]);
     // the park is stopped DOWN and the flight ends wide open (the channel is
     // 0 = f/2.8 open, 1 = f/22 closed)

@@ -35,13 +35,13 @@ const poseAt = (p: number) => {
 };
 
 describe("story camera", () => {
-  // THE OWNER'S TWO NOTES, AS ONE LAW. First: "the reveal shouldn't include
-  // camera movement" — the camera is bit-for-bit still for every frame of the
-  // reveal's crossfade (rewrap-local [0.06, 0.16], story/fly.ts flyRevealAt),
-  // so the pieces turn on a parked frame. Second, the correction that moved
-  // the hold's far edge: "the camera movement from the end of trails to the
-  // start of reassemble is very jarring… smoothed or just incorporated into
-  // reassemble" — the chain used to stay parked clear through REVEAL_END and
+  // TWO NOTES, AS ONE LAW. First: the reveal must not include camera movement
+  // — the camera is bit-for-bit still for every frame of the reveal's
+  // crossfade (rewrap-local [0.06, 0.16], story/fly.ts flyRevealAt), so the
+  // pieces turn on a parked frame. Second, the correction that moved the
+  // hold's far edge: the camera move from the end of trails to the start of
+  // reassemble read as jarring and had to be smoothed into reassemble — the
+  // chain used to stay parked clear through REVEAL_END and
   // then onset TOGETHER with the fov push and the seat, a dead stop into a
   // fast move. The hold now ends at CAM_RELEASE_F (the crossfade's own top)
   // and the chain CREEPS from there — see the release test below for the
@@ -91,11 +91,11 @@ describe("story camera", () => {
     // THE CREEP'S BOUND. The chain's ease leaves at zero rate (smoothstep
     // foot — there is no frame on which motion begins as an event), and by
     // REVEAL_END — with the collapse, the roll and the ink return all in full
-    // motion over it — it has covered ~1.55 world units (measured 1.5479).
+    // motion over it — it has covered ~1.55 world units (1.5479).
     //
     // THE SWING GREW, and the tripwire's re-base 1.5 → 1.7 accommodates a real
-    // increase rather than a bookkeeping one. Measured against the old map
-    // rows, under either consistent pivot: 1.2747 → 1.5479 world units, 4.50°
+    // increase rather than a bookkeeping one. Against the old map rows, under
+    // either consistent pivot: 1.2747 → 1.5479 world units, 4.50°
     // → 5.85° about the subject (the dolly, 12.5 units out), 6.29° → 8.07°
     // about the orbit target — ~29 % on all three. The cause is mechanical and
     // was unavoidable: REVEAL_END − CAM_RELEASE grew 0.0086 → 0.0104 in p
@@ -107,7 +107,7 @@ describe("story camera", () => {
     // What did NOT move is the beat that must read as camera-still: the
     // crossfade, where the pieces alone turn on a parked frame, is bit-for-bit
     // still (test above — the pose at CAM_RELEASE is the park exactly). That
-    // is the "incorporated into reassemble" shape the owner chose. The bound
+    // is the "incorporated into reassemble" shape. The bound
     // is a tripwire against the release drifting EARLIER into that crossfade
     // or the ease steepening, either of which would put real swing under the
     // reveal.

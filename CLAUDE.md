@@ -56,4 +56,4 @@ Alpine-driven panels (project page) bind a `data-open` attribute that Tailwind `
 
 - Stage changes; the owner reviews and commits (or asks for a drafted commit message). Don't commit unprompted.
 - Scratch docs (`HANDOFF.md`, `BLOOM_TSL_PLAN.md`, `docs/superpowers/`) stay untracked unless asked.
-- Prefer conventions and rationale here over meta-comments in code — code comments should state only constraints the code itself can't show.
+- Prefer conventions and rationale here over meta-comments in code — code comments should state only constraints the code itself can't show. Keep them lean (1-2 lines, describing what the code does): no owner-attribution or "confirmed/verified" notes, no review verdicts, no change history, no measured numbers, no rationale essays — those live in git history and reports. Deleting such blocks on touch is correct.

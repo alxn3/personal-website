@@ -3,24 +3,18 @@ import { attribute, uniform, varying, vec4 } from "three/tsl";
 import { opsLocalPosition } from "../ops/host";
 import { FRAME_ATTRS } from "../ops/frames";
 
-// ============================================================================
-// GPU POSITION PROBE — dev only (see dev/paths.ts).
-//
+// DEV ONLY — dynamically imported, so none of it reaches a visitor's bundle.
 // Reads back where the REAL deformation shader puts a chosen set of vertices.
 //
-// The one design rule here: this module contains NO deformation math. It runs
-// `opsLocalPosition()` — the very node graph ops/host.ts hands the model's
-// materials — on a throwaway mesh whose vertices are laid out one per
-// PIXEL of a float render target, then reads the pixels back. Same graph, same
-// uniforms, same GPU, so a CPU mirror's silent drift is structurally
-// impossible: there is nothing to drift from.
+// The design rule: this module contains NO deformation math. It runs
+// `opsLocalPosition()` — the node graph ops/host.ts hands the model's materials
+// — on a throwaway mesh whose vertices are laid out one per PIXEL of a float
+// render target, then reads the pixels back. Nothing to drift from.
 //
 // Layout: one COLUMN per sample point, one ROW per timestep. Callers set the
-// uniforms/transforms for a step, call renderRow(k), and read every row back in
-// ONE transfer at the end. The step index is written into ALPHA so readback is
-// independent of the backend's row order (WebGL reads bottom-up, WebGPU
-// top-down) — the row a pixel came from is in the pixel.
-// ============================================================================
+// uniforms for a step, call renderRow(k), and read every row back in ONE
+// transfer. The step index is written into ALPHA so readback is independent of
+// the backend's row order — the row a pixel came from is in the pixel.
 
 /** One probe point: a real vertex of a real frame-carrying mesh. */
 export interface ProbeSample {
@@ -66,17 +60,14 @@ const CORNERS = [
 ] as const;
 
 /**
- * Build a probe over `samples`, able to hold `rows` timesteps.
- *
- * The probe geometry copies each sample's seated `position` plus every `_op*`
- * frame attribute the graph reads, so `positionLocal` and every `attribute()`
- * inside the graph resolve exactly as they do on the real mesh. The attribute
- * list (name × component count) IS ops/frames.ts's FRAME_ATTRS, sizes included,
- * so a re-packed or new frame attribute cannot fall out of the probe.
+ * Build a probe over `samples`, able to hold `rows` timesteps. The geometry
+ * copies each sample's seated `position` plus every `_op*` frame attribute the
+ * graph reads, taken from ops/frames.ts's FRAME_ATTRS so a re-packed or new
+ * attribute cannot fall out of the probe.
  *
  * A sample whose mesh is MISSING a frame attribute throws: uploading zeros
- * instead would put `R = 0` (a divisor all over the op algebra) into the graph
- * and hand back plausible-looking garbage rather than an obvious failure.
+ * would put `R = 0` — a divisor all over the op algebra — into the graph and
+ * hand back plausible-looking garbage rather than an obvious failure.
  */
 export function createPositionProbe(
   renderer: THREE.WebGPURenderer,
@@ -141,12 +132,10 @@ export function createPositionProbe(
     geometry.setAttribute(name, new THREE.BufferAttribute(extra[name], size));
   }
 
-  // Target WIDTH is padded to a multiple of 16 texels. WebGPU requires a
-  // texture→buffer copy's bytesPerRow to be a multiple of 256, and three hands
-  // the readback back with that padding STILL IN IT — an unpadded width would
-  // shear every row of the result by a few texels, which reads as plausible-
-  // looking positions rather than as an obvious failure. 16 × rgba32float =
-  // 256 bytes exactly, so an aligned width makes the stride the width.
+  // Target WIDTH padded to a multiple of 16 texels: WebGPU requires a
+  // texture→buffer copy's bytesPerRow to be a multiple of 256 and three hands
+  // the readback back with that padding still in it, so an unpadded width would
+  // shear every row. 16 × rgba32float = 256 bytes exactly.
   const texW = Math.ceil(count / 16) * 16;
 
   const uRow = uniform(0);

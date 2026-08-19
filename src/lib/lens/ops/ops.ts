@@ -1,25 +1,17 @@
-// The op pipeline — the scoped-selection model and the selector op family, all
-// written against the scalar algebra so a recipe runs identically on the CPU
-// (NUM, for tests/tooling) and the GPU (tslAlgebra). This file owns three
-// primitives: the vertex/frame state a recipe threads, the `OpItem` union every
-// op is expressed as, and `runPipeline` — which walks the items in order,
-// feeding each op's output state to the next. The three op families follow it:
-// selectors, transforms, modifiers.
+// The op pipeline — the vertex/frame state a recipe threads, the `OpItem` union
+// every op is expressed as, and `runPipeline`, which walks the items in order.
+// Written against the scalar algebra, so a recipe runs identically on NUM and
+// in the shader ops/emit generates from it. The three op families follow it.
 //
-// The selection model: an "active weight" (0..1) accumulates as the pipeline
-// runs. It starts at 1. A selector MULTIPLIES its 0..1 factor into the weight,
-// masking every op after it in the current scope. `group([...])` scopes that:
-// the weight in force when the group is entered is restored when it exits, so a
-// selector inside a group cannot leak out to ops that follow the group.
+// THE SELECTION MODEL: an "active weight" accumulates as the pipeline runs,
+// starting at 1. A selector MULTIPLIES its 0..1 factor into it, masking every
+// op after it in the current scope; `group([...])` restores the entering weight
+// on exit, so a selector cannot leak past its group.
 //
-// THE SCOPING LAW: a group scopes WEIGHT and PROGRESS — the two things that live
-// in the CTX. `during(progress, items)` is a group that also narrows the CHANNEL
-// its subtree's gate reads, so the subtree plays inside a sub-window of the
-// recipe's own clock. Everything else THREADS: the vertex state, the piece frame
-// and the working direction pass straight through a group boundary in both
-// directions. Said the other way — the ctx an op sees is immutable WITHIN a
-// scope and re-derived for a nested one; the state is one object every op in the
-// pipeline advances.
+// THE SCOPING LAW: a group scopes WEIGHT and PROGRESS — the two things that
+// live in the CTX; `during(progress, items)` also narrows the CHANNEL its
+// subtree's gate reads. Everything else THREADS, crossing a group boundary in
+// both directions.
 //
 // THE ORDER-OF-OPERATIONS LAW — what each of the four op classes may touch:
 //
@@ -30,28 +22,29 @@
 //   orient    | never  | never           | yes              | never
 //   selector  | no     | no              | no               | no (weight)
 //
-// Read down the "frame placement" column and the split is the whole design: a
-// transform runs the identical rigid motion on the piece frame, so spatial
-// selectors downstream track the piece; a modifier reshapes the vertex and
-// leaves the frame where it was, so a spatial selector placed after one reads a
-// STALE frame (validatePipeline warns). Read the aim column and the two levels
-// appear: a rotation carries the piece's facing with it, an orient op IS the
-// facing, and a bend chain advances the VERTEX's aim alone — each vertex has its
-// own exit tangent while the piece's direction stays put.
+// A transform runs the identical rigid motion on the piece frame, so spatial
+// selectors downstream track the piece; a modifier leaves the frame where it
+// was, so a spatial selector after one reads a STALE frame (validatePipeline
+// warns).
 
 import type { Algebra, Sc } from "./algebra";
 
-// The per-vertex state a recipe deforms.
+/** THE POSITION STATE IS CARTESIAN in the radial plane: `x`/`z` are the point
+ *  itself, `axial` is the optical axis (+Y). Cylindrical is the SEATED barrel's
+ *  coordinate system, not the moving piece's — every op that displaces a piece
+ *  adds a vector, so carrying (θ, r) made each one convert out and back, and
+ *  the pole and the ±π branch cut had to be guarded on the way. Angle and
+ *  radius are DERIVED where an op genuinely wants them (`thetaOf`/`radiusOf`);
+ *  nothing carries a second copy of the position. */
 export interface VertexState<S> {
-  theta: S;
-  radius: S;
+  x: S;
+  z: S;
   axial: S;
   rot: S;
   /** THE WORKING DIRECTION: an ABSOLUTE angle in the radial plane, seeded to
-   *  ctx.t0. n̂ = (cos aim, sin aim) is "out", t̂ = (−sin aim, cos aim) is
-   *  "along"; axial is always +Y. Every op that needs "which way" reads it from
-   *  here (or from the frame's copy) rather than re-deriving it off ctx.t0, so
-   *  the representation is one thing to change. */
+   *  ctx.t0. n̂ = (cos aim, sin aim) is "out", t̂ = (sin aim, −cos aim) is
+   *  "along"; axial is always +Y. Every op that needs "which way" reads it
+   *  here or off the frame's copy, never re-deriving it from ctx.t0. */
   aim: S;
   /** Unspent material on the current bend chain, model-mm. */
   rem: S;
@@ -60,21 +53,61 @@ export interface VertexState<S> {
 // The per-piece frame a recipe advances. Spatial selectors read it; a modifier
 // leaves it untouched (that is the whole point of the transform/modifier split).
 export interface PieceFrame<S> {
-  theta: S;
-  radius: S;
+  x: S;
+  z: S;
   axial: S;
   /** The PIECE's working direction — absolute, seeded to ctx.t0, and the
    *  counterpart of `VertexState.aim`: a chain advances the VERTEX's aim per
-   *  vertex (each has its own exit tangent) while the piece's stays put, exactly
-   *  as v.theta and f.theta diverge. */
+   *  vertex while the piece's stays put, as the two points diverge. */
   orient: S;
 }
 
+/** A point in the radial plane — the shape `thetaOf`/`radiusOf`/`turn` read. */
+interface Radial<S> {
+  x: S;
+  z: S;
+}
+
+/** Distance from the optical axis. */
+export function radiusOf<S>(A: Algebra<S>, p: Radial<S>): S {
+  return A.sqrt(A.add(A.mul(p.x, p.x), A.mul(p.z, p.z)));
+}
+
+/** Meridian angle. Only for the ops that genuinely want an ANGLE — a motion op
+ *  works on the vector and never comes through here. */
+export function thetaOf<S>(A: Algebra<S>, p: Radial<S>): S {
+  return A.atan2(p.z, p.x);
+}
+
+/** The outward unit vector at `p`, with a length FLOOR so the optical axis
+ *  itself yields a finite direction instead of 0/0. */
+function outward<S>(A: Algebra<S>, p: Radial<S>): Radial<S> {
+  const inv = A.div(1, A.max(radiusOf(A, p), 1e-9));
+  return { x: A.mul(p.x, inv), z: A.mul(p.z, inv) };
+}
+
+/** Turn a radial-plane point about the optical axis, in the same +α sense the
+ *  host's normal rotation uses. Takes the cos/sin PAIR, not the angle: a
+ *  transform turns its vertex and its frame through the same one. */
+function turn<S>(A: Algebra<S>, p: Radial<S>, c: S, s: S): Radial<S> {
+  return {
+    x: A.sub(A.mul(p.x, c), A.mul(p.z, s)),
+    z: A.add(A.mul(p.x, s), A.mul(p.z, c)),
+  };
+}
+
+/** Slide `p` out along its own meridian by `d`. A DISPLACEMENT rather than a
+ *  rescale, so d = 0 returns the very components it was given — the exact
+ *  identity the idle end of every radial op rests on. */
+function pushOut<S>(A: Algebra<S>, p: Radial<S>, d: S): Radial<S> {
+  const u = outward(A, p);
+  return { x: A.add(p.x, A.mul(u.x, d)), z: A.add(p.z, A.mul(u.z, d)) };
+}
+
 // The immutable per-piece context every op sees. `A` is the backend; the rest
-// are seated constants and material coordinates the ops read. `d`/`L` are the
-// material coordinates in the HOUSE winding convention (the seam at
-// φ = +halfSpan, i.e. d = R·(halfSpan − phi)): `d` is what `anchor` loads the
-// chain cursor with, and both are there for material selectors.
+// are seated constants and material coordinates. `d`/`L` follow the HOUSE
+// winding convention (seam at φ = +halfSpan, d = R·(halfSpan − phi)); `d` is
+// what `anchor` loads the chain cursor with.
 export interface OpCtx<S> {
   A: Algebra<S>;
   t0: S;
@@ -89,52 +122,42 @@ export interface OpCtx<S> {
   yN: S;
   off: S; // material arc coord, arc length, norm axial, wall offset
   rung: S; // per-piece signed ladder rung, model-mm
-  /** 0/1 axisymmetry flag (ops/frames.ts `axi`): 1 means the piece is a body
-   *  of revolution, so `t0` is the pinned 0 rather than a measured meridian and
-   *  ANY op whose direction is "the piece's own meridian" is meaningless on it.
-   *  Ops that read it fall back to a per-VERTEX law (see `spread`). */
+  /** 0/1 axisymmetry flag (ops/frames.ts `axi`): ANY op whose direction is "the
+   *  piece's own meridian" is meaningless on it, so ops that read it fall back
+   *  to a per-VERTEX law (see `spread`). */
   axi: S;
-  /** Pieces in this piece's own rank LAYER (ops/frames.ts `layerN`): 1 for a
-   *  lone ring or solitary body, N for one wedge of an N-cut shell (an adopted
-   *  feature reports its host's). INFORMATIONAL: the 0.01mm rank bucket it is
-   *  counted over is tighter than the spread of measured median radii, so no
-   *  recipe hangs a decision on it. */
+  /** Pieces in this piece's own rank LAYER (ops/frames.ts `layerN`).
+   *  INFORMATIONAL — no recipe hangs a decision on it. */
   layerN: S;
-  /** 0/1 flag (ops/frames.ts `adopted`): 1 means this piece's frame was adopted
-   *  from a host shell wedge — bolted hardware (mount screws, contacts, the
-   *  focus motor) that RIDES a segmented shell rather than being one. It is the
-   *  measured half of the classic's baked participation flag: whatever the host
-   *  does, this piece does. */
+  /** 0/1 flag (ops/frames.ts `adopted`): this piece's frame came from a host
+   *  shell wedge, so whatever the host does, this piece does. */
   adopted: S;
-  /** This recipe's RAW 0..1 channel for this piece, PRE-gate — the clock the
-   *  gate pair below was computed from. A `during` scope narrows it, and nesting
-   *  composes as function composition. */
+  /** This recipe's RAW 0..1 channel for this piece, PRE-gate. A `during` scope
+   *  narrows it, and nesting composes as function composition. */
   channel: S;
   /** Re-run THIS recipe's gate at a remapped channel — same GateSpec, same
-   *  rank01/layerPhase. The ONE way a scope gets a (flight, stick) pair, and the
-   *  reason ops.ts needs no import from gate.ts: the host (and its CPU mirror)
-   *  captures the recipe's spec once and passes this closure. */
+   *  rank01/layerPhase. The ONE way a scope gets a (flight, stick) pair, and
+   *  why ops.ts needs no import from gate.ts: the host captures the recipe's
+   *  spec once and passes this closure. */
   gateAt(channel: Sc<S>): { flight: S; stick: S };
   flight: S;
   stick: S;
   wrapDir: number;
 }
 
-/** A value an op reads when it RUNS: a constant (or plain number, lifted by the
- *  algebra) or a function of the effective ctx. The function form is how a
- *  recipe hands an op a per-piece quantity — `rot(c => c.halfSpan)` reaches the
- *  seam of whatever piece the pipeline is running on — without making `build`
- *  itself ctx-dependent. */
+/** A value an op reads when it RUNS: a constant or a function of the effective
+ *  ctx. The function form hands an op a per-piece quantity without making
+ *  `build` itself ctx-dependent. */
 export type Live<S> = Sc<S> | ((ctx: OpCtx<S>) => Sc<S>);
 
 function liveOf<S>(x: Live<S>, ctx: OpCtx<S>): Sc<S> {
   return typeof x === "function" ? (x as (c: OpCtx<S>) => Sc<S>)(ctx) : x;
 }
 
-// An op is one of five kinds. A transform returns new vertex state AND a new
-// frame; a modifier returns only vertex state; an orient op returns only the new
-// working direction; a selector yields a 0..1 weight from the frame (spatial) or
-// ctx (intrinsic); a group scopes a sub-pipeline.
+// An op is one of five kinds: a transform returns new vertex state AND frame, a
+// modifier only vertex state, an orient op only the new working direction, a
+// selector a 0..1 weight from the frame (spatial) or ctx (intrinsic), and a
+// group scopes a sub-pipeline.
 export type OpItem<S> =
   | {
       kind: "transform";
@@ -150,7 +173,7 @@ export type OpItem<S> =
       kind: "modifier";
       name: string;
       /** `ctx` is ALREADY EFFECTIVE — `walk` folded the active weight into the
-       *  gate pair before the call (see the modifier weight law below). */
+       *  gate pair before the call (the modifier weight law, below). */
       run(v: VertexState<S>, ctx: OpCtx<S>): VertexState<S>;
     }
   | {
@@ -159,13 +182,9 @@ export type OpItem<S> =
       /** The NEW working direction, absolute. Returning ONLY an angle is what
        *  makes the class structurally unable to move geometry or turn a normal.
        *
-       *  THE WEIGHT LAW (subtle): an orient op is NOT scaled by the active
-       *  weight — it receives the EFFECTIVE ctx, like a modifier. If a re-aim
-       *  faded with `w`, then at w = 0 a chain's anchor would drift off the seam
-       *  and the channel-0 / masked-piece identity would break. Gate-driven
-       *  re-aims vanish at w = 0 on their own, because they are functions of the
-       *  folded gate (flightEff = flight·w): constants survive the mask, gate
-       *  terms fade. */
+       *  THE WEIGHT LAW: an orient op is NOT scaled by the active weight — a
+       *  re-aim that faded with `w` would drift a chain's anchor off the seam
+       *  at w = 0 and break the masked-piece identity. */
       aim(v: VertexState<S>, f: PieceFrame<S>, ctx: OpCtx<S>): S;
     }
   | {
@@ -177,28 +196,20 @@ export type OpItem<S> =
   | { kind: "group"; items: OpItem<S>[]; progress?: Progress<S> };
 
 /** A sub-window of the recipe's channel, as a clamped ramp then an optional
- *  power: m(c) = clamp((c − from)/(to − from), 0, 1)^ease.
+ *  power: m(c) = clamp((c − from)/(to − from), 0, 1)^ease. Every field is a
+ *  per-PIECE constant; a per-VERTEX bound would give one piece two progresses
+ *  and tear it apart.
  *
- *  Every field is a per-PIECE constant. A per-VERTEX bound would give one piece
- *  two progresses and tear it apart, which is the same argument that keeps the
- *  gate per piece.
- *
- *  THE INVARIANTS (structural — `validatePipeline` warns on illegal literals but
- *  nothing enforces them at runtime, exactly like the GateSpec law):
- *    1. from ≥ 0, so m(0) = 0 EXACTLY (clamp is min/max on both backends). The
- *       hard idle gate force-zeroes at channel 0; the risk is the discontinuity
- *       just above it — a remap that reads ~1 at channel 1e-6 pops the model off
- *       its seat.
- *    2. to > from, or the ramp divides 0/0 and the NaN survives the idle gate
- *       (NaN · 0 = NaN) into the seated render — the KNOB_LIMITS argument.
- *    3. ease > 0: pow(0, 0) = 1, and x = 0 with e ≤ 0 is undefined behaviour in
- *       GLSL. ease ∈ (0, 1) is a legal ease-out.
+ *  THE INVARIANTS (`validatePipeline` warns on illegal literals; nothing
+ *  enforces them at runtime):
+ *    1. from ≥ 0, so m(0) = 0 EXACTLY — a remap reading ~1 just above the idle
+ *       gate pops the model off its seat.
+ *    2. to > from, or the ramp divides 0/0 and the NaN survives the idle gate.
+ *    3. ease > 0: pow(0, 0) = 1, and x = 0 with e ≤ 0 is undefined in GLSL.
  *    4. to ≤ 1 is advisory: past 1 the scope simply never finishes.
  *
- *  Representable = clamped ramp ∘ positive power, i.e. monotone non-decreasing
- *  with m(0) = 0. Reversal (1 − p) and ping-pong are deliberately NOT
- *  representable: non-monotone time art belongs at the DRIVER tier, where each
- *  channel is separately idle-gated. */
+ *  Reversal and ping-pong are deliberately NOT representable: non-monotone time
+ *  art belongs at the DRIVER tier, where each channel is separately gated. */
 export interface Progress<S> {
   from?: Sc<S>; // default 0
   to?: Sc<S>; // default 1
@@ -212,17 +223,10 @@ export function group<S>(items: OpItem<S>[]): OpItem<S> {
 
 /** Scope a sub-pipeline to a WINDOW of the channel: a group whose subtree runs
  *  the same gate at a remapped clock, so it is seated for channel ≤ from and
- *  fully played for channel ≥ to, with the per-piece stagger and the two-phase
- *  split replaying inside the sub-window.
- *
- *  It acts PRE-gate, on the channel, which is what lets both ends land exactly:
- *  the gate already guarantees p = 0 ⇒ (flight 0, stick 1) and p = 1 ⇒ fully
- *  played. Post-gate remapping cannot — a scope containing `stickPress` would be
- *  left half-live outside its window — and remapping the pair jointly IS the
- *  weight fold, which can never express "held complete after".
- *
- *  `during({}, items)` is `group(items)` to the bit: an omitted field builds no
- *  node at all. */
+ *  fully played for channel ≥ to, stagger and split replayed inside. It acts
+ *  PRE-gate, which is what lets both ends land exactly; post-gate remapping
+ *  cannot, and remapping the pair jointly IS the weight fold, which can never
+ *  express "held complete after". `during({}, items)` is `group(items)`. */
 export function during<S>(p: Progress<S>, items: OpItem<S>[]): OpItem<S> {
   return { kind: "group", items, progress: p };
 }
@@ -232,9 +236,8 @@ export function during<S>(p: Progress<S>, items: OpItem<S>[]): OpItem<S> {
 function progressCtx<S>(ctx: OpCtx<S>, p: Progress<S>): OpCtx<S> {
   const A = ctx.A;
   const ramp = p.from !== undefined || p.to !== undefined;
-  // An empty Progress hands back the very ctx it was given — no ramp, no pow,
-  // no second gate. That is what makes `during({}, …)` and `group(…)` the same
-  // graph rather than merely the same numbers.
+  // An empty Progress hands back the very ctx it was given, which is what makes
+  // `during({}, …)` and `group(…)` the same GRAPH, not merely the same numbers.
   if (!ramp && p.ease === undefined) return ctx;
   let q: S = ctx.channel;
   if (ramp) {
@@ -247,29 +250,22 @@ function progressCtx<S>(ctx: OpCtx<S>, p: Progress<S>): OpCtx<S> {
   return { ...ctx, channel: q, flight: g.flight, stick: g.stick };
 }
 
-// Walk one scope. `weight` is local to this call, so a group (a recursive call)
-// gets the current weight but its own selectors cannot mutate the caller's — the
-// weight is naturally restored on exit. The vertex/frame state, by contrast,
-// threads through every op via the shared `state` object.
+// Walk one scope. `weight` is local to this call, so a group's selectors cannot
+// mutate the caller's — the weight is restored on exit naturally. The
+// vertex/frame state threads through every op via the shared `state` object.
 //
-// The weight reaches the two op families differently. A TRANSFORM takes it as an
-// argument and scales its own displacement by it. A MODIFIER never sees it: walk
-// folds it into the gate pair (`effCtx`) and hands over the EFFECTIVE ctx, so
-// the modifier weight law is structural rather than something each op restates.
-// That fold is built at most ONCE per distinct weight per scope — N modifiers
-// under one selection share one `flight·w` (on the GPU, one node: TSL has no
-// common-subexpression elimination across node objects).
+// A TRANSFORM takes the weight as an argument and scales its displacement by
+// it. A MODIFIER never sees it: walk folds it into the gate pair (`effCtx`) and
+// hands over the EFFECTIVE ctx, once per distinct weight per scope.
 //
 // THE FORCED ORDER, weight against progress:
 //
 //   channel ──during (pre-gate, per scope)──▶ p' ──gate──▶ (flight, stick)
 //   ──the weight fold (post-gate, the scope's w)──▶ (flight·w, mix(1, stick, w))
 //
-// Progress narrows WHEN, weight scales HOW MUCH; progress is outside the gate,
-// weight inside; either one at its zero gives the exact seat. The order is
-// forced, not a taste: `w` can be per-VERTEX (selAxialBand, selSector,
-// selFront-on-yN), so folding it pre-gate would put the gate itself on a
-// per-vertex path and vary the stagger WITHIN a piece.
+// Progress narrows WHEN, weight scales HOW MUCH. The order is forced: `w` can
+// be per-VERTEX, so folding it pre-gate would put the gate on a per-vertex path
+// and vary the stagger WITHIN a piece.
 function walk<S>(
   items: OpItem<S>[],
   state: { v: VertexState<S>; f: PieceFrame<S> },
@@ -280,10 +276,8 @@ function walk<S>(
   let weight = weightIn;
   let eff: OpCtx<S> | null = null;
   // The phased ctxs this scope's `during` groups run under, keyed on the
-  // Progress OBJECT — sibling scopes sharing one Progress share one gate re-run
-  // (house.ts `memoCtx`'s argument: on the GPU a second build is a second
-  // subgraph, not a cache miss). `ctx` is fixed for the length of this call, so
-  // the Progress identity is the whole key.
+  // Progress OBJECT so sibling scopes sharing one share a single gate re-run.
+  // `ctx` is fixed for this call, so Progress identity is the whole key.
   let phased: Map<Progress<S>, OpCtx<S>> | null = null;
   for (const item of items) {
     switch (item.kind) {
@@ -313,10 +307,9 @@ function walk<S>(
         break;
       case "orient": {
         // ONE angle, written to BOTH levels: the piece's direction and the
-        // vertex's own. (A chain op advances the vertex's alone — each vertex
-        // has its own exit tangent — so an explicit re-aim after one re-bases
-        // the vertex onto the piece's direction, which is what keeps `orient`
-        // uniform across a piece and therefore rigid-safe for `spread`.)
+        // vertex's own. A re-aim after a chain op re-bases the vertex onto the
+        // piece's direction, which keeps `orient` uniform across a piece and
+        // therefore rigid-safe for `spread`.
         eff ??= effCtx(ctx, weight);
         const a = item.aim(state.v, state.f, eff);
         state.v = { ...state.v, aim: a };
@@ -340,23 +333,17 @@ export function runPipeline<S>(
 }
 
 // ── Order-of-operations advisories ─────────────────────────────────────────
-// A spatial selector reads the current frame, so placing it after a modifier is
-// a latent bug: the modifier advanced the vertex state but NOT the frame, so the
-// selector silently sees a stale frame. `validatePipeline` warns (never throws)
-// once per recipe. A group scopes the CTX (weight, progress) — `walk` threads the
-// vertex/frame state straight through it — so the "modifier seen" flag crosses a
-// group boundary in BOTH directions, a `during` boundary included: a modifier
-// before a group taints spatial selectors inside it, and a modifier inside a
-// group taints those after it.
+// `validatePipeline` warns (never throws) once per recipe on three things:
 //
-// The same pass checks two more things. The `Progress` invariants, on
-// LITERAL-number fields only: a knob-bound field is a uniform this pass cannot
-// read, and its bound belongs in host.ts's KNOB_LIMITS instead (see the doc
-// block there). And a DANGLING chain segment (`arc` or `crease`) — one with no
-// `anchor` before it anywhere in the pipeline — which is not a crash but a
-// silent nonsense: the cursor is
-// still the seeded rem = 0, so the arc consumes nothing and walks the vertex off
-// whatever position the last op happened to leave it at.
+//  • a spatial selector after a modifier — the modifier advanced the vertex
+//    state but NOT the frame, so the selector reads a stale one. The "modifier
+//    seen" flag crosses a group boundary in BOTH directions, `during` included.
+//  • the `Progress` invariants, on LITERAL-number fields only: a knob-bound
+//    field is a uniform this pass cannot read, and its bound belongs in
+//    host.ts's KNOB_LIMITS instead.
+//  • a DANGLING chain segment (`arc`/`crease` with no `anchor` before it) —
+//    silent nonsense rather than a crash, since the cursor is still the seeded
+//    rem = 0 and the segment consumes nothing.
 
 const warnedRecipes = new Set<string>();
 
@@ -365,6 +352,10 @@ interface ScopeState {
   modifierName: string | undefined;
   anchored: boolean;
 }
+
+/** The chain ops that spend cursor material, so all of them need an `anchor`
+ *  before them to have any to spend. */
+const CHAIN_SEGMENTS = new Set(["arc", "crease", "straight"]);
 
 /** A Progress field's value if it is a plain literal — a backend scalar (a
  *  uniform, a node) reads as undefined and is left to KNOB_LIMITS. */
@@ -432,7 +423,7 @@ function validateScope<S>(
     switch (item.kind) {
       case "modifier":
         if (item.name === "anchor") anchored = true;
-        if ((item.name === "arc" || item.name === "crease") && !anchored) {
+        if (CHAIN_SEGMENTS.has(item.name) && !anchored) {
           warn(
             `lens ops: recipe "${recipeName}" runs an ${item.name} with no ` +
               `anchor before it — the chain cursor is still the seeded rem = 0, ` +
@@ -496,8 +487,8 @@ export function validatePipeline<S>(
 // read ctx intrinsics. Each carries its EXACT-1 bypass so a default-open
 // selector cannot perturb a calibrated recipe.
 
-// Default edge feathers — the house values. A feather of
-// 0 would make smoothstep divide by zero exactly on the edge, so keep them > 0.
+// Default edge feathers. A feather of 0 would make smoothstep divide by zero
+// exactly on the edge, so keep them > 0.
 const SECTOR_FEATHER = 0.3; // radians
 const RANK_FEATHER = 0.1;
 const AXIAL_FEATHER = 0.05;
@@ -531,12 +522,10 @@ export function selRank<S>(
 // SECTOR: an angular band on the CURRENT frame theta. Spatial. The monotone-
 // cosine trick (compare cos(theta − centre) against the half-width cosines)
 // sidesteps angle wrapping. Bypass: width ≥ SECTOR_OPEN ⇒ exactly 1.
-// cos is monotone only over [0, π], and the ramp needs its two edges ORDERED
-// there: uncapped, the feathered outer angle passes π and climbs back over the
-// inner one, INVERTING the mask for width > 2π − feather (5.98..6.2 with the
-// house feather — live, since the bypass only opens at 6.2). Capping the outer
-// angle at π restores the order; capping the width at SECTOR_OPEN keeps the two
-// edges DISTINCT at the TAU default, where cos(π) = cos(π) would divide 0 by 0.
+// cos is monotone only over [0, π], so both caps are load-bearing: capping the
+// outer angle at π keeps the two ramp edges ORDERED (uncapped, a wide band
+// INVERTS the mask), and capping the width at SECTOR_OPEN keeps them DISTINCT
+// at the TAU default, where cos(π) = cos(π) would divide 0 by 0.
 export function selSector<S>(
   center: Sc<S>,
   width: Sc<S>,
@@ -548,7 +537,7 @@ export function selSector<S>(
     spatial: true,
     weight: (f, ctx) => {
       const A = ctx.A;
-      const c = A.cos(A.sub(f.theta, center));
+      const c = A.cos(A.sub(thetaOf(A, f), center));
       const half = A.mul(A.min(width, SECTOR_OPEN), 0.5);
       const inner = A.cos(half);
       const outer = A.cos(A.min(A.add(half, feather), Math.PI));
@@ -642,51 +631,44 @@ export const PART_CLASS = {
   iris: 2,
   decal: 3,
   accessory: 4,
+  /** the peel's KEEP-set (core/parts isPeelKeep) — the mechanism the cards
+   *  scene reveals in place. A class only so a recipe can scope itself off it. */
+  kept: 5,
 } as const;
 
 // ── Orientation ───────────────────────────────────────────────────────────────
-// THE DIRECTION CLASS. One op, and everything it can do is re-aim: it writes the
-// working direction that downstream ops move ALONG, and touches nothing else.
+// THE DIRECTION CLASS. One op, and everything it can do is re-aim: it writes
+// the working direction downstream ops move ALONG, and touches nothing else.
+// As STATE, the direction is one angle a recipe turns as often as it likes, in
+// the order it says — `spread(...)` after `rot(halfSpan)` is a seam throw.
 //
-// It exists because every direction in this algebra was hard-wired to `ctx.t0`
-// derivatives — spread displaced along the sector centre or, with a flag, along
-// `t0 − halfSpan·seamDir`; a chain anchored on the same expression. Those flags
-// were the same statement written twice, and neither composed. As STATE the
-// direction is one angle a recipe can turn as often as it likes, in the order it
-// says, and `spread(...)` after `rot(halfSpan)` IS the old seam flag.
-//
-// SCOPING: the direction threads FORWARD out of a `group`, like every other
-// piece of state — a group scopes the CTX (weight, progress) and nothing else.
-// The inverse is one explicit `rot(−a)`.
+// SCOPING: the direction threads FORWARD out of a `group` like every other
+// piece of state. The inverse is one explicit `rot(−a)`.
 
 /** Turn the working direction by `rad`. Moves nothing. */
 export function rot<S>(rad: Live<S>): OpItem<S> {
   return {
     kind: "orient",
     name: "rot",
-    // RELATIVE, off the PIECE's direction: an absolute `dir()` would only ever
-    // be spelled `rot(target − aim0)` at the one seat the recipes have, and the
-    // seat IS the initial aim (aim0 = t0), so `rot(halfSpan)` reaches the seam.
+    // RELATIVE, off the PIECE's direction. The seat IS the initial aim
+    // (aim0 = t0), so `rot(halfSpan)` reaches the seam.
     aim: (_v, f, ctx) => ctx.A.add(f.orient, liveOf(rad, ctx)),
   };
 }
 
 // ── Transforms ────────────────────────────────────────────────────────────────
-// The transform op family: the rigid motions (approach / orbit / swirl /
-// spread / tilt) plus the affine trio (ladder / scale / shear).
-// A transform advances BOTH the vertex state AND the piece frame — the frame
-// runs the identical rigid motion on its own coordinates, so spatial selectors
-// downstream track the piece. Every displacement is folded by ctx.flight AND the
-// active selection weight `w`, so a transform is identity at flight = 0 (or w = 0)
-// and rides the selection mask like every other op. Rotational carry (v.rot)
-// advances ONLY for the rotations (orbit / swirl) — a rigid rotation turns the
-// surface normal; translations (approach / spread / ladder) do not. tilt is a
-// rotation deliberately OUTSIDE the carve-out: its normals stay seated (the
-// stickPress precedent — see the op's own header for the licence and limits).
+// The rigid motions (approach / orbit / swirl / spread / tilt) plus the affine
+// trio (ladder / scale / shear). A transform advances BOTH the vertex state AND
+// the piece frame — the frame runs the identical rigid motion, so spatial
+// selectors downstream track the piece. Every displacement is folded by
+// ctx.flight AND the active weight `w`, so a transform is identity at
+// flight = 0 or w = 0. Rotational carry (v.rot) advances ONLY for orbit and
+// swirl; translations do not turn a normal, and `tilt` is a rotation
+// deliberately outside the carve-out (see its own header).
 
 // APPROACH: axial slide (axialMm) + a per-rank pitch spread (pitchMm·rank01). A
-// pure translation, so the normal is untouched. The frame's axial advances by the
-// identical delta.
+// pure translation, so the normal is untouched and the frame's axial advances
+// by the identical delta.
 export function approach<S>(axialMm: Sc<S>, pitchMm: number = 0): OpItem<S> {
   return {
     kind: "transform",
@@ -708,19 +690,15 @@ export function approach<S>(axialMm: Sc<S>, pitchMm: number = 0): OpItem<S> {
 // ORBIT: a RIGID REVOLUTION. angle = flight·rad·w, and that one angle turns the
 // piece, its frame, its working direction and its normals together.
 //
-//   about "axis"  (default) — about the optical axis: v.theta and f.theta
-//     advance, so the piece sweeps around the barrel carrying its facing.
-//   about "frame" — about the PIECE CENTRE (f.radius, f.theta): the piece SPINS
-//     IN PLACE. Its frame placement does not move (the centre is the fixed
-//     point) but its direction and normals turn with it.
+//   about "axis"  (default) — about the optical axis: the piece sweeps around
+//     the barrel carrying its facing.
+//   about "frame" — about the PIECE CENTRE: the piece SPINS IN PLACE, its
+//     frame placement fixed but its direction and normals turning with it.
 //
-// Revolution WITHOUT spin is the composition — `orbit(a)` then
-// `orbit(−a, { about: "frame" })` — so there is no carry flag.
-//
-// The SIGN is the caller's: a recipe that wants the house peel handedness
-// multiplies ctx.wrapDir into `rad` at the call site. Baking it in here (as this
-// op used to) meant every rotation in the vocabulary silently inherited the wrap
-// convention, whether or not it had anything to do with the wrap.
+// Revolution WITHOUT spin is the composition of the two, so there is no carry
+// flag. The SIGN is the caller's: a recipe wanting the house peel handedness
+// multiplies ctx.wrapDir into `rad` at the call site, so a rotation with
+// nothing to do with the wrap does not inherit its convention.
 export function orbit<S>(
   rad: Sc<S>,
   opts: { about?: "axis" | "frame" } = {},
@@ -731,50 +709,37 @@ export function orbit<S>(
     run: (v, f, w, ctx) => {
       const A = ctx.A;
       const a = A.mul(A.mul(ctx.flight, rad), w);
+      const ca = A.cos(a);
+      const sa = A.sin(a);
       if (opts.about === "frame") {
-        // The radial-plane cartesian round-trip `scale`/`shear` use, with a
-        // rotation about the centre in place of their scale/shove.
-        const cx = A.mul(f.radius, A.cos(f.theta));
-        const cz = A.mul(f.radius, A.sin(f.theta));
-        const dx = A.sub(A.mul(v.radius, A.cos(v.theta)), cx);
-        const dz = A.sub(A.mul(v.radius, A.sin(v.theta)), cz);
-        const ca = A.cos(a);
-        const sa = A.sin(a);
-        const nx = A.add(cx, A.sub(A.mul(dx, ca), A.mul(dz, sa)));
-        const nz = A.add(cz, A.add(A.mul(dx, sa), A.mul(dz, ca)));
+        const d = turn(A, { x: A.sub(v.x, f.x), z: A.sub(v.z, f.z) }, ca, sa);
         return {
           v: {
             ...v,
-            theta: A.atan2(nz, nx),
-            radius: A.sqrt(A.add(A.mul(nx, nx), A.mul(nz, nz))),
+            x: A.add(f.x, d.x),
+            z: A.add(f.z, d.z),
             rot: A.add(v.rot, a),
           },
           f: { ...f, orient: A.add(f.orient, a) },
         };
       }
       return {
-        v: { ...v, theta: A.add(v.theta, a), rot: A.add(v.rot, a) },
-        f: { ...f, theta: A.add(f.theta, a), orient: A.add(f.orient, a) },
+        v: { ...v, ...turn(A, v, ca, sa), rot: A.add(v.rot, a) },
+        f: { ...f, ...turn(A, f, ca, sa), orient: A.add(f.orient, a) },
       };
     },
   };
 }
 
-// SWIRL: the fly-in VORTEX orbit reads as — a rigid rotation per piece, but with
-// the couplings that make a set of pieces read as a swirl rather than a turning
-// assembly:
+// SWIRL: `orbit` plus the couplings that make a set of pieces read as a vortex
+// rather than a turning assembly — kept a separate op because those couplings
+// ARE the difference:
 //
 //   • `rankScale` — the angle scales with (rank01 + ½), so angular velocity
-//     varies with radius. That is what a vortex IS, and it is the single
-//     biggest contributor to the read.
-//   • `exp` — flight^exp, the whip ease (the classic's pow(t, 0.65)).
+//     varies with radius. That is what a vortex IS.
+//   • `exp` — flight^exp, the whip ease.
 //   • ctx.wrapDir — applied AFTER the wrap, so an unrolled sheet sweeps the
 //     barrel in the peel's own handedness.
-//
-// It is not a different motion from `orbit`, it is orbit plus a set of gate
-// couplings; they are separate ops because the couplings are the whole
-// difference between "the assembly turns" and "the parts swirl in", and burying
-// them in flags on one op is what hid that for as long as it did.
 export function swirl<S>(
   rad: Sc<S>,
   opts: { exp?: number; rankScale?: boolean } = {},
@@ -791,30 +756,26 @@ export function swirl<S>(
       if (opts.rankScale) a = A.mul(a, A.add(ctx.rank01, 0.5));
       a = A.mul(a, ctx.wrapDir);
       a = A.mul(a, w);
+      const ca = A.cos(a);
+      const sa = A.sin(a);
       return {
-        v: { ...v, theta: A.add(v.theta, a), rot: A.add(v.rot, a) },
-        f: { ...f, theta: A.add(f.theta, a), orient: A.add(f.orient, a) },
+        v: { ...v, ...turn(A, v, ca, sa), rot: A.add(v.rot, a) },
+        f: { ...f, ...turn(A, f, ca, sa), orient: A.add(f.orient, a) },
       };
     },
   };
 }
 
-// SPREAD: rigid translation of the whole piece outward along a meridian (the
-// classic uSeparate) — a cartesian add of a per-piece vector, so shape and normal
-// are preserved (no rot). Direction: THE WORKING DIRECTION, `f.orient` — seeded
-// to the sector centre t0, so an unaimed spread is the classic one, and re-aimed
-// by `rot()` (the seam throw is `rot(halfSpan); spread(...)`). The frame runs the
-// identical cartesian-add on (f.radius, f.theta).
+// SPREAD: rigid translation of the whole piece outward along a meridian — a
+// cartesian add of a per-piece vector, so shape and normal are preserved.
+// Direction: THE WORKING DIRECTION `f.orient`, re-aimable by `rot()` (a seam
+// throw is `rot(halfSpan); spread()`), the frame running the identical add.
 //
-// AXISYMMETRIC PIECES (ctx.axi = 1) have NO meridian: `t0` is the pinned 0, so
-// sliding a whole ring along it would drag it off-axis in an arbitrary direction
-// that changes with a re-export. The direction falls back PER VERTEX to the
-// vertex's own meridian — dir = mix(dirPiece, v.theta, axi) — which is the
-// classic explode's radial-dilation semantics for bodies of revolution: the ring
-// dilates in place (radius += D, theta unchanged) instead of sliding +X. A
-// dilation has no net translation, so the FRAME does not move: its displacement
-// carries the (1 − axi) factor. A re-aimed spread rides the same fallback (an
-// aimed meridian is still a meridian).
+// AXISYMMETRIC PIECES (ctx.axi = 1) have NO meridian: `t0` is a pinned 0, so
+// sliding a whole ring along it drags it off-axis in a direction that changes
+// with a re-export. The direction falls back PER VERTEX to the vertex's own
+// meridian, so the ring DILATES in place — and a dilation has no net
+// translation, so the FRAME's displacement carries the (1 − axi) factor.
 export function spread<S>(frac: Sc<S>): OpItem<S> {
   return {
     kind: "transform",
@@ -822,63 +783,47 @@ export function spread<S>(frac: Sc<S>): OpItem<S> {
     run: (v, f, w, ctx) => {
       const A = ctx.A;
       const D = A.mul(A.mul(A.mul(ctx.flight, frac), ctx.R), w);
-      const dirPiece = f.orient;
-      const move = (
-        theta: S,
-        radius: S,
-        dir: S,
-        mag: S,
-      ): { theta: S; radius: S } => {
-        const px = A.add(A.mul(radius, A.cos(theta)), A.mul(mag, A.cos(dir)));
-        const pz = A.add(A.mul(radius, A.sin(theta)), A.mul(mag, A.sin(dir)));
-        return {
-          theta: A.atan2(pz, px),
-          radius: A.sqrt(A.add(A.mul(px, px), A.mul(pz, pz))),
-        };
+      // The piece's own meridian, and — for an axisymmetric piece, which has no
+      // meridian — the VERTEX's own. axi is a 0/1 flag, so the mix selects a
+      // direction rather than interpolating two.
+      const n = { x: A.cos(f.orient), z: A.sin(f.orient) };
+      const u = outward(A, v);
+      const dv = {
+        x: A.mix(n.x, u.x, ctx.axi),
+        z: A.mix(n.z, u.z, ctx.axi),
       };
-      // axi is a 0/1 flag, so the mix is a select, not an angle interpolation.
-      const mv = move(v.theta, v.radius, A.mix(dirPiece, v.theta, ctx.axi), D);
-      const mf = move(
-        f.theta,
-        f.radius,
-        dirPiece,
-        A.mul(D, A.sub(1, ctx.axi)), // a dilation moves no centre
-      );
+      const Df = A.mul(D, A.sub(1, ctx.axi)); // a dilation moves no centre
       return {
-        v: { ...v, theta: mv.theta, radius: mv.radius },
-        f: { ...f, theta: mf.theta, radius: mf.radius },
+        v: {
+          ...v,
+          x: A.add(v.x, A.mul(D, dv.x)),
+          z: A.add(v.z, A.mul(D, dv.z)),
+        },
+        f: {
+          ...f,
+          x: A.add(f.x, A.mul(Df, n.x)),
+          z: A.add(f.z, A.mul(Df, n.z)),
+        },
       };
     },
   };
 }
 
-// TILT: the HINGE — the one rotation the radial-plane + axial-translation
-// vocabulary could not express: a piece falling open about a horizontal axis at
-// its base (the defining petal motion). angle = flight·rad·w, taken in each
-// vertex's own MERIDIAN half-plane: the (radius, axial) pair turns about the
-// hinge point (f.radius, pivot) while theta stays put. Every meridian plane
-// shares the rotation, so the hinge is really the tangent CIRCLE at that
-// radius/station — which is exactly what keeps the op expressible in
-// cylindrical state (no theta write) and carries a wedge's curvature through
-// the tilt instead of flattening it. It is `orbit({about:"frame"})`'s
-// round-trip taken in the (radial, axial) plane instead of (x, z).
+// TILT: the HINGE — a piece falling open about a horizontal axis at its base.
+// The (radius, axial) pair turns about the hinge point (frame radius, pivot)
+// in each vertex's own MERIDIAN half-plane; the meridian itself is untouched.
+// Every meridian shares the rotation, so the hinge is really the tangent CIRCLE
+// at that radius/station — which is what carries a wedge's curvature through
+// the tilt instead of flattening it.
 //
-// THE HINGE FRAME + SIGN: `pivot` is the hinge's AXIAL station (model-mm,
-// default the piece frame's own centre — pass a station near a piece's base to
-// hinge it there). Positive `rad` tips the +Y side of the pivot OUTWARD
-// (radius grows), so with the pivot behind a piece its front edge falls open.
+// `pivot` is the hinge's AXIAL station (model-mm, default the piece frame's own
+// centre). Positive `rad` tips the +Y side of the pivot OUTWARD. The frame
+// rides the identical rotation; the frame's meridian and the working direction
+// stay put.
 //
-// The frame rides the identical rotation (its own dr is 0 — it sits ON the
-// hinge radius), so spatial selectors downstream track the tilted piece;
-// f.theta and the working direction are untouched (nothing turned about the
-// optical axis).
-//
-// v.rot does NOT advance, deliberately, though a rigid rotation turns normals:
-// rot is a rotation about the OPTICAL axis (host law 4) and a tilt turns
-// normals about the local TANGENT axis, which one in-plane angle cannot
-// express — the same accepted shading approximation as stickPress's S-ramp
-// (silhouettes exact, shading seated). An out-of-plane normal needs a basis,
-// not an angle.
+// v.rot does NOT advance, deliberately: rot is a rotation about the OPTICAL
+// axis (host law 4) and a tilt turns normals about the local TANGENT axis,
+// which one in-plane angle cannot express. Silhouettes exact, shading seated.
 export function tilt<S>(rad: Sc<S>, opts: { pivot?: Sc<S> } = {}): OpItem<S> {
   return {
     kind: "transform",
@@ -889,18 +834,22 @@ export function tilt<S>(rad: Sc<S>, opts: { pivot?: Sc<S> } = {}): OpItem<S> {
       const pivot: Sc<S> = opts.pivot === undefined ? f.axial : opts.pivot;
       const ca = A.cos(a);
       const sa = A.sin(a);
-      const dr = A.sub(v.radius, f.radius);
+      const rV = radiusOf(A, v);
+      const rF = radiusOf(A, f);
+      const dr = A.sub(rV, rF);
       const dy = A.sub(v.axial, pivot);
       const dyF = A.sub(f.axial, pivot);
+      // The new radius, as the displacement off the current one.
+      const outV = A.sub(A.add(rF, A.add(A.mul(dr, ca), A.mul(dy, sa))), rV);
       return {
         v: {
           ...v,
-          radius: A.add(f.radius, A.add(A.mul(dr, ca), A.mul(dy, sa))),
+          ...pushOut(A, v, outV),
           axial: A.add(pivot, A.sub(A.mul(dy, ca), A.mul(dr, sa))),
         },
         f: {
           ...f,
-          radius: A.add(f.radius, A.mul(dyF, sa)),
+          ...pushOut(A, f, A.mul(dyF, sa)),
           axial: A.add(pivot, A.mul(dyF, ca)),
         },
       };
@@ -927,12 +876,11 @@ export function ladder<S>(rungOf: "attr" | Sc<S>, gain: Sc<S>): OpItem<S> {
   };
 }
 
-// SCALE: an affine dilation about the piece frame centre. Express the vertex
-// relative to the frame centre (radial-plane cartesian + axial offset), scale all
-// three components by mix(1, factor, flight·w), then rebuild the cylindrical
-// coords. The frame is unchanged (its centre is the fixed point). rot is left
-// unchanged: a uniform scale preserves normal directions exactly; the general
-// (nonuniform) case only approximates them — acceptable here.
+// SCALE: an affine dilation about the piece frame centre — the vertex taken
+// relative to that centre and scaled by mix(1, factor, flight·w), all three
+// components alike. The frame is unchanged (its centre is the fixed point).
+// rot is left alone: a uniform scale preserves normal directions exactly, and
+// the nonuniform case only approximates them.
 export function scale<S>(factor: Sc<S>): OpItem<S> {
   return {
     kind: "transform",
@@ -940,19 +888,13 @@ export function scale<S>(factor: Sc<S>): OpItem<S> {
     run: (v, f, w, ctx) => {
       const A = ctx.A;
       const s = A.mix(1, factor, A.mul(ctx.flight, w));
-      const cx = A.mul(f.radius, A.cos(f.theta));
-      const cz = A.mul(f.radius, A.sin(f.theta));
-      const vx = A.mul(v.radius, A.cos(v.theta));
-      const vz = A.mul(v.radius, A.sin(v.theta));
-      const nx = A.add(cx, A.mul(A.sub(vx, cx), s));
-      const nz = A.add(cz, A.mul(A.sub(vz, cz), s));
-      const na = A.add(f.axial, A.mul(A.sub(v.axial, f.axial), s));
+      const about = (c: S, p: S): S => A.add(c, A.mul(A.sub(p, c), s));
       return {
         v: {
           ...v,
-          theta: A.atan2(nz, nx),
-          radius: A.sqrt(A.add(A.mul(nx, nx), A.mul(nz, nz))),
-          axial: na,
+          x: about(f.x, v.x),
+          z: about(f.z, v.z),
+          axial: about(f.axial, v.axial),
         },
         f,
       };
@@ -960,10 +902,9 @@ export function scale<S>(factor: Sc<S>): OpItem<S> {
   };
 }
 
-// SHEAR: a tangential (theta-direction) shear whose magnitude grows with the
-// vertex's axial offset from the frame — displacement = amt·flight·w·(axial −
-// f.axial), added as a cartesian vector perpendicular to the vertex's meridian at
-// its radius. The frame and rot are unchanged.
+// SHEAR: a tangential shear whose magnitude grows with the vertex's axial
+// offset from the frame, added as a cartesian vector perpendicular to the
+// vertex's meridian at its radius. The frame and rot are unchanged.
 export function shear<S>(amt: Sc<S>): OpItem<S> {
   return {
     kind: "transform",
@@ -974,19 +915,13 @@ export function shear<S>(amt: Sc<S>): OpItem<S> {
         A.mul(A.mul(amt, ctx.flight), w),
         A.sub(v.axial, f.axial),
       );
-      const vx = A.sub(
-        A.mul(v.radius, A.cos(v.theta)),
-        A.mul(tang, A.sin(v.theta)),
-      );
-      const vz = A.add(
-        A.mul(v.radius, A.sin(v.theta)),
-        A.mul(tang, A.cos(v.theta)),
-      );
+      // …along the tangential unit vector at the vertex's own meridian.
+      const u = outward(A, v);
       return {
         v: {
           ...v,
-          theta: A.atan2(vz, vx),
-          radius: A.sqrt(A.add(A.mul(vx, vx), A.mul(vz, vz))),
+          x: A.sub(v.x, A.mul(tang, u.z)),
+          z: A.add(v.z, A.mul(tang, u.x)),
         },
         f,
       };
@@ -995,28 +930,21 @@ export function shear<S>(amt: Sc<S>): OpItem<S> {
 }
 
 // ── Modifiers ─────────────────────────────────────────────────────────────────
-// The modifier op family: shape changes — the developable bend CHAIN
-// (`anchor` + `arc`, which between them subsume wrap / rollOut / fold, plus
-// `crease`, the hard fold between two of its panels), plus
-// coil / twist / stickPress. A modifier advances ONLY the vertex state and never
-// the piece frame, so a spatial selector placed after one reads a stale frame
-// (validatePipeline warns).
+// Shape changes: the developable bend CHAIN (`anchor` + `arc`, which subsume
+// wrap / rollOut / fold, plus `crease`), and coil / twist / stickPress. A
+// modifier advances ONLY the vertex state and never the piece frame, so a
+// spatial selector after one reads a stale frame (validatePipeline warns).
 //
 // THE MODIFIER WEIGHT LAW. A modifier does not scale its displacement by the
-// active weight `w` — the weight is folded into the GATE reads, right after the
-// gate:
+// active weight `w`; the weight is folded into the GATE reads instead:
 //
 //     flightEff = flight · w        stickEff = mix(1, stick, w)
 //
 // (flight = 0, stick = 1) is the identity pair every formation law is built
-// around, so w = 0 gives the EXACT seated state — the selection contract: a
-// masked-out piece stays seated. w = 1 leaves the gate untouched (flight·1 and
-// mix(1, stick, 1) are both exact). Amplitude blending (`mix(seated, bent, w)`)
-// or scaling κ by w would instead take a shape OFF the developable surface.
-//
-// `walk` applies the fold, so a modifier simply reads `ctx.flight` /
-// `ctx.stick` and is already living under the law — as does any `Live` argument
-// a recipe hands it, since those are called with the same effective ctx.
+// around, so w = 0 gives the EXACT seated state and w = 1 leaves the gate
+// untouched. Amplitude blending or scaling κ by w would instead take a shape
+// OFF the developable surface. `walk` applies the fold, so a modifier just
+// reads `ctx.flight`/`ctx.stick`, as does any `Live` argument.
 
 function effCtx<S>(ctx: OpCtx<S>, w: S): OpCtx<S> {
   const A = ctx.A;
@@ -1028,9 +956,7 @@ function effCtx<S>(ctx: OpCtx<S>, w: S): OpCtx<S> {
 }
 
 // sin(x)/x with the removable singularity guarded: sinc is EVEN, so evaluate at
-// max(|x|, ε). For |x| < ε the substitution errs by < ε²/6 ≈ 2e-11 of the chord
-// — invisible at the instrument's 0.01mm quantum — and s = 0 still gives chord
-// = 0 exactly (0 · finite).
+// max(|x|, ε). s = 0 still gives chord = 0 exactly (0 · finite).
 function sinc<S>(A: Algebra<S>, x: S): S {
   const ax = A.max(A.abs(x), 1e-5);
   return A.div(A.sin(ax), ax);
@@ -1038,40 +964,25 @@ function sinc<S>(A: Algebra<S>, x: S): S {
 
 // ── The bend CHAIN ────────────────────────────────────────────────────────────
 // `anchor` + `arc`: the developable bend, as a piecewise-constant curvature
-// profile a recipe SPELLS IN THE PIPELINE — one op per segment — rather than
-// hands over as a data structure. Two things make that exact rather than merely
-// equivalent:
+// profile a recipe SPELLS IN THE PIPELINE, one op per segment. Two invariants:
 //
-//  • THE CURSOR IS REMAINING MATERIAL. `anchor` seeds `v.rem = ctx.d` (unclamped
-//    — a real wedge overruns its nominal half-span, and negative overrun walks
-//    the first arc BACKWARDS past the anchor); each arc consumes
-//    `s = min(rem, len)` and leaves `rem − s`. Written that way, a profile
-//    walker's three special cases — "floor at 0 after the first segment", "the
-//    last segment is unbounded", "the first segment is unfloored" — all
-//    DISSOLVE: rem is negative only on the first arc and can never go below 0
-//    afterwards, and an arc with no `len` simply takes what is left.
+//  • THE CURSOR IS REMAINING MATERIAL. `anchor` seeds `v.rem = ctx.d`,
+//    UNCLAMPED — a real wedge overruns its nominal half-span, and negative
+//    overrun walks the first arc BACKWARDS past the anchor. Each arc consumes
+//    `s = min(rem, len)` and leaves `rem − s`.
+//  • THE OFF-INVARIANT. The vertex state carries the OFFSET point, not the
+//    chain point: v = chain + off·n̂(aim). Each arc strips `off` along the
+//    incoming aim, walks the chain, and re-adds it along the outgoing one.
 //
-//  • THE OFF-INVARIANT. The vertex state carries the OFFSET point, not the chain
-//    point: v = chain + off·n̂(aim). So each arc strips `off` along the incoming
-//    aim, walks the chain, and re-adds it along the outgoing one — which is what
-//    lets an arbitrary number of arcs chain through a state that has nowhere to
-//    put a separate chain position.
-//
-// The chain angle IS `v.aim` (that is the interlock with the direction class):
-// `anchor` starts the chain on whatever direction is in force — so `rot()`
-// before it is how a chain is placed, which is the whole reason there is no
-// anchor-angle argument — and each arc turns the aim by −ψ and carries the same
-// −ψ onto the normal accumulator. The winding is the house one (the seam at
-// φ = +halfSpan, walking along −t̂), so there is no `from` either.
-//
-// A breathing barrel and a counter-rotating seam are ANCHOR motion (both are
-// arguments that read the gate); a travelling contact front is a moving arc
-// BOUNDARY instead — its centre falls out of the chain rather than being placed.
+// The chain angle IS `v.aim` — the interlock with the direction class. `anchor`
+// starts on whatever direction is in force, so `rot()` before it is how a chain
+// is placed and there is no anchor-angle argument. The winding is the house
+// one, so there is no `from` either.
 
 /** ANCHOR: start a bend chain HERE — on the current working direction, at
  *  `radius` (default the seated R) — and load the cursor with this vertex's
- *  material. REPLACES theta/radius (it is the chain's origin, not a
- *  displacement) and starts the rotation accumulator at `aim − θ_seated`. */
+ *  material. REPLACES the point (it is the chain's origin, not a displacement)
+ *  and starts the rotation accumulator at `aim − θ_seated`. */
 export function anchor<S>(radius?: Live<S>): OpItem<S> {
   return {
     kind: "modifier",
@@ -1080,14 +991,12 @@ export function anchor<S>(radius?: Live<S>): OpItem<S> {
       const A = ctx.A;
       const n = v.aim;
       const anchorR: Sc<S> = radius === undefined ? ctx.R : liveOf(radius, ctx);
-      const px = A.mul(anchorR, A.cos(n));
-      const pz = A.mul(anchorR, A.sin(n));
-      const pxo = A.add(px, A.mul(ctx.off, A.cos(n)));
-      const pzo = A.add(pz, A.mul(ctx.off, A.sin(n)));
+      // The chain origin plus this vertex's wall offset, both along the aim.
+      const out = A.add(anchorR, ctx.off);
       return {
         ...v,
-        theta: A.atan2(pzo, pxo),
-        radius: A.sqrt(A.add(A.mul(pxo, pxo), A.mul(pzo, pzo))),
+        x: A.mul(out, A.cos(n)),
+        z: A.mul(out, A.sin(n)),
         rot: A.sub(n, A.add(ctx.t0, ctx.phi)),
         // UNCLAMPED on purpose — see the cursor law above.
         rem: ctx.d,
@@ -1097,35 +1006,22 @@ export function anchor<S>(radius?: Live<S>): OpItem<S> {
 }
 
 /** ARC: consume `len` material-mm off the chain cursor (omit `len` and it takes
- *  the whole remainder — the unbounded last segment) at constant curvature
- *  `q` = R·κ, dimensionless: 1 is the seated barrel, 0 a straight run, > 1 a
- *  tighter fold, < 0 an outward roll. q is only ever multiplied, so a zero-length
- *  or q = 0 arc costs nothing but the nodes.
+ *  the whole remainder) at constant curvature `q` = R·κ, dimensionless: 1 is
+ *  the seated barrel, 0 a straight run, > 1 a tighter fold, < 0 an outward
+ *  roll. q is only ever multiplied, so a zero-length arc costs only nodes.
  *
- *  Constant κ integrates in closed form — the tangent angle turns by ψ = q·s/R
- *  and the position advances by the exact chord `s·sinc(ψ/2)` about the MID
- *  angle — so this is a chord chain, never a numeric integration. Boundaries
- *  ANIMATE by making `len` a function of the gate: a travelling contact front is
- *  a moving boundary.
+ *  Constant κ integrates in closed form — the tangent turns by ψ = q·s/R and
+ *  the position advances by the exact chord `s·sinc(ψ/2)` about the MID angle —
+ *  so this is a chord chain, never a numeric integration. Making `len` a
+ *  function of the gate ANIMATES the boundary: a travelling contact front.
  *
- *  A LEADING arc (the one that takes the negative overrun) should carry the
- *  seated q = 1 unless a tangent-line extension is what you want: with q ≠ 1 an
- *  overrun vertex at |s| leaves the seated barrel by ≈ (1 − q)·s²/2R in position
- *  and ≈ (1 − q)·s/R on the normal — FIRST order in the curvature deficit, not a
- *  cubic that quietly vanishes.
+ *  A LEADING arc (the one taking the negative overrun) should carry the seated
+ *  q = 1 unless a tangent-line extension is wanted: with q ≠ 1 an overrun
+ *  vertex leaves the seated barrel to FIRST order in the curvature deficit.
  *
- *  `participation` (default 1) is the ONE non-arc generalization, and it exists
- *  because the calibrated wrap needs it: the fraction of this arc's material
- *  that BENDS — the rest SLIPS straight along the vertex's own EXIT tangent.
- *  That is the wrap's curl-ramp law (the unconsumed roll trailing as a flat
- *  tail), a per-vertex material redistribution no pure κ(d) reproduces
- *  (measured: 7.5mm peak divergence without it). It is an AUTHORED field and is
- *  NOT scaled by the selection weight.
- *
- *  IDENTITY: at flight = 0 / stick = 1 every house chain reduces to q ≡ 1 off
- *  the seated anchor, and each chord is then an exact chord of the seated circle
- *  — the chain never leaves the barrel, the aim is the seated normal and rot is
- *  0. With the modifier weight law, w = 0 gives that same seated state. */
+ *  `participation` (default 1) is the fraction of this arc's material that
+ *  BENDS, the rest SLIPPING straight along the vertex's own EXIT tangent. An
+ *  AUTHORED field, NOT scaled by the selection weight. */
 export function arc<S>(
   q: Live<S>,
   len?: Live<S>,
@@ -1144,10 +1040,9 @@ export function arc<S>(
   };
 }
 
-/** One chain SEGMENT: consume `s` material at constant curvature `q` (R·κ), with
- *  `c` of it bending and the rest slipping along the exit tangent. The chord
- *  walk `arc` and `crease` share — one segment, one formula, so the two ops
- *  cannot drift into two different chains. */
+/** One chain SEGMENT: consume `s` material at constant curvature `q` (R·κ),
+ *  with `c` of it bending and the rest slipping along the exit tangent. The
+ *  chord walk `arc` and `crease` SHARE, so the two cannot drift apart. */
 function chainStep<S>(
   v: VertexState<S>,
   ctx: OpCtx<S>,
@@ -1165,8 +1060,8 @@ function chainStep<S>(
   const n1 = A.sub(n0, psi); // this vertex's exit tangent angle
   const slip = A.sub(s, bent); // the unbent remainder, along the exit tangent
   // Off the offset point, along the chain, back onto the offset point.
-  const px = A.sub(A.mul(v.radius, A.cos(v.theta)), A.mul(ctx.off, A.cos(n0)));
-  const pz = A.sub(A.mul(v.radius, A.sin(v.theta)), A.mul(ctx.off, A.sin(n0)));
+  const px = A.sub(v.x, A.mul(ctx.off, A.cos(n0)));
+  const pz = A.sub(v.z, A.mul(ctx.off, A.sin(n0)));
   const wx = A.add(
     px,
     A.add(A.mul(chord, A.sin(nMid)), A.mul(slip, A.sin(n1))),
@@ -1175,50 +1070,53 @@ function chainStep<S>(
     pz,
     A.add(A.mul(chord, A.cos(nMid)), A.mul(slip, A.cos(n1))),
   );
-  const ox = A.add(wx, A.mul(ctx.off, A.cos(n1)));
-  const oz = A.add(wz, A.mul(ctx.off, A.sin(n1)));
   return {
     ...v,
-    theta: A.atan2(oz, ox),
-    radius: A.sqrt(A.add(A.mul(ox, ox), A.mul(oz, oz))),
+    x: A.add(wx, A.mul(ctx.off, A.cos(n1))),
+    z: A.add(wz, A.mul(ctx.off, A.sin(n1))),
     rot: A.sub(v.rot, psi),
     aim: n1,
     rem: A.sub(v.rem, s),
   };
 }
 
+/** STRAIGHT: consume `len` material off the chain cursor at ZERO curvature —
+ *  the chain's flat run (omit `len` and it takes the whole remainder).
+ *
+ *  `arc(0)` says the same thing but pays the chord machinery to do it: ψ = 0
+ *  makes the chord `s·sinc(0)`, which the singularity guard evaluates at ε and
+ *  returns a hair short of `s`, and the off-invariant strips the wall offset
+ *  along the aim only to re-add it along the same aim. With no turn there is
+ *  nothing to integrate and nothing to re-seat: the point slides `s` along its
+ *  own exit tangent, and rot and aim do not move. */
+export function straight<S>(len?: Live<S>): OpItem<S> {
+  return {
+    kind: "modifier",
+    name: "straight",
+    run: (v, ctx) => {
+      const A = ctx.A;
+      const s = len === undefined ? v.rem : A.min(v.rem, liveOf(len, ctx));
+      const n = v.aim;
+      return {
+        ...v,
+        x: A.add(v.x, A.mul(s, A.sin(n))),
+        z: A.sub(v.z, A.mul(s, A.cos(n))),
+        rem: A.sub(v.rem, s),
+      };
+    },
+  };
+}
+
 /** CREASE: a HARD FOLD in the bend chain — the origami kink `arc` cannot make.
- *  It consumes `width` material-mm (a narrow band, not a panel) at whatever
- *  curvature turns the chain `rad` MORE than the seated barrel already turns
- *  over that same run: q = 1 + rad·R/width. So it is one `arc` segment with the
- *  fold angle, rather than the curvature, as its argument — which is the only
- *  form in which a crease composes: a recipe spells the fold it wants (0.6 rad)
- *  and the op works out the curvature the piece's own radius needs.
+ *  It consumes `width` material-mm at whatever curvature turns the chain `rad`
+ *  MORE than the seated barrel turns over that run: q = 1 + rad·R/width.
  *
- *  WHY THE ANGLE IS RELATIVE TO THE SEAT, not absolute: `rad` = 0 gives q = 1
- *  EXACTLY — the seated barrel, no node that has to cancel — so a crease whose
- *  angle rides the gate (`rad = flight·knob`, the house form) is the exact
- *  identity at channel 0 like every other chain op, and a crease dropped into a
- *  chain at rest changes nothing. An absolute turn would have to be authored as
- *  `mix(seatedTurn, target, flight)` at every call site, with the seated turn
- *  re-derived per piece — three ways to get it wrong.
- *
- *  SIGN: positive `rad` folds the SAME way the barrel curves (a tighter cup);
- *  negative folds back the other way (a reflex flick).
- *
- *  WIDTH is the crease's own material band and must be > 0 (it divides). It is
- *  the sharpness knob: the fold is a constant-curvature fillet across it, so a
- *  band a few % of the material reads as a hard line and the vertices inside it
- *  are the only ones off the two flat panels. Zero would be a true kink and a
- *  division by zero; the mesh has no vertices there to place anyway.
- *
- *  NORMALS ARE EXACT for an AXIALLY-UNIFORM crease, unlike `tilt`'s ever: the
- *  fold is a turn in the RADIAL PLANE, which is the one rotation `v.rot`
- *  represents (host law 4), and the chain advances it by the same −ψ it turns
- *  the aim by — a crease shades as a crease. An axially-RAMPED `rad` (the
- *  rose's corner flick keys on yN) bends the fold line off the axis, and the
- *  rot-only lane misses the ∂/∂y term: it shades approximately, the same
- *  documented class as `twist` and `stickPress`. */
+ *  THE ANGLE IS RELATIVE TO THE SEAT: `rad` = 0 gives q = 1 EXACTLY, so a
+ *  crease whose angle rides the gate is the exact identity at channel 0 like
+ *  every other chain op. SIGN: positive folds the SAME way the barrel curves,
+ *  negative folds back (a reflex flick). WIDTH is the sharpness knob and MUST
+ *  be > 0 — it divides. NORMALS ARE EXACT only for an AXIALLY-UNIFORM crease;
+ *  an axially-RAMPED `rad` shades approximately, like `twist`. */
 export function crease<S>(rad: Live<S>, width: Live<S>): OpItem<S> {
   return {
     kind: "modifier",
@@ -1236,10 +1134,10 @@ export function crease<S>(rad: Live<S>, width: Live<S>): OpItem<S> {
   };
 }
 
-// COIL: map the seated radius R toward R·factor at CONSTANT arc length — the
-// wedge-local angle opens ∝ 1/factor; the wall offset rides along untouched.
-// factor = 1 at flight = 0 ⇒ exact identity. rot += the opening angle. Reads the
-// SEATED phi (ctx), not v.theta: earlier ops have already moved the latter.
+// COIL: map the seated radius R toward R·factor at CONSTANT arc length, so the
+// wedge-local angle opens ∝ 1/factor. factor = 1 at flight = 0 ⇒ exact
+// identity. Reads the SEATED phi (ctx), not the live meridian, which earlier
+// ops moved.
 export function coil<S>(factor: Sc<S>): OpItem<S> {
   return {
     kind: "modifier",
@@ -1248,11 +1146,10 @@ export function coil<S>(factor: Sc<S>): OpItem<S> {
       const A = ctx.A;
       const coilF = A.mix(1, factor, ctx.flight);
       const open = A.sub(A.div(ctx.phi, coilF), ctx.phi);
+      const grown = pushOut(A, v, A.mul(ctx.R, A.sub(coilF, 1)));
       return {
         ...v,
-        theta: A.add(v.theta, open),
-        radius: A.add(v.radius, A.mul(ctx.R, A.sub(coilF, 1))),
-        axial: v.axial,
+        ...turn(A, grown, A.cos(open), A.sin(open)),
         rot: A.add(v.rot, open),
       };
     },
@@ -1260,8 +1157,8 @@ export function coil<S>(factor: Sc<S>): OpItem<S> {
 }
 
 // TWIST: torsion — rotation about the optical axis whose angle grows with axial
-// height (rad × yN), leaning a straight panel into a helix. Rotation about the
-// axis carries the normal ⇒ rot += the same angle.
+// height, leaning a straight panel into a helix. Rotation about the axis
+// carries the normal, so rot advances by the same angle.
 export function twist<S>(rad: Sc<S>): OpItem<S> {
   return {
     kind: "modifier",
@@ -1269,20 +1166,21 @@ export function twist<S>(rad: Sc<S>): OpItem<S> {
     run: (v, ctx) => {
       const A = ctx.A;
       const ang = A.mul(A.mul(ctx.flight, rad), ctx.yN);
-      return { ...v, theta: A.add(v.theta, ang), rot: A.add(v.rot, ang) };
+      return {
+        ...v,
+        ...turn(A, v, A.cos(ang), A.sin(ang)),
+        rot: A.add(v.rot, ang),
+      };
     },
   };
 }
 
 // STICK PRESS: tape-down seating (the gate's phase 2). The panel hovers `hover`
-// above its seat; an S-bend front sweeps ALONG THE AXIS from the contact end (u
-// from yN, signed by `from`) and presses it flush — radius += hover·S(0,
-// blendFrac, u − f + blendFrac), front f = stick·(1 + blendFrac). At stick = 0
-// the hover is full everywhere; at stick = 1 the smoothstep is 0 EXACTLY ⇒
-// identity at channel = 0. Does not touch rot: the S-ramp tilts normals about
-// the local TANGENT axis and the hover gap is millimetres, so the shading error
-// in the narrow ramp is negligible. `blendFrac` must be > 0 (it is the
-// smoothstep's width).
+// above its seat and an S-bend front sweeps ALONG THE AXIS from the contact end
+// (u from yN, signed by `from`), pressing it flush. At stick = 1 the smoothstep
+// is 0 EXACTLY, so this is the identity at channel = 0. Does not touch rot: the
+// S-ramp tilts normals about the local TANGENT axis, which one in-plane angle
+// cannot express. `blendFrac` must be > 0 — it is the smoothstep's width.
 export function stickPress<S>(
   hover: Sc<S>,
   blendFrac: number,
@@ -1299,7 +1197,7 @@ export function stickPress<S>(
         hover,
         A.smoothstep(0, blendFrac, A.add(A.sub(u, f), blendFrac)),
       );
-      return { ...v, radius: A.add(v.radius, hoverAmt) };
+      return { ...v, ...pushOut(A, v, hoverAmt) };
     },
   };
 }

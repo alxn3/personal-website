@@ -1,18 +1,13 @@
-// Scalar algebra — the backend-agnostic operation vocabulary that every lens op,
-// gate, and recipe is written against. An `Algebra<S>` is a set of scalar
-// operations over some scalar type `S`; `Sc<S>` lets callers pass raw numbers
-// anywhere a scalar is expected (they are lifted). Two backends implement it:
-// `NUM` (this file — plain JS numbers, the executable spec) and `tslAlgebra`
-// (algebra-tsl.ts — three/tsl shader nodes). Writing ops against `Algebra<S>`
-// means one source of truth runs both on the CPU (tests, tooling) and the GPU.
+// Scalar algebra — the backend-agnostic operation vocabulary every lens op,
+// gate and recipe is written against, so one source of truth runs on both the
+// CPU and the GPU. `NUM` (this file) is the number backend and the executable
+// spec; `emit/algebra-src.ts` is the SOURCE backend the shader is generated
+// through (there is no node backend any more). `Sc<S>` lets
+// callers pass raw numbers anywhere a scalar is expected.
 //
-// Semantics here are GLSL's, NOT JS's — so the number backend computes the same
-// SEMANTICS as the TSL backend compiles to the GPU, though not bit-identical
-// rounding (GLSL's mix is a·(1−t) + b·t against this file's a + (b−a)·t, worth
-// ~4e-15 of divergence; the GPU is also free to fuse and reassociate). Notably:
-// `step` is edge-inclusive,
-// `mix` does not clamp `t`, and `fract` returns x − floor(x) (positive for
-// negative inputs). These are pinned in __tests__/algebra.test.ts.
+// Semantics are GLSL's, NOT JS's: `step` is edge-inclusive, `mix` does not
+// clamp `t`, `fract` is x − floor(x) (so positive for negative inputs). The
+// two backends agree on semantics, not on bit-exact rounding.
 
 export type Sc<S> = S | number;
 
@@ -51,8 +46,7 @@ export interface Algebra<S> {
   fract(a: Sc<S>): S;
 }
 
-// The number backend. `lift`/`lit` are identity (a number is already the scalar
-// type); every other method applies the GLSL-semantic formula.
+// The number backend: `lift`/`lit` are identity, the rest are GLSL formulas.
 export const NUM: Algebra<number> = {
   lift: (x) => x,
   lit: (n) => n,

@@ -183,8 +183,8 @@ describe("starfield", () => {
       ];
     // 0.61× today: the field's median disc against the authored table's.
     expect(median(bg)).toBeLessThan(median(authored) * 0.7);
-    // The hierarchy is DELIBERATELY COMPRESSED in size — the owner read the
-    // authored stars as too big beside the field — so what carries the depth is
+    // The hierarchy is DELIBERATELY COMPRESSED in size — the authored stars
+    // read too big beside the field — so what carries the depth is
     // INK, not radius: the catalog's exponential law and the floor's
     // compensation. Both ends of that are pinned in (f3).
     expect(starRho(3.1) / starRho(BRIGHTNESS_LAW.magDark)).toBeGreaterThan(3);

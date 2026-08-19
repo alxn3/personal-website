@@ -13,6 +13,7 @@ import {
   type InkEdge,
   type UnifiedLook,
 } from "../unified";
+import { setDeformBackend } from "../../ops/host";
 
 /** every node in a TSL graph, by constructor name + whatever scope it carries,
  *  plus the node objects themselves (so a factor can be pinned by IDENTITY and
@@ -63,7 +64,7 @@ describe("the ink edge-lines' opacity", () => {
   // the old graph-equality pin is replaced by the shared-envelope law below;
   // the materialOpacity factor on BOTH is covered by the test above.)
   it("arrives WITH the glass ink fill, and not before it", () => {
-    // the coupling the owner's report is about: the glass outline and the mint
+    // the coupling this pins: the glass outline and the mint
     // fill share ONE envelope (the ramp's top half — glassInkOpacity's own
     // factor), so neither can appear without the other while a returning piece
     // is still displaced. Pinned structurally: the glass line graph carries
@@ -190,13 +191,16 @@ function stubModel(framed = false) {
 function wornLook(framed = false): { look: UnifiedLook; mesh: THREE.Mesh } {
   const { root, mesh } = stubModel(framed);
   const look = createUnified(root);
-  look.warmBodyLooks("canvas", () => {});
+  look.warmBodyLooks("canvas", () => true);
   return { look, mesh };
 }
 
 const asMat = (mesh: THREE.Mesh) => mesh.material as THREE.Material;
 
 beforeAll(() => {
+  // The deform ships as generated source per dialect (ops/emit), so a material
+  // build needs the dialect declared — core/scene.ts does it off the renderer.
+  setDeformBackend("wgsl");
   // createUnified reads the site theme off the document; node has none.
   (globalThis as { document?: unknown }).document ??= {
     documentElement: { classList: { contains: () => false } },
@@ -319,7 +323,7 @@ describe("when the twin is worn", () => {
     const blend = asMat(mesh);
     look.setInk(1);
     expect(asMat(mesh)).toBe(blend);
-    look.warmBodyLooks("canvas", () => {});
+    look.warmBodyLooks("canvas", () => true);
     expect(asMat(mesh)).not.toBe(blend);
   });
 
@@ -365,7 +369,7 @@ describe("the twin's warm-up covers what it claims to", () => {
   it("keeps a material minted AFTER the warm frame on the blend, and asks for another", () => {
     const { root, mesh } = stubModel();
     const look = createUnified(root);
-    look.warmBodyLooks("canvas", () => {});
+    look.warmBodyLooks("canvas", () => true);
     expect(look.needsWarm("canvas")).toBe(false);
     look.setInk(1);
     const twin = asMat(mesh);
@@ -379,7 +383,7 @@ describe("the twin's warm-up covers what it claims to", () => {
     // …and the controller says so, which is how core/scene knows to spend a
     // second warm frame on it
     expect(look.needsWarm("canvas")).toBe(true);
-    look.warmBodyLooks("canvas", () => {});
+    look.warmBodyLooks("canvas", () => true);
     expect(look.needsWarm("canvas")).toBe(false);
     expect(asMat(late)).not.toBe(lateBlend);
     expect(asMat(mesh)).toBe(twin); // the key that was already warm did not move
@@ -393,7 +397,10 @@ describe("the twin's warm-up covers what it claims to", () => {
     mesh.visible = false;
     const look = createUnified(root);
     const seen: boolean[] = [];
-    look.warmBodyLooks("canvas", () => seen.push(mesh.visible));
+    look.warmBodyLooks("canvas", () => {
+      seen.push(mesh.visible);
+      return true;
+    });
     expect(seen).toEqual([true]);
     expect(mesh.visible).toBe(false); // …and put back exactly as it was
   });
@@ -402,7 +409,7 @@ describe("the twin's warm-up covers what it claims to", () => {
     const { root, mesh } = stubModel();
     const look = createUnified(root);
     const blend = asMat(mesh);
-    look.warmBodyLooks("canvas", () => {});
+    look.warmBodyLooks("canvas", () => true);
     look.setInk(1);
     const twin = asMat(mesh);
     expect(twin).not.toBe(blend);
@@ -411,12 +418,28 @@ describe("the twin's warm-up covers what it claims to", () => {
     look.syncBody("pass");
     expect(asMat(mesh)).toBe(blend);
     expect(look.needsWarm("pass")).toBe(true);
-    look.warmBodyLooks("pass", () => {});
+    look.warmBodyLooks("pass", () => true);
     look.syncBody("pass");
     expect(asMat(mesh)).toBe(twin);
     // …and the canvas keeps its own answer through all of it
     look.syncBody("canvas");
     expect(asMat(mesh)).toBe(twin);
+  });
+
+  // A DRAW THAT NEVER REACHED THE SCENE COMPILES NOTHING. core/scene's dive
+  // warm renders through a pass that draws its scene once per tick, so a second
+  // call inside one tick collapses to the output quad; marking the context warm
+  // on that would hand the twin out on a pipeline nobody built.
+  it("refuses a context whose draw reported nothing drawn", () => {
+    const { root, mesh } = stubModel();
+    const look = createUnified(root);
+    look.warmBodyLooks("canvas", () => false);
+    expect(look.needsWarm("canvas")).toBe(true);
+    look.setInk(1);
+    const blend = asMat(mesh);
+    look.warmBodyLooks("canvas", () => true);
+    expect(look.needsWarm("canvas")).toBe(false);
+    expect(asMat(mesh)).not.toBe(blend);
   });
 });
 

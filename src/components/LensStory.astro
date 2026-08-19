@@ -3,24 +3,18 @@ import LensPin from "./LensPin.astro";
 import LensSceneContent from "./LensSceneContent.astro";
 import { STORY, TRACK_HEIGHT_CSS, CAPTION_FADE_CSS, bandOf } from "../lib/lens";
 
-// The scroll-jacked lens hero. The story TABLE — scene order, durations, camera
-// poses/waypoints, stage tints, rail flags and titles — lives in
-// lib/lens/story/story.ts (the single source of truth for story STRUCTURE; the
-// track height, scene ranges, camera path and caption bands all derive from
-// it). Mechanism ENVELOPE windows are deliberately not in it: they live with
-// their consumer, the pulse(...) calls in lib/lens/story/hero-driver.ts. This
-// component renders the hero around the table: the caption BANDS, the pinned
-// stage they sit over, the chrome (HUD / rail / scroll cue), and the boot
-// script.
+// The scroll-jacked lens hero. The story TABLE — scene order, durations,
+// camera, tints, rail flags, titles — lives in lib/lens/story/story.ts, and the
+// track height, scene ranges, camera path and caption bands all derive from it.
+// Mechanism ENVELOPE windows deliberately do not: they live with their
+// consumer, lib/lens/story/hero-driver.ts. This component renders the hero
+// around the table — the caption BANDS, the pinned stage, the chrome, the boot.
 //
-// Scene overlay content is authored BELOW as real markup (<LensSceneContent
-// scene="…">), so any scene can host arbitrary HTML/components — the story table
-// only carries the engine data (durations, camera, tint). Each block sits in its
-// scene's band and is sticky inside it, so it appears, pins and leaves on layout
-// alone — no driver, no JS.
+// Scene overlay content is authored BELOW as real markup, so any scene can host
+// arbitrary HTML. Each block sits in its scene's band and is sticky inside it,
+// so it appears, pins and leaves on layout alone — no driver, no JS.
 
-// Band 0 is the intro's: the hero scene's slice of the track. Same derivation
-// as every <LensSceneContent> band — one table, one reader.
+// Band 0 is the intro's — same derivation as every <LensSceneContent> band.
 const heroBand = bandOf("hero");
 ---
 
@@ -35,10 +29,9 @@ const heroBand = bandOf("hero");
   >
     {
       /* ---- Caption band 0: the hero intro ----
-           FIRST in the track so the <h1> opens the document outline and the a11y
-           tree, ahead of the stage's decorative chrome. Paint order is unchanged:
-           every band is absolute at z-3 over the z-auto sticky stage, so the
-           bands win on z-index, not on document order. */
+           FIRST in the track so the <h1> opens the document outline and the
+           a11y tree ahead of the stage's chrome. Paint order is unaffected —
+           the bands win on z-index, not on document order. */
     }
     <div
       class="cap-band"
@@ -149,14 +142,11 @@ const heroBand = bandOf("hero");
 
     {
       /* ---- Per-scene overlay content (caption bands 1..n) ----
-           Each block is ARBITRARY markup tied to a scene id — swap any of these for
-           custom components (charts, images, demos…). `pos` places it where that
-           scene parks the lens and picks the slot it pins into; the classes below
-           are the house caption style, not a requirement. Each renders its own
-           band: its slice of the scroll track, with the caption sticky inside, so
-           it appears, pins and leaves purely because of where it sits in the
-           document — no runtime system raises it, and none can lose it. Geometry
-           comes from CAPTION_BANDS (story.ts), the same ranges the canvas reads. */
+           Each block is ARBITRARY markup tied to a scene id; the .cap-* classes
+           below are the house style, not a requirement. `pos` places the block
+           where that scene parks the lens and picks its sticky slot. Geometry
+           comes from CAPTION_BANDS (story.ts), the same ranges the canvas
+           reads. */
     }
     <LensSceneContent scene="zoom" pos="left">
       <span class="cap-ghost" aria-hidden="true">01</span>
@@ -205,10 +195,7 @@ const heroBand = bandOf("hero");
       <h2 class="cap-title">Everything connects.</h2>
     </LensSceneContent>
 
-    {
-      /* A short beat — no body copy: the boredom quote is already carrying
-        this scene. */
-    }
+    {/* A short beat — no body copy. */}
     <LensSceneContent scene="trails" pos="right">
       <span class="cap-ghost" aria-hidden="true">07</span>
       <span class="cap-tag">TRAILS — TIME</span>
@@ -236,9 +223,8 @@ const heroBand = bandOf("hero");
 
 <style>
   /* The lens stage follows the SITE THEME: warm-paper drafting sheet in light
-     mode (dark sepia ink), dark cinematic stage in dark mode (bright ink). The
-     3D palette flips with it (scene.setTheme). All stage copy reads from these
-     vars, so each block below only has to restate the custom properties. */
+     mode, dark cinematic stage in dark. The 3D palette flips with it. All stage
+     copy reads these vars, so each block below only restates them. */
   #lens-hero {
     background: #f2eee4;
     --ink: #2c2822;
@@ -248,12 +234,9 @@ const heroBand = bandOf("hero");
     --ink-border: rgba(44, 40, 34, 0.18);
     --olive: #66754f;
     --orange: #b06a3c;
-    /* scrim + caption halo pull from the paper, keeping text legible over the lens.
-       TWO LAYERS, not one: dark ink on paper only needs the wide soft layer, and
-       over paper a halo is invisible by definition — but the rewrap reassembly
-       fills the light stage with near-black slabs, and against those a single
-       24px halo is too diffuse to separate the letterforms. The tight second
-       layer hugs the glyph edges and is what does the work there. */
+    /* scrim + caption halo pull from the paper. TWO LAYERS: the wide soft one
+       carries paper-on-paper, and the tight second hugs the glyph edges for the
+       frames where the reassembly fills the light stage with near-black. */
     --scrim-rgb: 242 238 228;
     --cap-shadow:
       0 2px 24px rgba(242, 238, 228, 0.95), 0 0 10px rgba(242, 238, 228, 0.9);
@@ -274,7 +257,7 @@ const heroBand = bandOf("hero");
     --cap-shadow-sm: 0 1px 16px rgba(0, 0, 0, 0.6);
   }
 
-  /* grain overlay (the old vignette was removed — owner wants the stage open) */
+  /* grain overlay */
   #lens-hero .hero-grain {
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
     background-size: 180px 180px;
@@ -282,15 +265,12 @@ const heroBand = bandOf("hero");
     z-index: 2;
   }
 
-  /* caption bands: each captioned scene's slice of the scroll track. Absolute in
-     #lens-track, sized in PERCENT of the track from CAPTION_BANDS (story.ts) —
-     the same ranges the canvas reads at runtime, so the HTML and the choreography
-     cannot drift. The box is the centred max-width column the captions used to
-     sit in (the old .cap-frame), so the edge placements in LensSceneContent land
-     on the same grid; no padding, because those placements are margins off the
-     column edge exactly as they were offsets off the old frame's padding box.
-     :global — the scene bands are rendered by LensSceneContent, outside this
-     component's scope. */
+  /* Caption bands: each captioned scene's slice of the scroll track, absolute
+     in #lens-track and sized from CAPTION_BANDS (story.ts) — the ranges the
+     canvas reads too, so HTML and choreography cannot drift. The box is a
+     centred max-width column with NO padding, because LensSceneContent's
+     placements are margins off the column edge. :global — the bands render
+     there, not here. */
   :global(#lens-track .cap-band) {
     position: absolute;
     left: 0;
@@ -301,42 +281,34 @@ const heroBand = bandOf("hero");
     z-index: 3;
     pointer-events: none;
   }
-  /* The bands sit outside the stage now, so the stage's overflow-hidden no
-     longer trims what hangs off them. The case that still needs trimming is a
-     narrow DESKTOP window (761–780px, just above the mobile breakpoint): a
-     bottom-slot caption's scrim reaches 110px past each edge of a 560px block,
-     so it runs ~10px past the viewport and would widen the PAGE. `clip`, not
-     `hidden`: hidden would make the track a scroll container and kill every
-     sticky box inside it. */
+  /* The bands sit outside the stage, so nothing trims what hangs off them: on
+     a narrow DESKTOP window a bottom-slot caption's scrim runs past the
+     viewport and would widen the PAGE. `clip`, not `hidden` — hidden would make
+     the track a scroll container and kill every sticky box inside it. */
   #lens-track {
     overflow-x: clip;
   }
 
   /* ---- caption fades: no story driver involved ----------------------------
      Layout decides WHERE a caption is; this decides WHEN it is lit. Each band is
-     a view-timeline, and both windows are anchored to a band EDGE crossing the
-     matching viewport edge — which, with the scroll-space geometry above, are
-     exactly the band's own p range (story.ts): `cover 100dvh` is p = a (the
-     live viewport top — see the IN-anchor note below) and
-     `cover (100% − 100svh)` is p = b (exact and viewport-free: the 100svh here
-     cancels the band height's own +100svh). Since a/b are the scene's range padded by
-     CAPTION_PAD, a window one --cap-fade long (two pads) at each end lights the
-     caption over precisely its scene and cross-dissolves with its neighbour over
-     the shared pad — the schedule the old driver's band() ran, now in layout.
-     Neither window's timing depends on the band's HEIGHT, so scenes of different
-     durations still hand over identically.
-     That also gives spec §6 for free: the fade starts a full viewport after the
-     band's top edge appeared, by which time the caption has finished travelling
-     into its slot (see the slot law in LensSceneContent.astro), and ends a full
-     viewport before the bottom edge arrives, before the band drags it back out.
+     a view-timeline whose windows are anchored to a band EDGE crossing the
+     matching viewport edge, which with the scroll-space geometry above are
+     exactly the band's own p range: `cover 100dvh` is p = a, and
+     `cover (100% − 100svh)` is p = b (viewport-free — the 100svh cancels the
+     band height's own +100svh). Since a/b are the scene's range padded by
+     CAPTION_PAD, a window one --cap-fade long at each end lights the caption
+     over precisely its scene and cross-dissolves with its neighbour over the
+     shared pad. Neither window depends on the band's HEIGHT, so scenes of
+     different durations hand over identically, and each fade starts a full
+     viewport after its band's top edge appeared — by which time the caption has
+     finished travelling into its slot (the slot law in LensSceneContent.astro).
+
      Two elements share the work because one element cannot host two FILLING
      animations on the same property: the band fades OUT, the caption fades IN,
-     and what you see is the product.
-     ON PHONES the two windows are SPLIT at the overlap's midpoint instead of
-     shared (the override below): the mobile layout collapses every block into
-     the one bottom slot, so an overlapping hand-over stacks two headlines in the
-     same place rather than cross-dissolving beside each other — the outgoing
-     caption has to be gone before the incoming one starts. */
+     and what you see is the product. ON PHONES the windows are SPLIT at the
+     overlap's midpoint instead of shared, because the mobile layout collapses
+     every block into one slot and an overlapping hand-over would stack two
+     headlines in the same place. */
   :global(#lens-track .cap-band) {
     animation: lens-cap-out linear both;
     animation-timeline: view(block);
@@ -349,18 +321,14 @@ const heroBand = bandOf("hero");
     animation: lens-cap-in linear both;
     animation-timeline: --cap-band;
     /* the IN anchor is the band's TOP edge crossing the LIVE viewport top, so
-       it must be dvh — the band height carries its own +100svh, which the OUT
-       anchor's `100% − 100svh` cancels exactly, but the IN side has nothing to
-       cancel: an svh anchor here fires (100dvh − 100svh) early when the iOS
-       toolbar hides, which on the mobile split would overlap the two
-       half-windows it exists to keep apart. Timing-only — a dvh change here
-       moves no box and costs no re-layout. */
+       it must be dvh: the OUT anchor's `100% − 100svh` cancels the band's own
+       +100svh, but the IN side has nothing to cancel, and an svh anchor would
+       fire early when the iOS toolbar hides. Timing-only — no re-layout. */
     animation-range: cover 100dvh cover calc(100dvh + var(--cap-fade));
   }
-  /* the mobile split (see above): each half-window keeps the same total
-     --cap-fade of travel, so the hand-over still finishes inside the shared pad
-     — it just runs out-then-in instead of both at once. A p exactly on the
-     midpoint shows no caption at all, which is the point. */
+  /* the mobile split: each half-window keeps the same total --cap-fade of
+     travel, so the hand-over still finishes inside the shared pad — it just
+     runs out-then-in instead of both at once. */
   @media (max-width: 760px) {
     :global(#lens-track .cap-band) {
       animation-range: cover calc(100% - 100svh - var(--cap-fade)) cover
@@ -371,11 +339,9 @@ const heroBand = bandOf("hero");
         calc(100dvh + var(--cap-fade));
     }
   }
-  /* The two ENDS of the track are structural, not tuned: the first band starts
-     at p = 0, so there is no room to fade in and the intro is simply on at
-     scroll 0; the last band ends at p = 1, so there is no next caption to hand
-     over to and it must still read 1.0 at maximum scroll. (Two ids on the intro
-     rule so it outranks the [data-cap-fade] rule above.) */
+  /* The two ENDS of the track are structural: the first band starts at p = 0
+     with no room to fade in, and the last ends at p = 1 with no next caption to
+     hand over to, so it must still read 1.0 at maximum scroll. */
   #lens-track #hero-intro,
   :global(#lens-track .cap-band[data-final]) {
     animation: none;
@@ -397,15 +363,14 @@ const heroBand = bandOf("hero");
     }
   }
 
-  /* Fallback (Firefox et al): a standalone IntersectionObserver marks the ONE
-     BAND whose scene the reader is in (lib/cap-fades.ts) and the caption inside
-     it lights up — the band is the scene, whereas the sticky caption box outlives
-     it by a viewport. These rules are gated on .cap-io, which that module sets as
-     it applies its first batch of toggles — so if the module 404s or JS is off,
-     the captions stay plainly VISIBLE rather than stuck at opacity 0.
-     .cap-io-armed follows a frame later and is the ONLY thing that carries the
-     transition: the state applied on load has to be instant, or every caption on
-     screen at scroll 0 paints and then fades out under the reader. */
+  /* Fallback (Firefox et al): an IntersectionObserver marks the ONE BAND whose
+     scene the reader is in and the caption inside it lights up: the band IS
+     the scene, whereas the sticky caption box outlives it by a viewport.
+     Gated on .cap-io, which lib/cap-fades.ts sets as it applies its first
+     batch, so if the module 404s the captions stay VISIBLE rather than 0.
+     .cap-io-armed follows a frame later and is the only thing carrying the
+     transition: the load state must be instant, or every caption on screen at
+     scroll 0 paints and then fades out under the reader. */
   @supports not (animation-timeline: view()) {
     :global(#lens-track .cap-band),
     :global(#lens-track [data-cap-fade]) {
@@ -422,9 +387,8 @@ const heroBand = bandOf("hero");
     }
   }
 
-  /* Reduced motion: the placement is untouched, the fades collapse to instant —
-     the caption switches on at the end of its fade-in window (i.e. once it is in
-     its slot) and off when its band leaves. */
+  /* Reduced motion: placement untouched, fades collapse to instant — the
+     caption switches on once it is in its slot and off when its band leaves. */
   @media (prefers-reduced-motion: reduce) {
     :global(#lens-track .cap-band),
     :global(#lens-track [data-cap-fade]) {
@@ -438,14 +402,12 @@ const heroBand = bandOf("hero");
 
   /* ---- hero intro (band 0) ----
      The intro is a full-bleed layer rather than a column block: a viewport-sized
-     sticky SLOT, exactly what the pinned stage used to give it, with
-     .hero-intro-inner keeping its placement unchanged.
-     STICKY LAW: a sticky box stays pinned for (band height − its own height). A
-     100svh caption therefore needs a band one whole viewport TALLER than its
-     scene's scroll span, which is precisely the pin room the scroll-space band
-     geometry adds (story.ts). Sized as a percentage of the track instead, this
-     band cleared the viewport by only ~87px (measured pre-migration) and the title drifted up under the navbar
-     a fifth of the way into the hero scene.
+     sticky SLOT, with .hero-intro-inner carrying the placement.
+     STICKY LAW: a sticky box stays pinned for (band height − its own
+     height), so a 100svh caption needs a band one viewport TALLER than its
+     scroll span — precisely the pin room the scroll-space band geometry adds
+     (story.ts). Sized as a percentage of the track instead, the title drifts up
+     under the navbar partway into the hero scene.
      svh, not dvh, for the same reason as every other slot — see the unit law in
      story.ts. (The STAGE below is the one dvh box on the page.) */
   #hero-intro {
@@ -590,15 +552,11 @@ const heroBand = bandOf("hero");
     letter-spacing: 0.1em;
     color: var(--ink-faint);
   }
-  /* The two LIVE readouts default to hidden and the driver reveals them:
-     hero-driver's frame() writes an inline opacity to both every frame, and
-     startHeroStory schedules frame() on its first rAF. Their markup text
-     ("SCN 00 / HERO", the unlit rail) is a placeholder the driver overwrites, so
-     without a driver (reduced motion, or a scene that failed to boot) there is
-     nothing true to show — the alternative is a frozen readout asserting scene
-     00 forever. #scroll-cue is deliberately NOT in this list: "SCROLL ↓" is
-     wayfinding that holds in every state, and the hero is a tall pinned track
-     either way. */
+  /* The two LIVE readouts default to hidden and the driver reveals them by
+     writing an inline opacity every frame. Their markup text is a placeholder
+     the driver overwrites, so without a driver there is nothing true to show.
+     #scroll-cue is deliberately NOT in this list — "SCROLL ↓" holds in every
+     state. */
   #hud,
   #scene-rail {
     opacity: 0;
@@ -607,10 +565,8 @@ const heroBand = bandOf("hero");
     display: flex;
     gap: 16px;
   }
-  /* Rail colors were previously written inline by the driver every frame. The
-     inactive value was theme-fixed (the dark-stage faint ink on BOTH themes),
-     which left the rail near-invisible on the paper stage — it now reads the
-     per-theme faint-ink token; the active color is the stage orange token. */
+  /* Rail colours come from the per-theme tokens, not from the driver: a
+     theme-fixed inactive value leaves the rail near-invisible on paper. */
   #scene-rail span {
     transition: color 0.3s;
     color: var(--ink-faint);
@@ -645,9 +601,8 @@ const heroBand = bandOf("hero");
     }
   }
 
-  /* drop the instrument chrome on phones — too cramped; the scroll cue is
-     enough. MUST come after the base #hud/#scene-rail rules: same specificity,
-     so only source order lets the hide win. */
+  /* Drop the instrument chrome on phones. MUST come after the base
+     #hud/#scene-rail rules: same specificity, so only source order wins. */
   @media (max-width: 760px) {
     #scene-rail,
     #hud {
@@ -673,59 +628,35 @@ const heroBand = bandOf("hero");
     if (!canvas) return;
     let scene;
     try {
-      // The op recipes the hero's deform folds in — EXACTLY the channels
-      // story/hero-driver.ts drives (explode = the teardown fan AND the
-      // ending's spiral arrival, assemble = the peel-flat/wrap-back-on pair,
-      // played TWICE — the cards scene's transition and the sky chapter's
-      // return, peel = the peel scene's scoped shell unroll, rose = the
-      // ending's origami bloom). Anything else the bench
-      // offers (helix, rollout, bend) is left out on purpose: an unfolded
-      // recipe contributes literally nothing to the graph, so the hero's shader
-      // stays as small as the story needs. story/cost.ts DEFORM_RECIPES mirrors
-      // this list and a test byte-compares the two.
-      //
-      // IT IS A SET, NOT A CHAIN. Each recipe is evaluated from the SAME seated
-      // vertex and its displacement is ADDED (ops/host.ts law 2 — the delta
-      // form — inside one loop over this list), so two recipes running at once
-      // compose by superposition and this order changes nothing. That is what
-      // lets the ending run `explode` and `rose` together: a piece sits at
-      // (seat + its radius + its petal), flying in as the flower grows.
-      scene = await initScene(canvas, {
-        story: true,
-        recipes: ["assemble", "explode", "peel", "rose"],
-      });
+      // THE RECIPES ARE A SET, NOT A CHAIN: each is evaluated from the SAME
+      // seated vertex and its displacement is ADDED, so two running at once
+      // compose by superposition. That is what lets the ending run `explode`
+      // and `rose` together. The deform carries all four and gates each on its
+      // own channel (ops/emit), so there is nothing to select here.
+      scene = await initScene(canvas, { story: true });
     } catch (err) {
-      // Captions are layout + CSS, so a dead scene costs nothing but the lens:
-      // tidy the stage (an empty canvas would sit over the bg) and leave. The
-      // driver-owned chrome — HUD, rail, scroll cue, pins — stays at its hidden
-      // CSS defaults.
+      // Captions are layout + CSS, so a dead scene costs nothing but the lens.
+      // The driver-owned chrome stays at its hidden CSS defaults.
       console.warn("lens hero: scene init failed, hero runs without it", err);
       canvas.style.display = "none";
       return;
     }
     scene.setShading("ink");
 
-    // Follow the site theme (navbar toggle / OS change flips `.dark` on <html>):
-    // re-palette the 3D scene and re-tint the stage bg (the scroll driver is
-    // assigned below once it exists — the reduced-motion path has no driver but
-    // still re-palettes). The fixed nav just uses its normal themed
-    // styling (translucent blurred bar) over the stage on both themes.
+    // Follow the site theme: re-palette the 3D scene and re-tint the stage bg.
+    // The driver is assigned below once it exists — the reduced-motion path has
+    // none but still re-palettes.
     let driver: HeroDriver | null = null;
     watchTheme((light) => {
       scene!.setTheme(light);
       driver?.onThemeChange(light);
     });
 
-    // Story mode keeps drawing with nothing dirty (dust/rays keep animating), so
-    // once the user scrolls past the hero the loop would burn GPU forever
-    // regardless. Pause it once the pinned stage has (almost) left the
-    // viewport. The margin must be NEGATIVE: the page ends with ~100px of the
-    // stage still geometrically under the viewport top (covered by the sections
-    // painted over it), so a plain isIntersecting never goes false at max
-    // scroll. Shrinking the root by 15% counts a <15%-visible stage as gone —
-    // safe, because the stage only starts exiting after the scroll track ends,
-    // i.e. the story is already complete. Wired BEFORE the reduced-motion
-    // return so the parked scene stops rendering below the fold too.
+    // Story mode keeps drawing with nothing dirty, so pause it once the pinned
+    // stage has (almost) left the viewport. The margin must be NEGATIVE: the
+    // page ends with part of the stage still geometrically under the viewport
+    // top, so a plain isIntersecting never goes false at max scroll. Wired
+    // BEFORE the reduced-motion return so the parked scene stops too.
     const stage = document.getElementById("lens-stage")!;
     new IntersectionObserver(
       ([entry]) => scene!.setPaused(!entry.isIntersecting),
@@ -733,11 +664,9 @@ const heroBand = bandOf("hero");
     ).observe(stage);
 
     if (reduce) {
-      // Park the scene at a fixed pose and never start the driver. The captions
-      // are unaffected — they band-scroll like everyone else's, with their fades
-      // collapsed to instant by the media query. Known accepted trade: the parked
-      // lens is ONE pose, so the per-scene cam.xs framing does not apply here and
-      // a caption may pass over it.
+      // Park the scene at a fixed pose and never start the driver. Captions are
+      // unaffected. Accepted trade: the parked lens is ONE pose, so the
+      // per-scene cam.xs framing does not apply and a caption may pass over it.
       scene.state.explodeTarget = 0.35;
       scene.state.zoomTarget = 0.3;
       scene.state.storyTarget = 0.82;
@@ -754,8 +683,8 @@ const heroBand = bandOf("hero");
 
 <script>
   // Caption fades. Its OWN script block, importing nothing from lib/lens, so a
-  // broken or missing 3D chunk cannot take the captions with it — and a no-op
-  // wherever the browser drives the fades in CSS. See lib/cap-fades.ts.
+  // broken 3D chunk cannot take the captions with it. A no-op wherever the
+  // browser drives the fades in CSS.
   import { startCapFades } from "../lib/cap-fades";
 
   startCapFades();

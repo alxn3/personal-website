@@ -1,18 +1,15 @@
 ---
 /**
- * A tracking annotation pinned to a PART of the 3D lens: a dot anchored on the
- * named model node's live screen position (following it through zoom, focus,
- * explode…), a short leader line, and a small mono label (the slot, or `label`).
+ * A tracking annotation pinned to a PART of the 3D lens: a dot on the named
+ * model node's live screen position, a leader line, and a mono label.
  *
  *   <LensPin scene="internals" track="Focus_LeadScrew" label="STM LEAD SCREW" />
  *
- * `scene` ties the pin's fade to a story scene — the driver writes that scene's
- * band into `--beat-visibility` on every `[data-beat]` element, and the opacity
- * below reads it. `track` names a node in the model (object names are the
- * API — see core/parts.ts). The scroll driver positions every `[data-track]`
- * element from SceneHandle.onFrame's projector each frame. Place pins in a
- * full-stage overlay (NOT the centred caption-band column) so their coordinates
- * line up with the canvas. Anchor to solid parts (elements, rings, screws) —
+ * `scene` ties the pin's fade to a story scene, whose band the driver writes
+ * into `--beat-visibility`. The driver positions every `[data-track]` element
+ * from SceneHandle.onFrame's projector each frame, so pins must live in a
+ * full-stage overlay (NOT the centred caption-band column) for their
+ * coordinates to line up with the canvas. Anchor only to SOLID parts —
  * shader-deformed shell wedges keep their object transform, so their anchor
  * would sit at the un-exploded position.
  */
@@ -49,11 +46,10 @@ const { scene, track, label, side = "right", class: className } = Astro.props;
     left: 0;
     width: 0;
     height: 0;
-    /* the scroll driver writes this scene's band into --beat-visibility every
-       frame; with no driver the pin simply stays hidden. The band lights
-       captions during the camera transit, but a pin points at a 3D position —
-       it must wait for the camera to arrive (scene-local ~0.3–0.47, past the
-       transit's worst) or the leader lines point at a pile. */
+    /* the driver writes this scene's band into --beat-visibility each frame;
+       with none the pin stays hidden. The extra ramp waits for the camera to
+       ARRIVE — the band lights captions during the transit, but a pin points at
+       a 3D position and would otherwise trail a pile. */
     opacity: calc(
       var(--beat-visibility, 0) * clamp(0, (var(--beat-local, 0) - 0.3) * 6, 1)
     );
@@ -106,8 +102,7 @@ const { scene, track, label, side = "right", class: className } = Astro.props;
   }
 
   /* Phones: the outward labels run off a narrow screen, and the caption band
-     already carries the story — annotations are a desktop affordance. (Pass a
-     custom class re-enabling display if a specific pin must survive mobile.) */
+     already carries the story. Re-enable display via `class` to override. */
   @media (max-width: 760px) {
     .lens-pin {
       display: none;

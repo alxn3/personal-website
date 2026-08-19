@@ -11,6 +11,7 @@ import {
 } from "../story";
 import { WINK_SPAN } from "../peelcards";
 import {
+  RETURN,
   CHROME_FADE,
   F_STOPS,
   IRIS_HANDBACK,
@@ -47,7 +48,7 @@ import { internalsApertureAt, internalsBreathAt } from "../internals";
 // transcription slip in one of the twelve expressions.
 //
 // So the expressions are TRANSCRIBED BACK, verbatim from the pre-extraction
-// source (checkpoint 8d978e4, story/hero-driver.ts), and pinned with `toBe` —
+// source (story/hero-driver.ts), and pinned with `toBe` —
 // bit-identical, not close — over every scene edge, every window edge and a
 // dense sweep. A `toBeCloseTo` here would pass on a re-associated sum, and the
 // whole claim of this refactor is that the rendered story did not move by one
@@ -71,7 +72,7 @@ const capR = rangeOf("capsOn");
 
 const OLD_RETURN: StoryWindow = [
   ["rewrap", 0.05],
-  ["capsOn", 0.25],
+  ["rewrap", 0.9],
 ];
 const OLD_CHROME_FADE_P0 = atFrac(capR, 0.77);
 const OLD_F_STOPS = ["2.8", "4", "5.6", "8", "11", "16", "22"];
@@ -86,7 +87,7 @@ const oldZoom = (p: number) =>
 const oldExplode = (p: number) =>
   pulse(p, {
     rise: ["trails", 0.05, 0.5],
-    fall: ["capsOn", 0.12, 0.62],
+    fall: ["capsOn", 0.05, 0.55],
   });
 // RETUNED, same contract: the assemble channel runs TWICE and in opposite
 // directions — the cards scene takes the lens APART on it and the sky chapter
@@ -94,7 +95,7 @@ const oldExplode = (p: number) =>
 // at its own edges. The trails→RETURN half is still the pre-extraction
 // original, verbatim; the cards half is transcribed at its current windows.
 const oldAssemble = (p: number) =>
-  pulse(p, { rise: ["cards", 0.1, 0.42], fall: ["cards", 0.54, 0.64] }) +
+  pulse(p, { rise: ["cards", 0.04, 0.4], fall: ["cards", 0.64, 0.74] }) +
   pulse(p, { rise: ["trails", 0.15, 0.8], fall: OLD_RETURN });
 const oldPreShut = (p: number) =>
   smoothstep(atFrac(inR, 0.6), atFrac(inR, 0.95), p);
@@ -160,10 +161,15 @@ const SWEEP: number[] = (() => {
 // intent that test cannot see: that the seam is a HAND-OFF rather than two
 // windows that merely miss.
 describe("the wrap and the bloom hand over, not merely miss", () => {
-  it("keeps the wrap live right up to the seam and the bloom from it on", () => {
+  it("SEQUENCES them — the wrap is spent a scene before the bloom opens", () => {
+    // the owner asked for the pieces to spiral home and THEN bloom, so the two
+    // no longer hand over at one frame: the wrap lands inside the rewrap and
+    // the bloom opens a settle beat after the spiral's own far edge.
     const seam = windowEdges(ROSE_PULSE.rise)[0];
+    const wrapEnd = windowEdges(RETURN)[1];
     expect(assembleAt(seam)).toBe(0);
-    expect(assembleAt(seam - 1e-4)).toBeGreaterThan(0);
+    expect(wrapEnd).toBeLessThan(seam);
+    expect(assembleAt(wrapEnd - 1e-4)).toBeGreaterThan(0);
     expect(roseAt(seam + 1e-3)).toBeGreaterThan(0);
   });
 
@@ -343,7 +349,11 @@ describe("the extraction's single source", () => {
       steps.length,
       "the only smoothstep in hero-driver.ts is --beat-progress's",
     ).toBe(1);
-    expect(driver).toContain('setProperty(\n        "--beat-progress"');
+    // …and it is what --beat-progress is written from
+    expect(driver).toMatch(/\bprogress = smoothstep\(/);
+    expect(driver).toMatch(
+      /setProperty\(\s*"--beat-progress",\s*String\(progress\)\s*\)/,
+    );
   });
 
   it("gives the pre-shut ramp exactly one owner", () => {

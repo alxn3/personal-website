@@ -1,40 +1,25 @@
 import * as THREE from "three/webgpu";
 import { isGlassElement } from "../core/parts";
 
-// ============================================================================
-// PRESCRIPTION PROBE — dev only, bench-run, imported by nothing that ships.
-// Measures the shipped model's 13 optical elements and prints a paste-ready
-// PRESCRIPTION table for optics/prescription.ts. House pattern is the same as
-// dev/model-contract.ts and dev/inspect.ts: a dynamic import behind
-// `import.meta.env.DEV` in core/scene.ts, console-invocable, read-only.
+// DEV ONLY — dynamically imported, so none of it reaches a visitor's bundle.
+// Measures the shipped model's optical elements and prints a paste-ready
+// PRESCRIPTION table for optics/prescription.ts. Console-invocable, read-only.
 //
-// METHOD (v2 — OUTWARD NORMAL): for each `Element_*` mesh, take its vertices
-// into the GLB ROOT's frame (the gltf frame — optical axis +Y, real
-// millimetres) and split them by the direction their OUTWARD NORMAL faces: a
-// vertex is FRONT if its gltf-frame normal.y > +NORMAL_MIN, REAR if
-// < −NORMAL_MIN, and rim/chamfer (excluded) in between. Each surface's vertex
-// set is fitted with Coope's linear least squares. The fitted centre lies on
-// the optical axis at yMm + 1/c, so the curvature comes out signed for free:
-// c = 1 / (centre.y − yMm). A surface whose Y spread is under FLAT_SPREAD_MM is
-// a plane and reports c = 0.
+// METHOD: for each `Element_*` mesh, take its vertices into the GLB ROOT's
+// frame (optical axis +Y, real millimetres) and split them by the direction
+// their OUTWARD NORMAL faces — FRONT above +NORMAL_MIN, REAR below −NORMAL_MIN,
+// rim/chamfer excluded in between. Each surface is fitted with Coope's linear
+// least squares; the fitted centre lies on the axis at yMm + 1/c, so the
+// curvature comes out signed for free. A surface whose Y spread is under
+// FLAT_SPREAD_MM is a plane, c = 0.
 //
-// WHY NOT Y-EXTREME CAP BANDS (the v1 method, wrong): the shipped elements are
-// DOMED and NESTED. On a dome the mesh's Y-minimum is the RIM RING, not the
-// rear surface — so a "bottom 15% of the Y range" band collects rim vertices,
-// fits a sphere to a ring (fictitious flats, wild centres) and under-reports
-// the aperture, because the true rear pole sits far above the band. Normals do
-// not care about nesting: a rear surface faces −Y wherever it happens to lie.
+// Normals rather than Y-extreme cap bands because the elements are DOMED and
+// NESTED: on a dome the mesh's Y-minimum is the RIM RING, so an extremes band
+// fits a sphere to a ring. A rear surface faces −Y wherever it lies.
 //
-// FRAME, not matrixWorld: element geometry is baked in place but the group
-// empties (Optics_G2/G3/G4_Focus) SLIDE with zoom and focus, so the numbers are
-// only the rest prescription when every channel sits at its default. Run it on
-// a freshly loaded /lens bench with no demo selected — the printed table IS the
-// rest table, and `focusRide` is what encodes the one element that moves.
-//
-// (ops/frames.ts stamps per-vertex axial extents as `_opY` = (yMin, yMax, …).
-// This module deliberately does not read them — they are mesh extents, and it
-// is exactly mesh extents that mislead on a dome.)
-// ============================================================================
+// The group empties SLIDE with zoom and focus, so the numbers are only the rest
+// prescription when every channel sits at its default. Run it on a freshly
+// loaded bench with no demo selected.
 
 /**
  * Outward-normal Y threshold that separates the optical surfaces from the rim.

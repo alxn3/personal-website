@@ -239,8 +239,8 @@ describe("sky", () => {
     expect(inkOf(magDark - 5)).toBe(inkMin);
     expect(inkOf(magBright + 5)).toBe(1);
 
-    // AND THE SPREAD IS WIDE, which is the owner's other half ("more varying
-    // opacities/brightnesses"): the catalog's ink runs the full inkMin…1.
+    // AND THE SPREAD IS WIDE — more varying opacities and brightnesses: the
+    // catalog's ink runs the full inkMin…1.
     const inks = SKY.stars.map((s) => s.ink ?? 1);
     // the faintest star the 720 draws actually land is a whisker over rank 0
     expect(Math.min(...inks)).toBeGreaterThanOrEqual(inkMin);
@@ -397,8 +397,8 @@ describe("sky", () => {
   it("(k) fills the very middle of the frame — no keep-out left in it", () => {
     // NO KEEP-OUT: the very middle of the frame is drawn from the same
     // concentration as the ring around it, so its density MATCHES the inner
-    // field's rather than dipping under it. It is not the densest part — measured
-    // 251/sr over the 0.26 rad cap against 212/sr over the ring outside it, which
+    // field's rather than dipping under it. It is not the densest part — 251/sr
+    // over the 0.26 rad cap against 212/sr over the ring outside it, which
     // is level to within the counting noise. Compared as surface densities,
     // because the middle is also the smallest patch: count over the solid angle
     // of a cap, 2π(1 − cos γ).

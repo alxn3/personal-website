@@ -15,7 +15,7 @@ import {
 // caption is sticky inside (components/LensSceneContent.astro) takes its
 // top/height from here at BUILD time, while the canvas reads the same RANGES at
 // runtime — one table, two readers, so the two cannot drift. These checks pin
-// the DERIVATION, not the numbers: the durations are the owner's to retune.
+// the DERIVATION, not the numbers: the durations are free to retune.
 
 /** The track's scrollable length — see the scroll-space note in story.ts. The
  *  UNIT is load-bearing and pinned on purpose: svh, never dvh, so an iOS toolbar

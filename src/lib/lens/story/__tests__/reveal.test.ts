@@ -45,7 +45,7 @@ describe("the chapter's turn", () => {
   });
 
   it("completes at SKY_OUT_END — the frame the last of the sky is gone — and stays there", () => {
-    // NOT REVEAL_END any more (the owner's fluid-transition correction): the
+    // NOT REVEAL_END any more (the fluid-transition correction): the
     // sky now outlives the reveal, so the turn must cruise as long as any arc
     // or disc is drawn, and its one rate step lands where nothing that turns
     // is visible (story/reveal.ts TURN_P1's comment).
@@ -57,9 +57,8 @@ describe("the chapter's turn", () => {
   });
 
   it("accelerates then CRUISES — it does not decelerate into its edge", () => {
-    // the whole point of the shape (owner: "have the trails continue spinning
-    // during the transition"). A smoothstep would read ~0 at both of the
-    // outer samples here.
+    // the whole point of the shape — the trails keep spinning through the
+    // transition. A smoothstep would read ~0 at both of the outer samples here.
     const cruise = rate(turnAt, atFrac(tR, 0.8));
     expect(rate(turnAt, atFrac(tR, 0.26))).toBeLessThan(0.2 * cruise); // leaves at rest
     expect(rate(turnAt, atFrac(tR, 0.9))).toBeCloseTo(cruise, 6); // holding
@@ -80,12 +79,12 @@ describe("the chapter's turn", () => {
 
 describe("the reveal's rotation", () => {
   it("turns the lens in the SKY'S OWN DIRECTION, on its own window and rate", () => {
-    // THE OWNER CORRECTION (third round on this beat: "the lens is still not
-    // spinning on its axis"). The roll used to be the sky's sweep by identity
+    // THE CORRECTION (third round on this beat — the lens still did not read
+    // as spinning on its axis). The roll used to be the sky's sweep by identity
     // — and that identity is exactly what kept it unreadable: the shared
     // window spent ~83% of the turn under the body cover and the explode gate
     // killed the rest by rewrap-local 0.22, while the visible reassembly ran
-    // five times longer with no rotation at all (measured live, task report).
+    // five times longer with no rotation at all.
     // So the DIRECTION stays the sky's (the arcs hand the figure over with the
     // turn's sense unbroken), the shape is the same accel-and-cruise, and the
     // window and amplitude are the roll's own.
@@ -124,13 +123,14 @@ describe("the reveal's rotation", () => {
 
   it("winds up NEGATIVE, is UNMISTAKABLE while visible, and gives it all back", () => {
     // the direction: growing toward 0 runs the same way on screen as the sky's
-    // turn (measured — +0.3 rad of roll advances every tracked piece's screen
-    // angle by +17.2°, and uSkySpin grows the same way).
+    // turn: +0.3 rad of roll advances every tracked piece's screen angle by
+    // +17.2°, and uSkySpin grows the same way.
     expect(revealRollAt(atFrac(rwR, 0.06), 1)).toBeLessThan(0);
     expect(revealRollAt(atFrac(rwR, 0.06), 1)).toBeGreaterThan(
       revealRollAt(tR.p0, 1),
     );
-    // THE VISIBLE BUDGET — the number the owner's complaint was about. On the
+    // THE VISIBLE BUDGET — the number the "not spinning" complaint was about.
+    // On the
     // frame the crossfade opens, the roll still to be given back must be a
     // clear half revolution's worth (> 90° is the floor; the shipped default
     // is ~180°), because everything spent before this frame is spent under
@@ -140,15 +140,18 @@ describe("the reveal's rotation", () => {
     );
     expect(atOpen).toBeGreaterThan(Math.PI / 2);
     // …and it is still visibly alive DEEP into the reassembly (the old gate
-    // was dead here at < 1°, which is what read as "not spinning")
+    // was dead here at < 1°, which is what read as "not spinning"). The floor
+    // is 15°: the roll now ends with the wrap inside the rewrap, so the same
+    // angle is given back over a shorter window and more of it is spent by
+    // this frame.
     const midAssembly = Math.abs(
       revealRollAt(atFrac(rwR, 0.6), assembleAt(atFrac(rwR, 0.6))),
     );
-    expect(midAssembly).toBeGreaterThan(Math.PI / 8);
+    expect(midAssembly).toBeGreaterThan(Math.PI / 12);
     // NOT SPENT AT REVEAL_END ANY MORE — deliberately. The camera chain that
     // releases there leaves at zero rate (story/camera.ts moveS), so a lens
-    // still rolling under it is the "one gesture" the owner asked the ending
-    // to be; the roll's own zero is ROLL_P1 (pinned above).
+    // still rolling under it is what makes the ending one gesture; the roll's
+    // own zero is ROLL_P1 (pinned above).
     expect(revealRollAt(REVEAL_END, assembleAt(REVEAL_END))).toBeLessThan(0);
   });
 
@@ -191,8 +194,8 @@ describe("the reveal's rotation", () => {
   });
 
   it("holds the pieces at FULL EXPLOSION for the WHOLE reveal, and past it", () => {
-    // the owner's second note ("it doesn't start from the fully expanded state
-    // with the shell pieces sitting on the larger radius"). The fall used to
+    // the reveal must START from the fully expanded state, with the shell
+    // pieces sitting on the larger radius. The fall used to
     // open inside the reveal window itself (rewrap-local 0.12, against
     // story/fly.ts flyRevealAt's [0.06, 0.16]); with the collapse moved to the
     // ending (story/envelopes.ts CONSTRUCT), the channel is exactly 1 from the

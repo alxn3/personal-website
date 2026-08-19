@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { NUM } from "../algebra";
 import { FIXTURE_GATE_SPEC, fixtureGateAt } from "./fixture-gate";
+import { frameAt, polarOf, vertexAt } from "./fixture-state";
 import { gate } from "../gate";
 import { makeRecipes } from "../recipes";
 import {
@@ -37,20 +38,16 @@ const T0 = 0.3;
 const R = 10;
 const HALF = 0.4;
 
-const V0: VertexState<number> = {
-  theta: T0 + 0.1,
-  radius: R,
+const V0: VertexState<number> = vertexAt(T0 + 0.1, R, {
   axial: 4,
   rot: 0,
   aim: T0,
   rem: 0,
-};
-const F0: PieceFrame<number> = {
-  theta: T0,
-  radius: R,
+});
+const F0: PieceFrame<number> = frameAt(T0, R, {
   axial: 0,
   orient: T0,
-};
+});
 
 function ctxAt(
   channel: number,
@@ -197,8 +194,8 @@ describe("during — the window edges are exact", () => {
       (c) => runPipeline([during(P, SUB)], V0, F0, ctxAt(c)).v,
     );
     for (const o of out) {
-      expect(o.theta).toBe(out[0].theta);
-      expect(o.radius).toBe(out[0].radius);
+      expect(o.x).toBe(out[0].x);
+      expect(o.z).toBe(out[0].z);
       expect(o.axial).toBe(out[0].axial);
       expect(o.rot).toBe(out[0].rot);
     }
@@ -214,17 +211,10 @@ describe("during — an omitted field builds no node", () => {
     const ctx = ctxAt(0.42);
     const a = runPipeline([group(SUB)], V0, F0, ctx);
     const b = runPipeline([during({}, SUB)], V0, F0, ctx);
-    for (const k of [
-      "theta",
-      "radius",
-      "axial",
-      "rot",
-      "aim",
-      "rem",
-    ] as const) {
+    for (const k of ["x", "z", "axial", "rot", "aim", "rem"] as const) {
       expect(b.v[k]).toBe(a.v[k]);
     }
-    for (const k of ["theta", "radius", "axial", "orient"] as const) {
+    for (const k of ["x", "z", "axial", "orient"] as const) {
       expect(b.f[k]).toBe(a.f[k]);
     }
     // Stronger than equal numbers: the scope runs on the VERY ctx object the
@@ -424,11 +414,11 @@ describe("during — a chain op inside a scope", () => {
     // Below the window the whole chain is all-q = 1 off the seated anchor, so
     // it is the seated barrel — to the bit against the channel-0 run, and to
     // the bend identity's own 1e-9 against the seat itself.
-    expect(early.out.theta).toBe(idle.out.theta);
-    expect(early.out.radius).toBe(idle.out.radius);
+    expect(early.out.x).toBe(idle.out.x);
+    expect(early.out.z).toBe(idle.out.z);
     expect(early.out.rot).toBe(idle.out.rot);
-    expect(early.out.theta).toBeCloseTo(ctx.t0 + ctx.phi, 9);
-    expect(early.out.radius).toBeCloseTo(ctx.R, 9);
+    expect(polarOf(early.out).theta).toBeCloseTo(ctx.t0 + ctx.phi, 9);
+    expect(polarOf(early.out).radius).toBeCloseTo(ctx.R, 9);
     expect(early.out.rot).toBeCloseTo(0, 9);
 
     // Not vacuous: inside the window the crease really creases, and it does it

@@ -1,15 +1,9 @@
 import * as THREE from "three/webgpu";
 
-// ============================================================================
-// `?diag` — the phone-readable status card (DEV only, the `?webgl` / `?story`
-// param mould). A device that shows the lens but no sky cannot be attached to a
-// console, so the numbers that decide whether the dive's render path can run are
-// printed on the glass instead and read aloud.
-//
-// core/scene.ts owns the state object and writes `post` from
-// enableWormholePost; this module only paints. It is imported dynamically so
-// none of it reaches the eager bundle.
-// ============================================================================
+// DEV ONLY — dynamically imported, so none of it reaches a visitor's bundle.
+// `?diag`: a phone-readable status card printing the numbers that decide
+// whether the dive's render path can run, for a device that cannot be attached
+// to a console. core/scene.ts owns the state object; this module only paints.
 
 /** The fields the scene keeps live; everything else is read off the renderer. */
 export interface LensDiag {

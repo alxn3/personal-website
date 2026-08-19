@@ -5,13 +5,11 @@ import { makeRecipes, type Recipe } from "../recipes";
 import {
   JOINT_SUMS,
   KNOB_LIMITS,
-  getActiveRecipes,
   recipeChannel,
   recipeChannels,
   recipeKnob,
   recipeKnobs,
   resetRecipeKnobs,
-  setActiveRecipes,
 } from "../host";
 
 // The KNOB_LIMITS contract (ops/host.ts). The hard idle gate multiplies the
@@ -268,25 +266,6 @@ describe("recipeKnob — the clamp at the uniform boundary", () => {
     for (const name of NAMES)
       for (const [knob, v] of Object.entries(RECIPES[name].knobDefaults))
         expect(recipeKnob(name, knob).value, `${name}.${knob}`).toBe(v);
-  });
-
-  it("setActiveRecipes throws on an unknown name and on a duplicate", () => {
-    // A dropped name is a recipe the deform never folds — a whole channel that
-    // renders nothing, with no other symptom. The selection is baked into the
-    // material graphs at boot, so it has to fail there.
-    const before = getActiveRecipes();
-    try {
-      expect(() => setActiveRecipes(["assemble", "explod"])).toThrow(/explod/);
-      expect(() => setActiveRecipes(["explode", "explode"])).toThrow(
-        /duplicate/,
-      );
-      setActiveRecipes(["assemble", "explode"]);
-      expect(getActiveRecipes()).toEqual(["assemble", "explode"]);
-      setActiveRecipes(null);
-      expect(getActiveRecipes()).toBeNull();
-    } finally {
-      setActiveRecipes(before);
-    }
   });
 
   it("every knob default sits inside its own limit", () => {

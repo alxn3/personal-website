@@ -4,15 +4,12 @@ import { isSegWedge, isShellPart } from "../../core/parts";
 import { atFrac, DIVE_P0, rangeOf, windowEdges } from "../story";
 import { CARDS_APART } from "../envelopes";
 import {
-  BODY_FADE_BACK,
-  BODY_FADE_OUT,
   CARD_COUNT,
   cardFadeAt,
   cardOrbitAt,
   cardRollAt,
   cardScaleAt,
   cardsFadeOutAt,
-  peelBodyFadeAt,
   peelChannelAt,
   peelRollAt,
   MOUNT_HI,
@@ -23,7 +20,6 @@ import {
   RELEASE_SPAN,
   segSectorAngle,
   SPIN_SPAN,
-  VALLEY,
   WINK_SPAN,
 } from "../peelcards";
 
@@ -84,28 +80,15 @@ describe("the spin", () => {
     }
   });
 
-  it("is STILL AT CRUISE where the cards take over — it does not decelerate in", () => {
-    // story/reveal.ts's lesson, in a second place: a smoothstep would be dying
-    // right where the card shell has to look like it is continuing the motion.
-    // The rate over the handover — the body fade's own out-ramp, read from it —
-    // must be the same as the rate well before it.
-    //
-    // AND THE MARGIN IS THIN, deliberately: the fade's foot sits at spin-local
-    // 0.3762 against SPIN_WIND_UP 0.35, so a wind-up retune past 0.376 fails
-    // here rather than shipping a decelerating handover. That is the law; the
-    // 0.026 of slack is the number to know before touching it.
+  it("SETTLES on screen — the rate is 0 at both edges", () => {
+    // there is no body fade over this scene any more, so the turn cannot end on
+    // a rate step: it accelerates in and decelerates out, and the mid-window
+    // rate is the fastest the lens ever turns.
     const rate = (p: number) => (peelSpinAt(p + 1e-5) - peelSpinAt(p)) / 1e-5;
     const span = SPIN_SPAN[1] - SPIN_SPAN[0];
-    const cruise = rate(SPIN_SPAN[0] + 0.9 * span);
-    expect(rate(BODY_FADE_OUT[0]), "at the fade's foot").toBeCloseTo(cruise, 6);
-    expect(rate(BODY_FADE_OUT[1]), "at the fade's floor").toBeCloseTo(
-      cruise,
-      6,
-    );
-    // …and the wind-up really is behind it by then
-    expect(rate(SPIN_SPAN[0] + 0.05 * span), "still winding up").toBeLessThan(
-      cruise,
-    );
+    const mid = rate(SPIN_SPAN[0] + 0.5 * span);
+    expect(rate(SPIN_SPAN[0] + 0.01 * span), "opening").toBeLessThan(mid * 0.2);
+    expect(rate(SPIN_SPAN[1] - 0.01 * span), "closing").toBeLessThan(mid * 0.2);
   });
 
   it("lands the lens on a WHOLE number of turns, so the drop to 0 is exact", () => {
@@ -173,7 +156,7 @@ describe("the field's fade-out", () => {
 });
 
 // THE CARD SHELL. The field's laws changed shape with the peel re-choreography
-// (owner: the lens "is replaced with the cards spinning as a transition"), so
+// (the lens is replaced by the spinning cards, as a transition), so
 // these pin the NEW ones — a coherent spherical shell — rather than the old run
 // of hoops: eight stations on ONE sphere, ONE rotation axis, ONE direction, ONE
 // rate, and no second motion of any kind on top. Taste values (the radius, the
@@ -308,8 +291,8 @@ describe("the card shell", () => {
   });
 
   it("tips a card in on entry and settles it, on the SCROLL", () => {
-    // What survives from the old roll law (owner: "when the cards come off let's
-    // have it roll on its side a little bit"): a card arrives tipped over and
+    // What survives from the old roll law (a card rolls on its side a little
+    // as it comes off): a card arrives tipped over and
     // rights itself on its own fade window, so a scrub replays it exactly.
     for (const k of KS) {
       const entry = Math.abs(cardRollAt(k, 0));
@@ -332,13 +315,16 @@ describe("the whole peel channel", () => {
       expect(peelValueAt(atFrac(peR, f)), `peel ${f}`).toBe(1);
   });
 
-  it("is spent before the departure opens — the two never share a wedge", () => {
-    // the unroll and the reverse reassembly are two unwrap chains on one wedge,
-    // so the release runs to EXACTLY 0 at the rise's foot rather than fading
-    // under a cover
-    const apart = windowEdges(CARDS_APART.rise)[0];
-    expect(peelValueAt(apart), "spent where the departure opens").toBe(0);
-    for (const p of [RELEASE_SPAN[1], VALLEY[0], cdR.p1])
+  it("hands the wedge to the departure mid-flight, not at a rest frame", () => {
+    // ONE MOTION: the release opens with the departure and closes inside it, so
+    // the curl is still coming out as the wrap takes over. Their SUM is the law
+    // (__tests__/channel-ease.test.ts walks it frame by frame); here it is the
+    // windows' own overlap.
+    const [rise0, rise1] = windowEdges(CARDS_APART.rise);
+    expect(RELEASE_SPAN[0]).toBeGreaterThanOrEqual(rise0);
+    expect(RELEASE_SPAN[1]).toBeLessThan(rise1);
+    expect(peelValueAt(RELEASE_SPAN[1]), "spent inside the rise").toBe(0);
+    for (const p of [RELEASE_SPAN[1], cdR.p1])
       expect(peelValueAt(p), `p ${p}`).toBe(0);
     const mid = peelValueAt((RELEASE_SPAN[0] + RELEASE_SPAN[1]) / 2);
     expect(mid).toBeGreaterThan(0);
@@ -346,135 +332,48 @@ describe("the whole peel channel", () => {
   });
 });
 
-// THE VALLEY, and the four things that live inside it. It is THE load-bearing
-// structure of the peel→cards seam: the body fade's envelope is exactly 0 across
-// it, so the lens is out of core/scene's applyVisibility entirely and every snap
-// the chapter has to make is put in there. Its four edges used to be literals
-// copied into three modules and re-typed as bare numbers here; they are
-// story/peelcards.ts's now, and these are the containments — move the envelope
-// and something fails HERE rather than becoming a visible pop in a scroll nobody
-// re-checks.
-describe("the body fade's valley", () => {
-  it("is EXACTLY 0 across the valley, and exactly 1 at both far ends", () => {
-    // not "≈0": both smoothsteps saturate, which is what takes the meshes out of
-    // the visibility pass rather than merely making them faint
-    for (let i = 0; i <= 200; i++)
-      expect(
-        peelBodyFadeAt(VALLEY[0] + ((VALLEY[1] - VALLEY[0]) * i) / 200),
-        `valley ${i / 200}`,
-      ).toBe(0);
-    for (const p of [0, peR.p0, BODY_FADE_OUT[0]])
-      expect(peelBodyFadeAt(p), `p ${p}`).toBe(1);
-    for (const p of [BODY_FADE_BACK[1], inR.p0, inR.p1, 1])
-      expect(peelBodyFadeAt(p), `p ${p}`).toBe(1);
-  });
-
-  it("never goes over 1 or under 0 anywhere on the track", () => {
-    // the two terms are added, not composed, so an overlap of the out-ramp and
-    // the back-ramp would drive the channel past 1 — core/scene clamps, but the
-    // shape would no longer be the one every gate below is timed against
-    for (let i = 0; i <= 1000; i++) {
-      const v = peelBodyFadeAt(i / 1000);
-      expect(v, `p ${i / 1000}`).toBeGreaterThanOrEqual(0);
-      expect(v, `p ${i / 1000}`).toBeLessThanOrEqual(1);
-    }
-  });
-
-  it("hides the WINK inside the valley, where it belongs again", () => {
-    // the shell and the interior are filed out of applyVisibility behind the
-    // body fade's 0-stretch, so the internals scene opens on the bare mechanism
-    expect(WINK_SPAN[0]).toBeGreaterThanOrEqual(VALLEY[0]);
-    expect(WINK_SPAN[1]).toBeLessThanOrEqual(VALLEY[1]);
-    expect(peelBodyFadeAt(WINK_SPAN[0]), "nothing is drawn there").toBe(0);
-    expect(peelBodyFadeAt(WINK_SPAN[1])).toBe(0);
-    // …and it is spent a whole scene before the internals scene settles
+// WHAT COVERS THE CHAPTER'S ONE SNAP, now that nothing fades the lens out: the
+// departed casts' own wink. These are the containments — move a window and it
+// fails here rather than as a visible pop in a scroll nobody re-checks.
+describe("the departure's own cover", () => {
+  it("winks the departed casts IN PLAIN SIGHT, trailing their own flight", () => {
+    // the cards scene no longer fades the lens out: each cast leaves and then
+    // winks, so the wink opens after the departure has carried it away and is
+    // spent before the scene ends
+    const [rise0, rise1] = windowEdges(CARDS_APART.rise);
+    expect(WINK_SPAN[0]).toBeGreaterThan(rise0);
+    expect(WINK_SPAN[0]).toBeGreaterThanOrEqual(rise1);
+    expect(WINK_SPAN[1]).toBeLessThan(cdR.p1);
+    // …and a whole scene before the internals settles on the mechanism
     expect(WINK_SPAN[1]).toBeLessThan(inR.p0);
   });
 
-  it("hides the spin's STOP — the one place the angular rate steps", () => {
-    expect(SPIN_SPAN[1]).toBeGreaterThan(VALLEY[0]);
-    expect(SPIN_SPAN[1]).toBeLessThan(VALLEY[1]);
-    expect(peelBodyFadeAt(SPIN_SPAN[1]), "and the lens is gone there").toBe(0);
+  it("takes the DEPARTURE'S CHANNEL home behind that wink", () => {
+    // the fall is the one snap the scene still has to cover, and the cover is
+    // the wink: every piece the departure moves is out of the visibility pass
+    // before the channel walks back to 0 (the mechanism it would otherwise move
+    // is scoped out — ops/recipes.ts keepScope).
+    const [f0, f1] = windowEdges(CARDS_APART.fall);
+    expect(f0).toBeGreaterThanOrEqual(WINK_SPAN[1]);
+    expect(f1).toBeLessThanOrEqual(cdR.p1);
   });
 
-  // …AND HIDES IT ON THE CLOCK THE WRITER ACTUALLY USES. The containment above
-  // is a statement about ONE p. It only buys the guarantee — the rate step
-  // happens behind a lens nobody can see — while the roll and the body fade are
-  // sampled at the SAME p, which is the raw one frame() writes the fade, the
-  // per-piece drift and the card field from. story/hero-driver.ts's single
-  // setModelOrientation writer moved onto the render loop for the reveal's sake
-  // and takes its OTHER term from the eased story channel; this pins that the
-  // peel's term did not come along.
-  it("hides it on ONE clock — and the peel's roll is written on the RAW p", () => {
-    // the whole margin is the valley's tail past the stop: 0.0062 of the track
-    const slack = VALLEY[1] - SPIN_SPAN[1];
-    expect(slack).toBeGreaterThan(0);
-    expect(slack).toBeLessThan(0.01);
-    // core/scene's tick() eases with EASE = 0.12, so a channel read there trails
-    // the raw position by Σ(1−EASE)ⁿ = 7.33 frames of whatever the scroll is
-    // doing. Against that slack the guarantee breaks at 0.00084 p/frame — at
-    // 60 Hz over a 14.7-screenful track, 0.75 screenfuls/second, which is a
-    // reading flick, not a fling. Past it the body fades back IN on a lens still
-    // turning at cruise (−146 rad per unit p here), which then stops dead.
-    const EASE_LAG_FRAMES = 0.88 / 0.12;
-    expect(slack / EASE_LAG_FRAMES).toBeLessThan(0.001);
+  it("stops the spin before the fall, so nothing snaps under it", () => {
+    expect(SPIN_SPAN[1]).toBeLessThan(windowEdges(CARDS_APART.fall)[0]);
     const rate = (p: number) => (peelRollAt(p + 1e-7) - peelRollAt(p)) / 1e-7;
-    expect(Math.abs(rate(SPIN_SPAN[1] - 1e-5))).toBeGreaterThan(100);
+    // the roll's own rate dies into its edge now (peelSpinAt is a smoothstep),
+    // so the hard 0 past the window is a rate identity as well as a value one
+    expect(Math.abs(rate(SPIN_SPAN[1] - 1e-4))).toBeLessThan(1);
     expect(rate(SPIN_SPAN[1] + 1e-5)).toBe(0);
-    // the counterfactual, at 1.5× that threshold speed: raw p is past the
-    // valley's far edge — the lens is back in the visibility pass — while a
-    // lagged sample is still short of the stop, i.e. still at cruise
-    const lag = EASE_LAG_FRAMES * 1.5 * (slack / EASE_LAG_FRAMES);
-    const pRaw = VALLEY[1] + 0.2 * slack;
-    expect(peelBodyFadeAt(pRaw), "the lens is drawn again").toBeGreaterThan(0);
-    expect(pRaw - lag).toBeLessThan(SPIN_SPAN[1]);
-    expect(
-      Math.abs(rate(pRaw - lag)),
-      "and a lagged clock would still be turning at cruise under it",
-    ).toBeGreaterThan(100);
-    // …so the writer takes this term at frame()'s own raw p. The reveal's term
-    // keeps the eased channels — that is the fast-scroll fix — but they are two
-    // clocks in one call, deliberately, and this is the structural guard on it.
+  });
+
+  it("keeps the peel's roll on the RAW p — its neighbours' own clock", () => {
     const driver = fs.readFileSync(
       new URL("../hero-driver.ts", import.meta.url),
       "utf8",
     );
     expect(driver).toMatch(/peelRollAt\(lastP\)/);
     expect(driver).not.toMatch(/peelRollAt\(pE\)/);
-  });
-
-  it("takes the DEPARTURE'S CHANNEL home inside it", () => {
-    // the wrap's fall is the one snap the valley still has to cover: the
-    // recipe's ladder moves the mechanism the wink KEEPS, so the channel must
-    // read 0 before the body fade brings it back
-    const [f0, f1] = windowEdges(CARDS_APART.fall);
-    expect(f0).toBeGreaterThanOrEqual(VALLEY[0]);
-    expect(f1).toBeLessThanOrEqual(VALLEY[1]);
-    expect(peelBodyFadeAt(f0), "nothing is drawn there").toBe(0);
-    expect(peelBodyFadeAt(f1)).toBe(0);
-  });
-
-  it("puts the lens back BEFORE the internals scene opens on it", () => {
-    // the whole point of the return: the internals scene still starts on exactly
-    // the mechanism it always did, with no fade running under its first frame
-    expect(BODY_FADE_BACK[1]).toBeLessThan(inR.p0);
-    expect(peelBodyFadeAt(inR.p0)).toBe(1);
-  });
-
-  it("owns the channel all the way to the DIVE's first frame", () => {
-    // THE RANGE-TILED WRITER MAP. hero-driver writes this envelope for every
-    // p < DIVE_P0 and story/fly.ts owns setBodyFade from DIVE_P0 on (its own
-    // half is pinned in story-fly.test.ts). The tile used to end at the
-    // flythrough scene's p0 instead, which left [internals p1, DIVE_P0] with no
-    // owner at all — and applyBodyFade holds its last level on an unchanged
-    // write, so one frame(p) jumping out of the valley into that band left the
-    // lens hidden for the whole approach with nothing to restore it.
-    expect(DIVE_P0).toBeGreaterThan(inR.p1);
-    for (let i = 0; i <= 200; i++)
-      expect(
-        peelBodyFadeAt(inR.p0 + ((DIVE_P0 - inR.p0) * i) / 200),
-        `approach ${i / 200}`,
-      ).toBe(1);
   });
 });
 

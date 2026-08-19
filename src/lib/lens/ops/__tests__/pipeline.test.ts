@@ -1,10 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import { NUM } from "../algebra";
 import { fixtureGateAt } from "./fixture-gate";
+import { atPolar, frameAt, vertexAt } from "./fixture-state";
 import {
   anchor,
   arc,
+  crease,
   group,
+  radiusOf,
   runPipeline,
   selAxialBand,
   selClass,
@@ -12,6 +15,8 @@ import {
   selPick,
   selRank,
   selSector,
+  straight,
+  thetaOf,
   validatePipeline,
   PART_CLASS,
   type OpCtx,
@@ -24,20 +29,18 @@ import {
 // hand-built ctx/state so every scoping and selector law is checked as a plain
 // number.
 
-const V0: VertexState<number> = {
-  theta: 0,
-  radius: 1,
+const V0: VertexState<number> = vertexAt(0, 1, {
   axial: 0,
   rot: 0,
   aim: 0.3, // seeded to ctx.t0
   rem: 0,
-};
-const F0: PieceFrame<number> = {
-  theta: 0.3,
-  radius: 1,
+});
+// The seat in barrel terms — what the sector expectations below are stated in.
+const F0P = { theta: 0.3, radius: 1 };
+const F0: PieceFrame<number> = frameAt(F0P.theta, F0P.radius, {
   axial: 0,
   orient: 0.3,
-};
+});
 
 function makeCtx(over: Partial<OpCtx<number>> = {}): OpCtx<number> {
   const rank01 = over.rank01 ?? 0.5;
@@ -80,12 +83,15 @@ function probe(sink: number[]): OpItem<number> {
   };
 }
 
-// A frame-advancing transform: adds `dTheta` to the piece frame's theta.
+// A frame-advancing transform: turns the piece frame `dTheta` about the axis.
 function orbit(dTheta: number): OpItem<number> {
   return {
     kind: "transform",
     name: "orbit",
-    run: (v, f) => ({ v, f: { ...f, theta: f.theta + dTheta } }),
+    run: (v, f) => ({
+      v,
+      f: { ...f, ...atPolar(thetaOf(NUM, f) + dTheta, radiusOf(NUM, f)) },
+    }),
   };
 }
 
@@ -119,7 +125,7 @@ describe("runPipeline — scoped selection", () => {
     // 1.3 then selects fully; the same sector before the orbit selects nothing.
     const seen: number[] = [];
     runPipeline(
-      [orbit(1.0), selSector(F0.theta + 1.0, 0.2), probe(seen)],
+      [orbit(1.0), selSector(F0P.theta + 1.0, 0.2), probe(seen)],
       V0,
       F0,
       makeCtx(),
@@ -128,7 +134,7 @@ describe("runPipeline — scoped selection", () => {
 
     const seenNoOrbit: number[] = [];
     runPipeline(
-      [selSector(F0.theta + 1.0, 0.2), probe(seenNoOrbit)],
+      [selSector(F0P.theta + 1.0, 0.2), probe(seenNoOrbit)],
       V0,
       F0,
       makeCtx(),
@@ -163,9 +169,12 @@ describe("selectors — exact-1 bypasses and exact matches", () => {
   // keep its orientation over the WHOLE range: cos turns around at π, and an
   // uncapped outer angle (half-width + feather) crossed the inner one for width
   // > 2π − feather, inverting the mask inside the bypass's blind spot.
-  const at = (theta: number): PieceFrame<number> => ({ ...F0, theta });
-  const CENTRE = F0.theta;
-  const ANTIPODE = at(F0.theta + Math.PI);
+  const at = (theta: number): PieceFrame<number> => ({
+    ...F0,
+    ...atPolar(theta, F0P.radius),
+  });
+  const CENTRE = F0P.theta;
+  const ANTIPODE = at(F0P.theta + Math.PI);
 
   it("(d‴) selSector keeps its orientation up to the exact-open edge", () => {
     for (const width of [3.0, 5.9, 6.0, 6.1, 6.19]) {
@@ -257,6 +266,31 @@ describe("validatePipeline — order-of-operations advisories", () => {
     validatePipeline(
       [anchor<number>(), group([arc<number>(1)])],
       "recipe-anchor-in",
+    );
+    expect(warn).not.toHaveBeenCalled();
+
+    warn.mockRestore();
+  });
+
+  it("(e⁗) every chain SEGMENT is tripwired, not just arc", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // `straight` and `crease` spend cursor material exactly as `arc` does, so
+    // each dangles the same way with no anchor in front of it.
+    for (const [name, seg] of [
+      ["straight", straight<number>()],
+      ["crease", crease<number>(0.2, 1)],
+    ] as const) {
+      warn.mockClear();
+      validatePipeline([seg], `recipe-dangling-${name}`);
+      expect(warn, name).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toMatch(/anchor/);
+    }
+
+    // …and anchored, all three are clean together.
+    warn.mockClear();
+    validatePipeline(
+      [anchor<number>(), arc<number>(1), straight<number>(), crease<number>(0.2, 1)], // prettier-ignore
+      "recipe-chain-clean",
     );
     expect(warn).not.toHaveBeenCalled();
 

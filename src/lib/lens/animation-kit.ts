@@ -1,6 +1,5 @@
-// The animation-authoring kit: the LensAnimation contract plus the slider↔uniform
-// param table shared by every animation file (animations.ts and the *-anims.ts
-// families beside it).
+// The animation-authoring kit: the LensAnimation contract plus the
+// slider↔uniform param table every animation file shares.
 import type { Channel, SceneState } from "./core/scene";
 
 /** Write a channel's value AND target so a scrubbed frame is a pure function
@@ -30,29 +29,22 @@ export interface LensAnimation {
   apply(p: number, state: SceneState): void;
   /** Push a `params` slider (v normalized 0..1) into its backing uniform. */
   setParam?(id: string, v: number): void;
-  /** Read a param's CURRENT physical value back off its uniform — the truth
-   *  after KNOB_LIMITS clamping, which is what the slider readout shows and
-   *  what a default worth baking looks like. */
+  /** Read a param's CURRENT physical value off its uniform — the truth after
+   *  knob-limit clamping, which is what the slider readout shows. */
   readParam?(id: string): number | undefined;
-  /** The MECHANISMS STAY MANUAL: this animation does not drive zoom/focus/
-   *  aperture, so the page keeps their Controls sliders live while it is
-   *  selected — the mechanisms compose with the pose (tuning the rose with
-   *  the aperture half-shut is the use case). `explode` stays
-   *  animation-owned either way. An animation that sets this MUST NOT
-   *  drive(zoom/focus/aperture) in apply(). */
+  /** THE MECHANISMS STAY MANUAL: the page keeps the zoom/focus/aperture
+   *  sliders live while this animation is selected, so an animation that sets
+   *  it MUST NOT drive those channels in apply(). */
   manualMech?: boolean;
-  /** Lifecycle: called when the animation is selected/deselected. Anything an
-   *  animation turns ON here (wipe, backdrop, palettes) it MUST turn off in
-   *  exit() — the seated render must be reachable from any animation by
-   *  selecting None. */
+  /** Selected/deselected. Anything turned ON in enter() MUST be turned off in
+   *  exit(): the seated render has to be reachable by selecting None. */
   enter?(): void;
   exit?(): void;
 }
 
-// Slider ↔ uniform mapping, declared ONCE per param: uniform = b + v·k (linear)
-// or pow^v (exponential). Both the default slider position and setParam derive
-// from the same table, so an untouched slider always reproduces its uniform's
-// own default and the first touch can never pop.
+// Slider ↔ uniform mapping, declared ONCE per param: b + v·k, or pow^v. The
+// default slider position and setParam derive from the same entry, so an
+// untouched slider reproduces the uniform's own default and cannot pop.
 export type ParamMap = { k: number; b?: number } | { pow: number };
 export const applyMap = (m: ParamMap, v: number) =>
   "pow" in m ? Math.pow(m.pow, v) : (m.b ?? 0) + v * m.k;
@@ -81,6 +73,5 @@ export const setParamOf = (specs: ParamSpec[]) => (id: string, v: number) => {
 };
 export const readParamOf = (specs: ParamSpec[]) => (id: string) =>
   specs.find((s) => s.id === id)?.u.value;
-/** The readout format: three significant digits, trailing zeros dropped — the
- *  same number a knobDefault would be written as. */
+/** Readout format: three significant digits, trailing zeros dropped. */
 export const fmtParam = (v: number): string => String(Number(v.toPrecision(3)));

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { NUM } from "../algebra";
+import { atPolar, polarOf } from "./fixture-state";
 import { gate } from "../gate";
 import { fixtureGateAt } from "./fixture-gate";
 import { makeRecipes, type Recipe } from "../recipes";
@@ -124,8 +125,7 @@ function ctxOf(
 // meridian, rotation accumulator zero.
 function seatedAt(ctx: OpCtx<number>): VertexState<number> {
   return {
-    theta: ctx.t0 + ctx.phi,
-    radius: ctx.R + ctx.off,
+    ...atPolar(ctx.t0 + ctx.phi, ctx.R + ctx.off),
     axial: ctx.yN * 40,
     rot: 0,
     aim: ctx.t0,
@@ -135,7 +135,7 @@ function seatedAt(ctx: OpCtx<number>): VertexState<number> {
 
 // The seated piece frame: the sector centre on the barrel, on the mid plane.
 function frameAt(p: Piece): PieceFrame<number> {
-  return { theta: p.t0, radius: p.R, axial: 0, orient: p.t0 };
+  return { ...atPolar(p.t0, p.R), axial: 0, orient: p.t0 };
 }
 
 // `partClass == c` as an exact 0/1, the algebra selSheet is written in — spelled
@@ -146,7 +146,7 @@ function isClass(ctx: OpCtx<number>, c: number): number {
 }
 
 function xz(v: VertexState<number>): [number, number] {
-  return [v.radius * Math.cos(v.theta), v.radius * Math.sin(v.theta)];
+  return [v.x, v.z];
 }
 
 function dist(a: [number, number], b: [number, number]): number {
@@ -168,8 +168,9 @@ function runAt(
   v: Vert,
   channel: number,
   over: Partial<OpCtx<number>> = {},
+  knobsOver: Record<string, number> = {},
 ): Run {
-  const knobs = recipe.knobDefaults;
+  const knobs = { ...recipe.knobDefaults, ...knobsOver };
   const gateAt = (c: number): { flight: number; stick: number } =>
     gate(NUM, recipe.gateSpec(knobs), c, {
       rank01: p.rank01,
@@ -269,12 +270,12 @@ describe("assemble at channel 1", () => {
   const rank0 = PIECES[0];
 
   // The pipeline is TWO items: the sheet group (everything scoped to the pieces
-  // that participate in the wrap) and the unscoped ladder. Inside the group: the
-  // two selectors, the WRAP CHAIN (a seam re-aim, the anchor, three arcs and the
-  // re-aim spent again), sep, and the reel-in group. The wrap is a SLICE now
-  // rather than one item — that is the whole point of the decomposition.
-  const SHEET_WRAP = 2;
-  const SHEET_SEP = 8;
+  // that participate in the wrap) and the ladder inside its own keep-scope
+  // group. Inside the sheet group: the three selectors, the WRAP CHAIN (a seam
+  // re-aim, the anchor, three arcs and the re-aim spent again), sep, and the
+  // reel-in group. The wrap is a SLICE rather than one item.
+  const SHEET_WRAP = 3;
+  const SHEET_SEP = 9;
 
   function sheetOf(items: OpItem<number>[]): OpItem<number>[] {
     const sheet = items[0];
@@ -418,8 +419,8 @@ describe("assemble at channel 1", () => {
   for (const g of WRAP_GOLDEN) {
     it(`(b‴) the wrap's calibration is pinned — ${g.name}`, () => {
       const out = wrapProbe(g.p, g.v, g.phase);
-      expect(out.theta).toBeCloseTo(g.want.theta, 10);
-      expect(out.radius).toBeCloseTo(g.want.radius, 10);
+      expect(polarOf(out).theta).toBeCloseTo(g.want.theta, 10);
+      expect(polarOf(out).radius).toBeCloseTo(g.want.radius, 10);
       expect(out.rot).toBeCloseTo(g.want.rot, 10);
     });
   }
@@ -458,6 +459,18 @@ describe("assemble at channel 1", () => {
                 isClass(c, PART_CLASS.accessory),
               )),
         ),
+        selFront<number>(
+          (c) =>
+            1 -
+            knobs.keepScope *
+              Math.max(
+                isClass(c, PART_CLASS.kept),
+                Math.max(
+                  isClass(c, PART_CLASS.glass),
+                  isClass(c, PART_CLASS.iris),
+                ),
+              ),
+        ),
         ...sheet.slice(SHEET_WRAP, SHEET_SEP),
         spread<number>(knobs.sep),
         group<number>([
@@ -467,17 +480,31 @@ describe("assemble at channel 1", () => {
           swirl<number>(knobs.swirl, { exp: 0.65, rankScale: true }),
         ]),
       ]),
-      ladder<number>("attr", 0.4 * knobs.depth),
+      group<number>([
+        selFront<number>(
+          (c) =>
+            1 -
+            knobs.keepScope *
+              Math.max(
+                isClass(c, PART_CLASS.kept),
+                Math.max(
+                  isClass(c, PART_CLASS.glass),
+                  isClass(c, PART_CLASS.iris),
+                ),
+              ),
+        ),
+        ladder<number>("attr", 0.4 * knobs.depth),
+      ]),
     ];
     const asBuilt = runPipeline(items, seated, frame, ctx).v;
     const byHand = runPipeline(hand, seated, frame, ctx).v;
-    expect(byHand.theta).toBeCloseTo(asBuilt.theta, 12);
-    expect(byHand.radius).toBeCloseTo(asBuilt.radius, 12);
+    expect(byHand.x).toBeCloseTo(asBuilt.x, 12);
+    expect(byHand.z).toBeCloseTo(asBuilt.z, 12);
     expect(byHand.axial).toBeCloseTo(asBuilt.axial, 12);
     expect(byHand.rot).toBeCloseTo(asBuilt.rot, 12);
 
     // PERTURB: run the slow sep slide BEFORE the wrap. The chain's `anchor`
-    // REPLACES theta and radius off the material coordinate, so a translation
+    // REPLACES the point off the material coordinate, so a translation
     // placed ahead of it is erased — the order is load-bearing, not cosmetic.
     const swappedSheet = [
       ...sheet.slice(0, SHEET_WRAP),
@@ -559,6 +586,43 @@ describe("assemble at channel 1", () => {
     }
   });
 
+  it("(b⁶) the KEEP-SCOPE freezes the mechanism the cards scene reveals", () => {
+    // story/envelopes.ts drives `keepScope` to 1 across the cards chapter so the
+    // departure uncovers the mechanism in place. Driven through the pipeline
+    // here, because the goldens' grid is all structure: a sign error in
+    // ops/house selNotKept would leave every row of it green.
+    const KEPT: { name: string; over: Partial<OpCtx<number>> }[] = [
+      { name: "a kept structure piece", over: { partClass: PART_CLASS.kept } },
+      { name: "a glass element", over: { partClass: PART_CLASS.glass } },
+      { name: "an iris blade", over: { partClass: PART_CLASS.iris } },
+    ];
+    for (const { name, over } of KEPT)
+      for (const p of PIECES)
+        for (const v of VERTS) {
+          const r = runAt(recipe, p, v, 1, over, { keepScope: 1 });
+          expect(
+            dist(xz(r.out), xz(r.seated)),
+            `${name}: not thrown`,
+          ).toBeCloseTo(0, 9);
+          expect(
+            r.out.axial - r.seated.axial,
+            `${name}: not laddered`,
+          ).toBeCloseTo(0, 9);
+          expect(r.out.rot, `${name}: normals untouched`).toBeCloseTo(0, 9);
+        }
+
+    // …and it is a SCOPE, not a kill switch: a wedge still gets the whole
+    // composition at the same knob value…
+    const wedge = runAt(recipe, PIECES[0], VERTS[0], 1, {}, { keepScope: 1 });
+    expect(dist(xz(wedge.out), xz(wedge.seated))).toBeGreaterThan(1);
+    // …and at 0 — the sky chapter's own value — the kept piece moves again,
+    // which is what makes the block above a scope rather than a dead branch
+    const free = runAt(recipe, PIECES[0], VERTS[0], 1, {
+      partClass: PART_CLASS.kept,
+    });
+    expect(dist(xz(free.out), xz(free.seated))).toBeGreaterThan(1);
+  });
+
   it("(b⁵) participants get the WHOLE sheet composition — sector-shaped structure, the hardware bolted to it, and the decals painted on it", () => {
     // Three ways in, one composition. The sector piece is in on its measured
     // span; the screw is in on the adopted flag (its frame IS its host wedge's,
@@ -586,11 +650,8 @@ describe("assemble at channel 1", () => {
           // …and it is the SAME composition the reference sheet piece gets —
           // participation is the only thing these ctxs change.
           const ref = runAt(recipe, p, v, 1);
-          expect(r.out.theta, `${name}: theta`).toBeCloseTo(ref.out.theta, 12);
-          expect(r.out.radius, `${name}: radius`).toBeCloseTo(
-            ref.out.radius,
-            12,
-          );
+          expect(r.out.x, `${name}: x`).toBeCloseTo(ref.out.x, 12);
+          expect(r.out.z, `${name}: z`).toBeCloseTo(ref.out.z, 12);
           expect(r.out.axial, `${name}: axial`).toBeCloseTo(ref.out.axial, 12);
           expect(r.out.rot, `${name}: rot`).toBeCloseTo(ref.out.rot, 12);
         }
@@ -703,8 +764,8 @@ describe("explode's default selection", () => {
       const decal = runAt(recipe, p, VERTS[2], 1, {
         partClass: PART_CLASS.decal,
       });
-      expect(decal.out.theta).toBeCloseTo(ref.out.theta, 12);
-      expect(decal.out.radius).toBeCloseTo(ref.out.radius, 12);
+      expect(decal.out.x).toBeCloseTo(ref.out.x, 12);
+      expect(decal.out.z).toBeCloseTo(ref.out.z, 12);
       expect(decal.out.axial).toBeCloseTo(ref.out.axial, 12);
     }
   });
@@ -746,8 +807,8 @@ describe("peel's scoped selection", () => {
       for (const v of VERTS) {
         const r = runAt(recipe, OUTER, v, 1, over);
         const ref = runAt(recipe, OUTER, v, 1);
-        expect(r.out.theta, `${name}: theta`).toBeCloseTo(ref.out.theta, 12);
-        expect(r.out.radius, `${name}: radius`).toBeCloseTo(ref.out.radius, 12);
+        expect(r.out.x, `${name}: x`).toBeCloseTo(ref.out.x, 12);
+        expect(r.out.z, `${name}: z`).toBeCloseTo(ref.out.z, 12);
         expect(r.out.rot, `${name}: rot`).toBeCloseTo(ref.out.rot, 12);
       }
     }

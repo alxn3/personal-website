@@ -1,9 +1,9 @@
-// Public API barrel for the lens module.
-// Pages and components import ONLY from this barrel ("../lib/lens");
-// deep imports into core/, materials/, or story/ are internal to the module.
+// Public API barrel for the lens module — the ONLY import surface for pages
+// and components ("../lib/lens"). Deep imports into core/, materials/, ops/ or
+// story/ are internal to the module.
 export { initScene } from "./core/scene";
-// Channel registry derivations: the page rests animation-owned channels to
-// their defaults on switch/None without re-listing them (the old four-list trap).
+// Channel registry derivations, so the page can rest animation-owned channels
+// to their defaults on switch/None without re-listing them.
 export { CHANNEL_DEFAULTS, ANIM_RESET_CHANNELS } from "./core/scene";
 export type {
   AccessoryGroup,
@@ -11,26 +11,21 @@ export type {
   PathViz,
   TransitionName,
 } from "./core/scene";
-// The op deform host (ops/host.ts): the live channel/knob uniforms the pages
-// scrub. WHICH recipes a scene folds in is not out here — `setActiveRecipes` is
-// process-global state that initScene owns and calls in load order, so a page
-// choosing recipes does it through `SceneOptions.recipes`.
+// The op deform host's live knob uniforms. WHICH recipes a scene folds in is
+// not exposed: that is process-global state initScene owns, so a page picks
+// recipes through `SceneOptions.recipes`.
 export { resetRecipeKnobs } from "./ops/host";
 export { watchTheme } from "./core/theme";
 export { startHeroStory } from "./story/hero-driver";
 export type { HeroDriver } from "./story/hero-driver";
 export { STORY, TRACK_HEIGHT_CSS, rangeOf } from "./story/story";
-// Caption bands: the hero's caption LAYOUT, derived from the same table the
-// canvas reads. LensStory/LensSceneContent place their band elements from
-// these at build time — see story/story.ts.
+// Caption LAYOUT, derived from the same table the canvas reads — see
+// story/story.ts.
 export { CAPTION_FADE_CSS, bandOf } from "./story/story";
 export { MODEL_URL, ACCESSORIES_URL } from "./core/model";
-// The /lens-only animation bench, loaded LAZILY on purpose: the animation
-// families' *_PARAMS tables call recipeKnob() at module scope, which is
-// side-effectful to Rollup — tree-shaking can NOT drop them from a static
-// graph, so a static `ANIMATIONS` re-export shipped the whole bench layer in
-// the shared chunk the homepage hero loads. Only lens.astro consumes it
-// (dev/analysis.ts reaches it through its own dynamic chain).
+// LAZY ON PURPOSE: the animation families' *_PARAMS tables call recipeKnob()
+// at module scope, which Rollup treats as side-effectful, so a static
+// re-export would ship the whole bench in the homepage hero's chunk.
 // Type exports are erased at build, so they stay direct.
 export const loadAnimations = () => import("./animations");
 export type { LensAnimation } from "./animations";

@@ -12,10 +12,10 @@ import {
 } from "./animation-kit";
 export type { LensAnimation } from "./animation-kit";
 export { fmtParam } from "./animation-kit";
-// Sliders write the LIVE recipe knobs (ops/host recipeKnob), which are the
-// uniforms the deform host folds. recipeKnob hands back a CLAMPING view where
-// KNOB_LIMITS applies, so a map below that would leave the limit is clamped to
-// it here as well (a slider must not have a dead zone).
+// Sliders write the LIVE recipe knobs, which are the uniforms the deform host
+// folds. recipeKnob returns a CLAMPING view, so a map that would leave a
+// knob's limit is clamped here too — keep the maps inside the limits or the
+// slider gets a dead zone.
 import { recipeKnob } from "./ops/host";
 
 const TAU = Math.PI * 2;
@@ -49,8 +49,7 @@ const ASSEMBLE_PARAMS: ParamSpec[] = [
     u: recipeKnob("assemble", "rewind"),
     map: { k: 1.9 },
   },
-  // exponential: the top of the slider must be GENUINELY flat (~30R — a linear
-  // multiplier capped low never straightens the arc)
+  // exponential: the top of the slider must be GENUINELY flat
   {
     id: "flatten",
     label: "Flatten",
@@ -65,8 +64,7 @@ const ASSEMBLE_PARAMS: ParamSpec[] = [
     u: recipeKnob("assemble", "depth"),
     map: { k: 2 },
   },
-  // 0..1 — KNOB_LIMITS caps curl at 1 (past 5/3 the roll radius zeroes and the
-  // gate divides by it), which the slider top already sits on.
+  // capped at 1: past 5/3 the roll radius zeroes and the gate divides by it
   {
     id: "curl",
     label: "Curl",
@@ -74,9 +72,8 @@ const ASSEMBLE_PARAMS: ParamSpec[] = [
     u: recipeKnob("assemble", "curl"),
     map: { k: 1 },
   },
-  // 0..0.75 — the gate derives its window as 1 − stagger − partStagger, which
-  // must stay positive (ops/host JOINT_SUMS caps the PAIR at 0.9; this stays
-  // under it whatever partStagger a formation preset left behind)
+  // the gate's window is 1 − stagger − partStagger and must stay positive, so
+  // this stops under the joint cap whatever partStagger is left behind
   {
     id: "stagger",
     label: "Stagger",
@@ -84,8 +81,7 @@ const ASSEMBLE_PARAMS: ParamSpec[] = [
     u: recipeKnob("assemble", "stagger"),
     map: { k: 0.75 },
   },
-  // more roll-on = LOWER split (the aH boundary): 0.95 .. 0.15 — exactly the
-  // KNOB_LIMITS split range
+  // inverted: more roll-on = LOWER split (the aH boundary)
   {
     id: "wrap",
     label: "Wrap share",
@@ -93,9 +89,7 @@ const ASSEMBLE_PARAMS: ParamSpec[] = [
     u: recipeKnob("assemble", "split"),
     map: { b: 0.95, k: -0.8 },
   },
-  // 0.1..1, NOT 0..1: KNOB_LIMITS floors overlap at 0.1 (the stick ramp's
-  // width, rollEnd 0.9 − split 0.95 + overlap), so the slider bottom is moved
-  // onto the floor rather than clamping the bottom tenth into a dead zone.
+  // floored at 0.1 (the stick ramp's width) so the bottom is not a dead zone
   {
     id: "overlap",
     label: "Reel-in",
@@ -110,8 +104,8 @@ const ASSEMBLE_PARAMS: ParamSpec[] = [
     u: recipeKnob("assemble", "snap"),
     map: { k: 1 },
   },
-  // Sector SOLO — width at the top (TAU) is fully open (bit-exact identity);
-  // pull it down to run the reassembly on one sector only.
+  // Sector SOLO — TAU at the top is fully open (bit-exact identity); pull it
+  // down to run the reassembly on one sector only.
   {
     id: "maskWidth",
     label: "Sector width",
@@ -128,16 +122,10 @@ const ASSEMBLE_PARAMS: ParamSpec[] = [
   },
 ];
 
-// The ROSE bloom (ops/recipes.ts `rose` — the origami prototype): a slider on
-// every taste knob, so the bloom is tunable live while the progress slider
-// scrubs the channel. Ranges bracket the defaults with real headroom; the
-// gate-feeding stagger map mirrors KNOB_LIMITS exactly (≤ 0.85), and every
-// default lands on an integer slider stop (stagger 0.34 = stop 40 — the old
-// 0.6 default's off-grid exception to the no-pop contract is retired).
-//
-// `crease`/`creasePos`/`curl` are the FOLD PATTERN — the reference photo's
-// flat facets and snapped corners. `curl` is a fold ANGLE now (radians of
-// reflex at the free corners), not the old rolled lip's curvature.
+// The ROSE bloom (ops/recipes.ts `rose`): a slider on every taste knob, so the
+// bloom is tunable live while the progress slider scrubs the channel. Every
+// default must land on an integer slider stop, or that slider pops on first
+// touch. `crease`/`creasePos`/`curl` are the FOLD PATTERN.
 const ROSE_PARAMS: ParamSpec[] = [
   {
     id: "lift",
@@ -158,14 +146,12 @@ const ROSE_PARAMS: ParamSpec[] = [
     label: "Hinge",
     hint: "rear — front",
     u: recipeKnob("rose", "hinge"),
-    // −40…60 model-mm: the barrel's own axial extent (y 1…76) has to be
-    // reachable DEEP — the old −45…15 stopped at its first 15 mm, short of
-    // the seated station (20) where the lever-arm sign flips mid-piece and
-    // the tilt hinges instead of sliding.
+    // model-mm, spanning the barrel's axial extent: the range must reach past
+    // the seated station, where the lever-arm sign flips mid-piece.
     map: { b: -40, k: 100 },
   },
-  // The FOLD PATTERN pair (ops/recipes.ts `crease`): how hard each side crease
-  // breaks, and where the two of them sit across the petal.
+  // The fold-pattern pair: how hard each side crease breaks, and where the two
+  // sit across the petal.
   {
     id: "crease",
     label: "Crease",
@@ -173,8 +159,7 @@ const ROSE_PARAMS: ParamSpec[] = [
     u: recipeKnob("rose", "crease"),
     map: { k: 2 },
   },
-  // 0.1…0.9 — inside KNOB_LIMITS' [0.05, 0.95], so the slider cannot reach the
-  // clamp and no stop is dead.
+  // kept inside the knob's clamp, so no slider stop is dead
   {
     id: "creasePos",
     label: "Panel",
@@ -182,9 +167,8 @@ const ROSE_PARAMS: ParamSpec[] = [
     u: recipeKnob("rose", "creasePos"),
     map: { b: 0.1, k: 0.8 },
   },
-  // 0.6–6.6mm, KNOB_LIMITS exactly (the width divides). Default 1.2 = stop 10.
-  // Narrow = knife line; widen past a shell's wall thickness to clear the
-  // inner-surface overlap on thick panels.
+  // mm; the width divides, so it may not reach 0. Widen past a shell's wall
+  // thickness to clear the inner-surface overlap on thick panels.
   {
     id: "band",
     label: "Crease band",
@@ -230,13 +214,12 @@ const ROSE_PARAMS: ParamSpec[] = [
   {
     id: "rise",
     label: "Tier",
-    // Anchored at the heart: the slider deepens the dome BOTH ways from a
-    // fixed centre — heart up, rim down (ops/recipes.ts's tier).
+    // anchored at the heart: deepens the dome both ways from a fixed centre
     hint: "flat nest — deep cup",
     u: recipeKnob("rose", "rise"),
     map: { k: 40 },
   },
-  // 0..0.85 — exactly the KNOB_LIMITS range (the `during` window's own bound)
+  // bounded by the `during` window the gate derives from it
   {
     id: "stagger",
     label: "Wave",
@@ -251,10 +234,8 @@ const CORE_ANIMS: LensAnimation[] = [
     id: "assemble",
     label: "Reassemble",
     hint: "flies home — sheets wrap on",
-    // ONE channel: the wedges start fully disassembled (p=0 ⇒ assemble 1) and
-    // seat home by p=1. The assemble RECIPE (ops/recipes.ts) owns every
-    // per-wedge stagger, flatten and wrap roll-on — nothing else is driven
-    // here. Live knobs come from the ASSEMBLE_PARAMS table.
+    // ONE channel: wedges start disassembled (p=0 ⇒ assemble 1) and seat home
+    // by p=1. The assemble RECIPE owns every per-wedge stagger and roll-on.
     params: paramsOf(ASSEMBLE_PARAMS),
     apply(p, state) {
       drive(state, "zoom", 0);
@@ -276,12 +257,10 @@ const ROSE_ANIMS: LensAnimation[] = [
     params: paramsOf(ROSE_PARAMS),
     setParam: setParamOf(ROSE_PARAMS),
     readParam: readParamOf(ROSE_PARAMS),
-    // The mechanisms COMPOSE with the bloom (owner: the zoom/focus/aperture
-    // sliders "are part of the animation too") — so apply() must not zero
-    // them; the page keeps their sliders live.
+    // The mechanisms COMPOSE with the bloom, so apply() must not zero them.
     manualMech: true,
     apply(p, state) {
-      // Straight progress, the bench law: the recipe owns the whorl wave.
+      // straight progress — the recipe owns the whorl wave
       drive(state, "rose", p);
     },
   },

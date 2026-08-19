@@ -1,21 +1,16 @@
-// ============================================================================
-// THE PRESCRIPTION — the 13 optical elements as an AUTHORED CONSTANT TABLE, in
-// gltf-frame millimetres (optical axis = gltf +Y, front at +Y; world conversion
-// is core/scene's MODEL_SCALE = 0.05 with the front at world +X).
+// The prescription: the 13 optical elements as an authored constant table, in
+// gltf-frame millimetres (optical axis = gltf +Y, front at +Y; core/scene's
+// MODEL_SCALE = 0.05 puts the front at world +X).
 //
-// House pattern, same as the mechanism constants: MEASURED from the shipped
-// model once, then authored here as constants. The measuring instrument is
-// dev/prescription-probe.ts — run `window.__lensPrescriptionProbe()` on the
-// /lens bench with every channel at rest and paste its JSON over the table
-// below. Nothing at runtime re-derives these.
+// Authored, never re-derived at runtime. Re-measure with
+// `window.__lensPrescriptionProbe()` (dev/prescription-probe.ts) on the /lens
+// bench with every channel at rest, and paste its JSON over the table below.
 //
 // SIGN CONVENTION (this file's, not a textbook's): a surface is
 //     f(q) = c·|q|² − 2·q_y = 0,   q = p − (0, yMm, 0)
-// so its centre of curvature sits at y = yMm + 1/c. POSITIVE c therefore puts
-// the centre toward the FRONT (+Y) — the surface is concave-front, convex-rear,
-// and its rim lies forward of its vertex. c = 0 is flat, with no branch
-// anywhere: the whole trace is written in curvature, never in radius.
-// ============================================================================
+// so its centre of curvature sits at y = yMm + 1/c, and positive c puts that
+// centre toward the FRONT (+Y). c = 0 is flat — the trace is written in
+// curvature, never in radius, so there is no branch anywhere.
 
 /** One refracting surface. */
 export interface OpticalSurface {
@@ -40,56 +35,43 @@ export interface PrescriptionEntry {
 
 /** The focus throw, in mm of axial element travel at focus = 1.
  *
- *  A LITERAL, deliberately not an import: ops/mechanism.ts pulls in
- *  three/webgpu, and the whole optics tree stays three-free so its tests run on
- *  the NUM backend with no renderer. __tests__/prescription.test.ts (f) is the
- *  tripwire that keeps this equal to MECHANISM.focusMm. */
+ *  A LITERAL, deliberately not an import of MECHANISM.focusMm: ops/mechanism.ts
+ *  pulls in three/webgpu, and optics/ stays three-free so its tests run with no
+ *  renderer. __tests__/prescription.test.ts (f) keeps the two equal. */
 export const FOCUS_MM: number = 1.5;
 
-/** The iris stop. Not a member of the 13-entry table — it is a stop plane, not
- *  glass — and every number is a knob. The clear semi-diameter is driven by the
- *  APERTURE CHANNEL, which runs 0 = f/2.8 wide open → 1 = f/22 closed down
- *  (ops/mechanism.ts MechanismDrive), so the radius runs irisMaxMm → irisMinMm
- *  as the channel rises. The door is real: rays outside it die.
+/** The iris stop — a stop plane, not glass, so not a member of the table below.
+ *  The clear semi-diameter runs irisMaxMm → irisMinMm as the aperture channel
+ *  rises (0 = f/2.8 wide open → 1 = f/22). Rays outside it die.
  *
- *  irisMaxMm is CAPPED by the smaller of the two clear apertures straddling the
- *  stop — Element_06's rear, 5.802 (Element_07's front is 7.803). Open any
- *  wider and the glass, not the door, is the narrowest thing in the gap, so the
- *  first stretch of the aperture channel would clip nothing: a dead zone at the
- *  open end of the dial. __tests__/prescription.test.ts (g) holds the cap. */
+ *  irisMaxMm is CAPPED by the smaller clear aperture straddling the stop
+ *  (Element_06's rear); open wider and the glass is the narrowest thing in the
+ *  gap, so the dial's open end would clip nothing. Held by
+ *  __tests__/prescription.test.ts (g). */
 export const IRIS = {
   yMm: 37.5,
   irisMinMm: 1.2,
   irisMaxMm: 5.8,
 };
 
-/** The physics knobs (spec §2), all live-tunable through `window.__lensOptics`
- *  ORPHANED: the per-pixel refraction trace that read them is gone (cleanup
- *  wave 1), so nothing consumes this table today — kept with the measured
- *  prescription it belongs to. */
+/** The physics knobs, live-tunable through `window.__lensOptics`.
+ *  ORPHANED: the per-pixel refraction trace that read them is gone, so nothing
+ *  consumes this table today. */
 export const OPTICS_KNOBS = {
-  /** exaggerates bend angles: 0 = glass is vacuum, 1 = honest physics, >1 = drama */
+  /** exaggerates bend angles: 0 = vacuum, 1 = honest physics, >1 = drama */
   warpGain: 1,
   /** per-channel IOR offset (R = ior−d, G = ior, B = ior+d); 0 = no fringing */
   dispersion: 0.015,
-  /** how much the focus channel moves focusRide surfaces; 0 = physics ignores the dial */
+  /** how far the focus channel moves focusRide surfaces; 0 = ignore the dial */
   focusCouple: 1,
-  /** fades the whole warp background in; 0 = the sky is black behind the lens */
+  /** fades the warp background in; 0 = the sky is black behind the lens */
   skyMix: 0,
 };
 
-// MEASURED 2026-08-07 by window.__lensPrescriptionProbe (dev/prescription-probe.ts,
-// v2 normal-classified). Only `ior` and `focusRide` are authored on top of the
-// probe's output — they are look/rig facts the probe cannot see. IOR starts at
-// the model's shipped glass index (core/model.ts buildLensMaterial: `ior: 1.52`)
-// for every element; per-element values are look-tuning knobs from here on.
-//
-// THREE CEMENTED PAIRS are clamped on paste — E01/E02, E04/E05 and E09/E10 came
-// back coincident to within ±14µm of authoring slop, so each interface's two
-// yMm values are set to their mean (3 dp) and the surfaces share one plane.
-// Curvatures are left exactly as measured. Both sides carry ior 1.52, so the
-// glass→air→glass pair nets to ~identity (the two curvatures still differ
-// slightly) — which is what cement is.
+// `ior` and `focusRide` are authored on top of the probe's output — look/rig
+// facts the probe cannot see. The cemented pairs (E01/E02, E04/E05, E09/E10)
+// have each interface's two yMm clamped to their mean on paste, so the two
+// surfaces share one plane; curvatures stay exactly as measured.
 /* prettier-ignore */
 export const PRESCRIPTION: PrescriptionEntry[] = [
   { id: "Element_01", front: { c: -0.037001, yMm: 73.208, apertureMm: 18.210 }, rear: { c: -0.047592, yMm: 71.832, apertureMm: 18.210 }, ior: 1.52, focusRide: 0 }, // cemented

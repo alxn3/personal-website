@@ -2,33 +2,24 @@
 /**
  * Arbitrary overlay content for one scroll-story scene (the lens hero).
  *
- * Drop ANY markup/components inside. The block is placed by LAYOUT, not by the
- * scroll driver: it renders inside a BAND — its scene's slice of the scroll
- * track, sized from CAPTION_BANDS (lib/lens/story/story.ts) — and is
- * `position: sticky` within it, so it slides in, pins in its slot and leaves
- * because of where it sits in the document. It shows on scroll whether or not
- * the 3D scene ever boots.
- *
  *   <LensSceneContent scene="zoom" pos="left">
  *     ...anything — headings, charts, images, custom components...
  *   </LensSceneContent>
  *
- * `pos` places the block where the parked lens isn't, and picks the sticky slot
- * it pins into. On phones every block collapses to a scrimmed BOTTOM band
- * (`pos="top"` keeps a top band) so content never floats mid-screen over the
- * wireframe. Placement/responsive CSS lives HERE (scoped to the wrapper);
- * typography of the slotted content is the caller's business, and the fade
- * itself is LensStory.astro's (one system for every band).
+ * Placed by LAYOUT, not by the scroll driver: it renders inside a BAND — its
+ * scene's slice of the scroll track, sized from CAPTION_BANDS in
+ * story/story.ts — and is `position: sticky` within it, so it slides in, pins
+ * and leaves because of where it sits in the document, whether or not the 3D
+ * scene ever boots. A `scene` no story scene owns is a BUILD ERROR.
  *
- * A `scene` no story scene owns is a BUILD ERROR — bandOf throws below.
+ * `pos` places the block where the parked lens isn't and picks the sticky slot.
+ * Placement/responsive CSS lives HERE; the slotted content's typography is the
+ * caller's, and the fade is LensStory.astro's (one system for every band).
  *
- * The scroll driver, when there is one, writes progress custom properties onto
- * the wrapper each frame for content-specific CSS effects: `--beat-local` (raw
- * scene-local progress 0..1), `--beat-progress` — a smoothstepped 0→1 sweep over
- * the `progressFrom`/`progressTo` window (in scene-local 0..1; defaults 0 and 1,
- * i.e. the whole scene) — and `--beat-visibility`, the story table's own fade
- * band for the block (what the CSS fade approximates; the pins ride it). They
- * are pure enhancement: nothing about the block's visibility depends on them.
+ * The scroll driver, when there is one, writes `--beat-local`,
+ * `--beat-progress` (smoothstepped over the progressFrom/To window) and
+ * `--beat-visibility` onto the wrapper each frame. They are pure enhancement —
+ * nothing about the block's visibility depends on them.
  */
 import { bandOf } from "../lib/lens";
 
@@ -73,27 +64,13 @@ const band = bandOf(scene);
 
 <style>
   /* The band is a COLUMN so a bottom-slot caption can sit at its END: a sticky
-     `bottom` offset only ever shifts a box UP, and never past its containing
-     block, so a caption left at the band's top could not move at all — it would
-     scroll through the slot instead of pinning in it.
+     `bottom` offset only ever shifts a box UP, so a caption left at the band's
+     top would scroll through the slot instead of pinning in it.
 
-     SLOT LAW (spec §6 — fade covers travel). LensStory.astro fades a caption in
-     over the viewport AFTER its band's top edge reaches the viewport top, and
-     out over the viewport BEFORE its band's bottom edge reaches the viewport
-     bottom. So every slot below only has to satisfy one inequality to be dark
-     for the whole of its travel, at every viewport, with no per-slot tuning:
-
-         slot offset + caption height ≤ 100svh
-
-     A `top: T` caption rides its band's top edge for the first (100svh − T) of
-     travel and unpins (T + h) before the band's view range ends; a `bottom: X`
-     one parks after (X + h) and unpins (100svh − X) before the end — both
-     within the windows exactly when the inequality holds. Worst case here is a
-     desktop left/right block: 50svh + h, so a caption taller than half the
-     viewport would start lighting up mid-travel.
-
-     Every offset below is svh, matching the bands they stick inside — see the
-     unit law in story.ts. */
+     SLOT LAW — every slot below must satisfy `slot offset + caption height ≤
+     100svh`, which is exactly the condition for the caption to be dark for the
+     whole of its travel at every viewport. Offsets are svh, matching the bands
+     they stick inside. */
   .cap-band {
     display: flex;
     flex-direction: column;
@@ -106,21 +83,17 @@ const band = bandOf(scene);
     position: sticky;
     display: flex;
     flex-direction: column;
-    /* shrink-to-fit, exactly as the absolutely-positioned block used to be —
-       the pinned slots below reproduce that box. A sticky caption is IN FLOW,
-       so left to `auto` it would fill its band up to the max-width and re-wrap
-       the copy of anything narrower than its cap. */
+    /* shrink-to-fit: a sticky caption is IN FLOW, so left to `auto` it would
+       fill its band to the max-width and re-wrap narrower copy. */
     width: fit-content;
     max-width: 400px;
     will-change: opacity;
   }
 
-  /* PINNED SLOTS — the on-screen positions these blocks held inside the pinned
-     stage, reproduced exactly: that is what the story table's per-scene cam.xs
-     framing was tuned against. The sticky offset IS the pinned position; the
-     horizontal placement is a margin off the band's column edge (the band is
-     the old .cap-frame column, so 1.5rem/2rem land where they always did —
-     `left`/`right` would be sticky offsets here, not placement). */
+  /* PINNED SLOTS — the story table's per-scene cam.xs framing is tuned against
+     these positions. The sticky offset IS the pinned position; horizontal
+     placement is a margin off the band's column edge, since `left`/`right`
+     would be sticky offsets here rather than placement. */
   .lens-cap[data-pos="left"] {
     top: 50svh;
     transform: translateY(-50%);
@@ -164,9 +137,8 @@ const band = bandOf(scene);
   .lens-cap[data-pos="bottom"] :global(.cap-ghost) {
     display: none;
   }
-  /* scrim behind blocks that sit over the lens (top/bottom centre) so text
-     always wins against the wireframe. --scrim-rgb is set per THEME by the page
-     (#lens-hero) — dark stage vs warm paper — and inherits down to here. */
+  /* scrim behind blocks that sit over the lens so text wins against the
+     wireframe. --scrim-rgb is set per THEME by the page and inherits here. */
   .lens-cap[data-pos="top"]::before,
   .lens-cap[data-pos="bottom"]::before {
     content: "";
@@ -185,23 +157,19 @@ const band = bandOf(scene);
   }
 
   /* ---- mobile / portrait: every block collapses into a scrimmed BOTTOM band
-         (pos="top" keeps a top band) — never floating mid-screen over the lens.
-         The slot is the same one, expressed as a sticky bottom offset. */
+         (pos="top" keeps a top band), never floating over the lens. */
   @media (max-width: 760px) {
     .cap-band,
     .cap-band[data-pos] {
-      /* every block shares the ONE bottom slot here, so consecutive captions
-         hand over IN PLACE — a cross-dissolve rather than one sliding out past
-         the other. The windows are the same as everywhere else: the slot law
-         above holds with room to spare (11svh + a phone caption's ≤250px). */
+      /* every block shares the ONE bottom slot, so consecutive captions hand
+         over IN PLACE — a cross-dissolve, not one sliding past the other. */
       justify-content: flex-end;
     }
     .cap-band[data-pos="top"] {
       justify-content: flex-start;
     }
-    /* [data-pos] keeps specificity level with the desktop placement rules, so
-       source order (this block is later) wins — a bare .lens-cap would lose
-       text-align to .lens-cap[data-pos="right"] and leave ragged-right titles */
+    /* [data-pos] keeps specificity level with the desktop placement rules so
+       source order wins; a bare .lens-cap would lose text-align to them */
     .lens-cap,
     .lens-cap[data-pos] {
       top: auto !important;
@@ -210,9 +178,8 @@ const band = bandOf(scene);
       margin-inline: auto !important;
       text-align: center;
       align-items: center;
-      /* the 50% term reproduces the width these captions had before the bands
-         existed (an abspos box at left: 50%, so shrink-to-fit got half the
-         column) — the framing in the story table's cam.xs was tuned against it */
+      /* the 50% term is the width the story table's cam.xs framing was tuned
+         against */
       max-width: min(88vw, 460px, 50%);
     }
     .lens-cap[data-pos="top"] {

@@ -8,7 +8,8 @@ import { makeRecipes } from "../../ops/recipes";
 import { CHANNEL_DEFAULTS } from "../../core/scene";
 import { RANGES, windowEdges } from "../story";
 import { DEFORM_RECIPES } from "../cost";
-import { ROSE_PULSE } from "../envelopes";
+import { CARDS_APART, ROSE_PULSE, assembleKeepScopeAt } from "../envelopes";
+import { isPeelKeep } from "../../core/parts";
 import { storyStateAt } from "../state";
 import {
   FLOW_DIMS,
@@ -489,13 +490,11 @@ describe("the pipeline under the probes is the goldens' pipeline", () => {
   it("reproduces explode's pinned rows for the rank-0 piece", () => {
     // recipe-goldens GOLDEN.explode, PIECES[0] × PROBES[0] × the four channels
     const lanes = lanesOf(0.3, 10, 0, 0, 2.5);
-    // (the theta column moved with the spiral — explode's `spin` knob is
-    // 0.7 rad now; recipe-goldens' own header carries the why)
     const rows: [number, [number, number, number]][] = [
       [0.25, [0.7, 10, -20]],
-      [0.5, [0.46793960967747383, 14.298272680429886, -19.845859348467272]],
-      [0.75, [-0.0456245571536491, 29.594939357229784, -19.31772857436145]],
-      [1, [-0.2997399815328022, 38.90598908216705, -19]],
+      [0.5, [0.7, 10, -20]],
+      [0.75, [0.498889433073101, 13.618614084656754, -19.86985185321251]],
+      [1, [-0.2997399815328021, 38.90598908216705, -19]],
     ];
     for (const [channel, g] of rows) {
       const live = [
@@ -675,20 +674,131 @@ describe("the state at rest, and the state's own algebra", () => {
           `${row.key} @${p}`,
         ).toBe(1);
     }
-    // …while a piece with a MEASURED span still reports one (the map's own
-    // cards outlier, compressed to 0.7677 where it is furthest from its seat)
-    // Pinned at the sample grid's OWN extreme rather than at a hand-picked p:
-    // the cards scene drives the wrap channel now (story/envelopes.ts
-    // CARDS_WRAP — its transition IS the reassembly), so the reading that used
-    // to be this piece's most compressed sample (0.7677 at p 0.2612, inside the
-    // cards scene) is no longer the extreme; the sky chapter's reveal is.
+    // …while a piece with a MEASURED span still reports one. Pinned at the
+    // sample grid's OWN extreme rather than at a hand-picked p.
     const measured = FLOW_SAMPLE_PS.map((q) => ({
       p: q,
       stretch: pieceStateAt(q, "Ring_Focus_Seg4", table).stretch,
     }));
     const worst = measured.reduce((a, b) => (b.stretch < a.stretch ? b : a));
-    expect(worst.p).toBeCloseTo(0.8643537, 6);
-    expect(worst.stretch).toBeCloseTo(0.619, 3);
+    expect(worst.p).toBeCloseTo(0.1791837, 6);
+    expect(worst.stretch).toBeCloseTo(0.7677, 3);
+  });
+
+  // ── the composed-displacement probe ──
+  // The piece's own seated corners and mid-points, in its local frame: enough
+  // to catch a fold, which moves the sheet's ends furthest.
+  const ALL = makeRecipes(NUM);
+  type Pt = [number, number, number];
+  const probePoints = (l: (typeof table.pieces)[number]["lanes"]): Pt[] => {
+    const pts: Pt[] = [];
+    for (const th of [l.t0 - l.halfSpan, l.t0, l.t0 + l.halfSpan])
+      for (const y of [l.yMin, (l.yMin + l.yMax) / 2, l.yMax])
+        pts.push([l.R * Math.cos(th), y, l.R * Math.sin(th)]);
+    return pts;
+  };
+  const maxDisp = (
+    l: (typeof table.pieces)[number]["lanes"],
+    live: LiveRecipe[],
+    pts: Pt[],
+  ): number => {
+    if (live.length === 0) return 0;
+    const field = pieceField(l, live);
+    const out: Pt = [0, 0, 0];
+    let m = 0;
+    for (const q of pts) {
+      const d = field(q[0], q[1], q[2], out);
+      m = Math.max(m, Math.hypot(d[0], d[1], d[2]));
+    }
+    return m;
+  };
+  /** ONE chain live at the channel the story gives it at p, nothing else */
+  const soloAt = (name: "peel" | "assemble", p: number): LiveRecipe[] => {
+    const channel = storyStateAt(p).channels[name];
+    if (channel < 1e-6) return [];
+    const knobs =
+      name === "assemble"
+        ? { ...ALL.assemble.knobDefaults, keepScope: assembleKeepScopeAt(p) }
+        : ALL[name].knobDefaults;
+    return [{ recipe: ALL[name], channel, knobs }];
+  };
+
+  it("NEVER DOUBLE-FOLDS A WEDGE across the curl → departure hand-off", () => {
+    // THE REAL GUARD ON THE CROSSFADE. The channel-sum law
+    // (__tests__/channel-ease.test.ts) says the hand-off is smooth; it says
+    // nothing about what the two chains do to a PIECE, since the host sums
+    // their displacements rather than their channels. So this measures the
+    // composed displacement against the largest either chain reaches ALONE on
+    // the same piece: a doubled fold would show as a ratio near 2.
+    // the chapter's own grid, plus a dense sweep of the hand-off itself — the
+    // crossfade is 0.03 of the track and the shared grid lands one sample in it
+    const [rise0, rise1] = windowEdges(CARDS_APART.rise);
+    const dense = Array.from(
+      { length: 41 },
+      (_, i) => rise0 + ((rise1 - rise0) * i) / 40,
+    );
+    const ps = [
+      ...FLOW_SAMPLE_PS.filter((q) => q >= RANGES[2].p0 && q <= RANGES[3].p1),
+      ...dense,
+    ];
+    expect(ps.length).toBeGreaterThan(40);
+    // the frames the crossfade actually runs on — both chains live at once
+    const crossed = new Set(
+      ps.filter((q) => {
+        const c = storyStateAt(q).channels;
+        return c.peel > 0.01 && c.assemble > 0.01;
+      }),
+    );
+    expect(crossed.size, "the hand-off is sampled at all").toBeGreaterThan(1);
+
+    let worst = { ratio: 0, key: "", p: 0 };
+    let handoff = 0;
+    for (const row of table.pieces) {
+      const probes = probePoints(row.lanes);
+      // the piece's own single-chain ceiling over the whole chapter
+      let alone = 0;
+      for (const q of ps)
+        for (const name of ["peel", "assemble"] as const)
+          alone = Math.max(alone, maxDisp(row.lanes, soloAt(name, q), probes));
+      if (alone < 1e-9) continue; // a piece neither chain touches
+      for (const q of ps) {
+        const ratio = maxDisp(row.lanes, liveDeformAt(q), probes) / alone;
+        if (ratio > worst.ratio) worst = { ratio, key: row.key, p: q };
+        if (crossed.has(q)) handoff = Math.max(handoff, ratio);
+      }
+    }
+    // MEASURED over 194 pieces × 61 samples: 1.178, on Ring_Zoom_Seg0 a third
+    // of the way through the hand-off. A wedge is carried up to a fifth further
+    // than either chain alone would take it — a bulge, nowhere near the ~2 a
+    // doubled fold would read as, which is what this bound is for. Narrow
+    // PEEL_RELEASE's overlap with the rise to bring it down.
+    expect(worst.ratio, `${worst.key} @${worst.p}`).toBeLessThan(1.25);
+    expect(handoff, "the hand-off's own worst frame").toBeLessThan(1.25);
+  });
+
+  it("never moves the mechanism the cards scene REVEALS", () => {
+    // THE DEPARTURE'S SCOPE, measured rather than asserted of the recipe: every
+    // piece the wink keeps — the optics and the `kept` class — stays exactly on
+    // its seat at every sample of the peel and cards scenes, so the internals
+    // are uncovered in place instead of spacing out with the layers.
+    const cards = RANGES[3];
+    const peel = RANGES[2];
+    const ps = FLOW_SAMPLE_PS.filter((q) => q >= peel.p0 && q <= cards.p1);
+    expect(ps.length).toBeGreaterThan(8);
+    const kept = table.pieces.filter((r) => isPeelKeep(r.name));
+    expect(kept.length).toBeGreaterThan(50);
+    for (const row of kept)
+      for (const q of ps)
+        // the peel chain rebuilds a point through trig, so its own scope leaves
+        // a last-ULP residue on the pieces it excludes — 3e-15 mm, not motion
+        expect(
+          pieceStateAt(q, row.key, table).travel,
+          `${row.key} @${q}`,
+        ).toBeLessThan(1e-9);
+    // …and the layers that DO leave are moving over the same samples, so this
+    // is a scope and not a dead channel
+    const shell = pieceStateAt(windowEdges(CARDS_APART.rise)[1], "Barrel_Base_Seg0", table); // prettier-ignore
+    expect(shell.travel).toBeGreaterThan(10);
   });
 
   it("throws on a piece that is not in the table", () => {
@@ -720,30 +830,39 @@ describe("the flow of one piece", () => {
       ).toBe(true);
   });
 
-  it("takes a shell wedge out and flies it INTO the flower, never back onto the lens", () => {
-    // the story's own arc, read off one piece: seated at the top, far from home
-    // through the peel and the cards — and then straight into the bloom. This
-    // is the question the instrument exists to answer, asserted at its coarsest.
+  it("takes a shell wedge out, spirals it home, and blooms it — in that order", () => {
+    // THE ENDING'S SEQUENCE, read off one piece. The owner asked for the pieces
+    // to spiral into place staggered and THEN bloom, so this pin says what that
+    // means: out through the peel and the cards, home before the bloom's foot,
+    // still for a beat, and off the seat again only under the rose.
     const flow = pieceFlow("Barrel_Base_Seg0", table);
     const at = (p: number) =>
       flow.samples.reduce((best, s) =>
         Math.abs(s.p - p) < Math.abs(best.p - p) ? s : best,
       );
+    const capsOn = RANGES[RANGES.length - 1];
     expect(at(0).travel).toBe(0);
-    // THE SEATED-LENS BEAT IS GONE (owner: "the last scene would be the pieces
-    // flying in to construct the rose"). The ending used to seat the shell for
-    // one frame at RETURN's far edge — assemble landing on exactly 0 where the
-    // rose's rise opens — and grow the flower out of the re-formed lens. The
-    // radius now outlives the wrap (story/envelopes.ts CONSTRUCT overlaps
-    // ROSE_PULSE), so at the bloom's foot this wedge is still well out…
-    const seam = windowEdges(ROSE_PULSE.rise)[0];
-    expect(at(seam).travel).toBeGreaterThan(10);
-    // …and it never comes home again: not one frame from the bloom's foot to
-    // the end of the track shows this piece on its seat.
-    for (const s of flow.samples.filter((s) => s.p >= seam))
-      expect(s.travel, `p ${s.p}`).toBeGreaterThan(0);
-    expect(at(1).travel).toBeGreaterThan(0);
     expect(Math.max(...flow.samples.map((s) => s.travel))).toBeGreaterThan(10);
+
+    // it is still far out where the ending opens, and HOME by the bloom's foot
+    const seam = windowEdges(ROSE_PULSE.rise)[0];
+    expect(at(capsOn.p0).travel).toBeGreaterThan(10);
+    expect(at(seam).travel).toBe(0);
+
+    // THE SETTLE IS A BEAT, NOT A SCENE: the seated stretch inside caps-on is a
+    // fiftieth of the track, and it ends where the bloom starts.
+    const seated = flow.samples.filter(
+      (s) => s.p >= capsOn.p0 && s.travel === 0,
+    );
+    const span =
+      Math.max(...seated.map((s) => s.p)) - Math.min(...seated.map((s) => s.p));
+    expect(span).toBeGreaterThan(0);
+    expect(span).toBeLessThan(0.03);
+    expect(Math.max(...seated.map((s) => s.p))).toBeLessThanOrEqual(seam);
+
+    // …and the bloom is what takes it off the seat again — never the wrap: the
+    // assemble channel is spent a whole scene earlier.
+    expect(at(1).travel).toBeGreaterThan(0);
   });
 });
 
@@ -813,12 +932,12 @@ describe("the flow module's coverage", () => {
       expect([...seen], c).not.toContain(c);
   });
 
-  it("takes every knob at its recipe's default — the story writes none", () => {
-    // ops/host.ts's knob uniforms are moved by the /lens bench's sliders only;
-    // the hero never calls recipeKnob, so the offline evaluation is exact
-    // rather than a settled approximation. Pinned on the source, since a future
-    // wave reaching for a knob from the story path would silently invalidate
-    // every number in the map.
+  it("takes every knob at its default but the ONE the story writes", () => {
+    // The hero drives exactly one knob — the departure's keep-scope, a pure
+    // function of p — and this instrument reads the same law, so the offline
+    // evaluation stays exact rather than a settled approximation. Any OTHER
+    // knob reached for from the story path would silently invalidate every
+    // number in the map, so the source is pinned to that one call.
     const src = [
       readFileSync(new URL("../hero-driver.ts", import.meta.url), "utf8"),
       readFileSync(
@@ -826,10 +945,16 @@ describe("the flow module's coverage", () => {
         "utf8",
       ),
     ].join("\n");
-    expect(src).not.toContain("recipeKnob");
+    expect(src.match(/recipeKnob\(/g) ?? []).toHaveLength(1);
+    expect(src).toContain('recipeKnob("assemble", "keepScope")');
     for (const p of FLOW_SAMPLE_PS)
-      for (const l of liveDeformAt(p))
-        expect(l.knobs).toBe(l.recipe.knobDefaults);
+      for (const l of liveDeformAt(p)) {
+        const { keepScope, ...rest } = l.knobs as Record<string, number>;
+        const dflt = l.recipe.knobDefaults as Record<string, number>;
+        if (l.recipe.name === "assemble")
+          expect(keepScope).toBe(assembleKeepScopeAt(p));
+        for (const [k, v] of Object.entries(rest)) expect(v).toBe(dflt[k]);
+      }
   });
 
   it("skips an idle recipe by the host's own gate", () => {

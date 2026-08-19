@@ -10,7 +10,7 @@ import { displaceInto } from "../../dev/ops-cpu";
 // layer leans on when it consumes one. The model pipeline has moved the iris
 // blades' seat between the vertices and the node twice in one drop cycle, so
 // the shape the code is written against is pinned here — a change fails in this
-// file rather than in a screenshot the owner has to catch.
+// file rather than in a screenshot someone has to catch.
 
 const TAU = Math.PI * 2;
 const MODEL = "public/models/lens_web_segmented.glb";
@@ -34,6 +34,14 @@ interface Gltf {
   extensionsUsed?: string[];
   extensionsRequired?: string[];
   scenes: { nodes: number[] }[];
+  accessors: {
+    bufferView: number;
+    componentType: number;
+    type: string;
+    count: number;
+    byteOffset?: number;
+  }[];
+  bufferViews: { byteOffset?: number; byteStride?: number }[];
 }
 
 /** The glTF JSON chunk of a .glb. */
@@ -48,6 +56,58 @@ function glbJson(path: string): Gltf {
     off += 8 + len;
   }
   return json!;
+}
+
+/** the JSON and BIN chunks together — the BIN is only needed by the real-
+ *  geometry loader below, so the JSON-only reader above stays the common path */
+function glbChunks(path: string): { json: Gltf; bin: Buffer } {
+  const buf = fs.readFileSync(path);
+  let off = 12;
+  let json: Gltf | null = null;
+  let bin = Buffer.alloc(0);
+  while (off < buf.length) {
+    const len = buf.readUInt32LE(off);
+    const type = buf.readUInt32LE(off + 4);
+    const body = buf.subarray(off + 8, off + 8 + len);
+    if (type === 0x4e4f534a) json = JSON.parse(body.toString("utf8"));
+    else bin = body;
+    off += 8 + len;
+  }
+  return { json: json!, bin };
+}
+
+const COMPONENT: Record<
+  number,
+  Uint8ArrayConstructor | Uint16ArrayConstructor | Uint32ArrayConstructor | Float32ArrayConstructor // prettier-ignore
+> = {
+  5121: Uint8Array,
+  5123: Uint16Array,
+  5125: Uint32Array,
+  5126: Float32Array,
+};
+const PER_ELEMENT: Record<string, number> = {
+  SCALAR: 1,
+  VEC2: 2,
+  VEC3: 3,
+  VEC4: 4,
+};
+
+/** One accessor as a typed array. The bytes are COPIED: a bufferView's offset
+ *  need not be aligned to the component size, and a view over the shared buffer
+ *  would throw. */
+function accessor(json: Gltf, bin: Buffer, i: number) {
+  const a = json.accessors[i];
+  const bv = json.bufferViews[a.bufferView];
+  const Ctor = COMPONENT[a.componentType];
+  if (!Ctor) throw new Error(`accessor ${i}: componentType ${a.componentType}`);
+  if (bv.byteStride !== undefined)
+    throw new Error(`accessor ${i}: interleaved bufferView is not supported`);
+  const n = a.count * PER_ELEMENT[a.type];
+  const at = (bv.byteOffset ?? 0) + (a.byteOffset ?? 0);
+  const bytes = new Uint8Array(
+    bin.subarray(at, at + n * Ctor.BYTES_PER_ELEMENT),
+  );
+  return new Ctor(bytes.buffer);
 }
 
 const isIdentity = (r?: number[]): boolean =>
@@ -114,7 +174,7 @@ describe("shipped lens_web_segmented.glb", () => {
 
   it("ships SEVEN distinct blade meshes, fan baked into the vertices", () => {
     // N.12 replaced the single `Iris_Blade_geo` shared by seven nodes (W.4)
-    // with seven baked meshes — owner's ruling, +73 KB accepted for simplicity.
+    // with seven baked meshes — +73 KB accepted for simplicity.
     const blades = g.nodes.filter((n) => /^Iris_Blade_\d+$/.test(n.name));
     expect(blades).toHaveLength(7);
     expect(new Set(blades.map((b) => b.mesh)).size, "distinct meshes").toBe(7);
@@ -400,6 +460,105 @@ describe("the derived explode ladder of the shipped hierarchy", () => {
     expect(groups).not.toContain("Optics_G1");
     expect(groups).not.toContain("Element_01");
     expect(groups).toContain("Barrel_Inner");
+  });
+});
+
+/** The shipped graph with REAL geometry — the radii the rank/layer partition is
+ *  measured from. `shippedGraph` above stands a triangle in for every mesh,
+ *  which is enough for the ladder's node walk and useless for anything metric. */
+function shippedModel(): THREE.Object3D {
+  const { json, bin } = glbChunks(MODEL);
+  const geos = json.meshes.map((m) => {
+    const prim = m.primitives[0];
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute(
+      "position",
+      new THREE.BufferAttribute(
+        accessor(json, bin, prim.attributes!.POSITION) as Float32Array,
+        3,
+      ),
+    );
+    geo.setIndex(
+      new THREE.BufferAttribute(
+        accessor(json, bin, prim.indices!) as Uint32Array,
+        1,
+      ),
+    );
+    return geo;
+  });
+  const objs = json.nodes.map((n) => {
+    const o =
+      n.mesh !== undefined
+        ? new THREE.Mesh(geos[n.mesh])
+        : new THREE.Object3D();
+    o.name = n.name;
+    if (n.translation) o.position.fromArray(n.translation);
+    if (n.rotation) o.quaternion.fromArray(n.rotation);
+    if (n.scale) o.scale.fromArray(n.scale);
+    return o;
+  });
+  json.nodes.forEach((n, i) => {
+    for (const c of n.children ?? []) objs[i].add(objs[c]);
+  });
+  const root = new THREE.Object3D();
+  root.name = "lens";
+  for (const i of json.scenes[0].nodes) root.add(objs[i]);
+  return root;
+}
+
+describe("the LAYER PARTITION the per-piece stagger reads", () => {
+  // A TRIPWIRE OVER THE EXPORT. `layerN`/`phase` come from 0.01mm radius
+  // buckets sorted by meridian (ops/frames.ts), and the ending's stagger keys
+  // a piece's own slice of the explode channel on that phase
+  // (EXPLODE_PART_STAGGER). The buckets are tight enough that a re-export
+  // nudging one piece's radius across an edge re-indexes BOTH layers it sits
+  // between, and every member's arrival moves with it — up to a fifth of the
+  // channel, which is a piece arriving visibly out of turn. So the partition is
+  // pinned here rather than left to be noticed in a scroll.
+  const root = shippedModel();
+  deriveFrames(root);
+
+  it("buckets the 194 pieces into the histogram the stagger was tuned on", () => {
+    const hist = new Map<number, number>();
+    let meshes = 0;
+    root.traverse((o) => {
+      if (!(o instanceof THREE.Mesh)) return;
+      meshes++;
+      const f = frameOf(o.geometry);
+      expect(f, `${o.name} is framed`).not.toBeNull();
+      hist.set(f!.layerN, (hist.get(f!.layerN) ?? 0) + 1);
+    });
+    expect(meshes).toBe(194);
+    // layer SIZE → pieces living in a layer of that size
+    expect(Object.fromEntries([...hist].sort((a, b) => a[0] - b[0]))).toEqual({
+      1: 48,
+      2: 34,
+      3: 20,
+      4: 4,
+      5: 67,
+      7: 21,
+    });
+  });
+
+  it("gives every piece of a layer its own phase, evenly spaced", () => {
+    // the stagger divides the channel by this: a duplicate phase inside a layer
+    // would put two pieces on one slice and leave a gap in the sequence
+    const byLayer = new Map<number, number[]>();
+    root.traverse((o) => {
+      if (!(o instanceof THREE.Mesh)) return;
+      const f = frameOf(o.geometry)!;
+      // the phase is i/n, so the layer's own key is (n, rounded rank)
+      const key = f.layerN * 1e4 + Math.round(f.rank * 1e3);
+      const list = byLayer.get(key) ?? [];
+      list.push(f.phase);
+      byLayer.set(key, list);
+    });
+    for (const [key, phases] of byLayer) {
+      for (const ph of phases) {
+        expect(ph, `layer ${key}`).toBeGreaterThanOrEqual(0);
+        expect(ph, `layer ${key}`).toBeLessThan(1);
+      }
+    }
   });
 });
 

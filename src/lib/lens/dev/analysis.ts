@@ -9,49 +9,35 @@ import {
 } from "./path-probe";
 import type { PathVizContext } from "./paths";
 
-// ============================================================================
-// PATH ANALYSIS — dev only, the QUERYABLE side of the motion-path instrument
-// (dev/paths.ts draws; this module measures and returns JSON).
+// DEV ONLY — dynamically imported, so none of it reaches a visitor's bundle.
+// The QUERYABLE side of the motion-path instrument: dev/paths.ts draws, this
+// module measures and returns JSON.
 //
 // Two sample populations, one walk:
-//   SHELLS — every mesh carrying the derived `_op*` frame (ops/frames.ts), i.e.
-//            everything the op deform runs on. Sampled through the GPU probe
-//            (dev/path-probe.ts) running the real opsLocalPosition() graph:
-//            outer-wall grid + inner-wall grid + the four (seam/far × front/rear)
-//            corners, real vertices only.
-//   SOLIDS — every mesh WITHOUT a derived frame. Such a mesh cannot deform in
-//            shader, so its rest samples (AABB corners + real extreme vertices)
-//            transformed by the SAME per-step matrixWorld snapshot are exact
-//            ground truth — no shader mirror.
-//            NOTE: the op host frames EVERY mesh, so this population is normally
-//            EMPTY and the rigid branch is inert. That is the honest reading —
-//            the glass, blades and loose parts deform in shader too, and
-//            measuring them off matrixWorld alone would report a rigid lie.
+//   SHELLS — every mesh carrying the derived `_op*` frame, sampled through the
+//            GPU probe running the real opsLocalPosition() graph.
+//   SOLIDS — every mesh WITHOUT one. Such a mesh cannot deform in shader, so
+//            its rest samples transformed by the same per-step matrixWorld are
+//            exact ground truth. The op host frames every mesh, so this
+//            population is normally EMPTY and the branch inert.
 //
-// FRAME: every reported position is in the MODEL frame (the GLB root's local
-// frame): optical axis = Y, radial plane = X–Z, units = real millimetres. It is
-// the world-composed pose (deformed local × matrixWorld) re-expressed in the one
-// frame where cylindrical numbers mean something; distances are identical to
-// world distances up to the constant model scale.
+// FRAME: every reported position is in the MODEL frame — optical axis Y, radial
+// plane X–Z, units real millimetres. Distances match world distances up to the
+// constant model scale.
 //
-// HONESTY: every result carries `coverage` ({sampledMeshes, totalMovingMeshes,
-// excluded}) and `idleCheck` (the per-mesh version of paths.ts's idle-identity
-// check — the seated row of every walk must reproduce the rest geometry). A
-// verdict without its sampling universe caused two false all-clears already.
-// ============================================================================
+// Every result carries `coverage` and `idleCheck` (the per-mesh version of
+// paths.ts's idle-identity check: the seated row of every walk must reproduce
+// the rest geometry), so no verdict is reported without its sampling universe.
 
 const STEPS = 96;
 /** A piece is "in flight" while any sample sits further than this off its seat. */
 const SEAT_TOL_MM = 1;
 /** Curl-corner threshold, on the corner's RELATIVE radial lift: its lift off
  *  the seated radius MINUS the smallest lift among the piece's four corners at
- *  the same step. Two rejected metrics first (both measured as four-way ties):
- *  full-3D distance-to-seat, and absolute radial lift — the piece-UNIFORM terms
- *  (dilation + slide, ∝ t through lr 0.95) decay LAST, so
- *  any absolute threshold crossing lands in that uniform tail after the wrap
- *  has already finished. Subtracting the per-step minimum cancels everything
- *  piece-uniform; what remains is exactly the peel-front/roll geometry — the
- *  corner ordering the curl question asks about. */
+ *  the same step. Subtracting the per-step minimum cancels the piece-UNIFORM
+ *  terms, which decay last and would otherwise put every crossing in their
+ *  tail; what remains is the peel-front/roll geometry the question asks
+ *  about. */
 const CORNER_TOL_MM = 1;
 /** Minimum rise of the min-radius series that counts as an outward excursion. */
 const REVERSAL_EPS_MM = 0.5;
@@ -245,11 +231,10 @@ interface WedgeCorners {
   arcLead: "seam" | "far" | "tie";
   /** axial dimension alone (the shear question): front or rear end first? */
   axialLead: "front" | "rear" | "tie";
-  /** mid-flight shear signature: (far-front lift − far-rear lift), its extreme
-   *  of largest magnitude over the walk. Positive = the FRONT end hangs
-   *  further off the surface (rear end leads there). A shear can show here yet
-   *  wash out of the seating order (the ops roll-shear does — it scales a roll
-   *  length that vanishes before seating resolves). */
+  /** mid-flight shear signature: (far-front lift − far-rear lift) at its
+   *  largest magnitude over the walk. Positive = the FRONT end hangs further
+   *  off the surface. A shear can show here yet wash out of the seating
+   *  order. */
   farSkew: { mm: number; atP: number } | null;
 }
 
@@ -339,23 +324,18 @@ function gridPick(
 
 /**
  * Sample a shell mesh. Grids/edges/corners live in the mesh's DOMINANT sector
- * only (features seated on a shell carry per-COMPONENT t0; islands
- * follow different wedges, so an edge across sectors would measure the sectors
- * flying apart, not the mesh stretching — the 6× "stretch" false alarms this
- * replaces). Geometry modes:
- *   BARREL (axial span dominates): 3×3 outer-wall grid + 3×2 inner-wall grid
- *     (the existing picker's 70% radial cut, run for the inner wall too) over
- *     (φ, y), plus the four (seam/far × front/rear) corner vertices.
- *   PLATE (radial span dominates — PCB discs, baffle plates): one 3×3 grid
- *     over (φ, r) — the (φ, y) grid degenerates to thickness-length edges
- *     there, and a ~1mm rest edge turns millimetre noise into a fake 4× ratio.
- *   AXISYMMETRIC (frameOf().axi === 1 — full rings, tubes, discs): NO grid and
- *     no corners, extreme samples only. Their (φ, y) box spans the whole ±π
- *     turn, so every grid edge is a CHORD across the ring and any radial
- *     dilation reads as a ~3× "stretch" — a systematic false alarm, not a
- *     measurement. They still contribute centroid and radial-band numbers.
- * Non-dominant sectors still contribute edge-less extreme samples so centroid
- * and radial-band numbers cover the whole mesh. Real vertices only.
+ * only: islands follow different wedges, so an edge across sectors would
+ * measure the sectors flying apart rather than the mesh stretching. Modes:
+ *   BARREL (axial span dominates): outer- + inner-wall grids over (φ, y), plus
+ *     the four (seam/far × front/rear) corner vertices.
+ *   PLATE (radial span dominates — PCB discs, baffle plates): one grid over
+ *     (φ, r); the (φ, y) grid degenerates to thickness-length edges there,
+ *     turning millimetre noise into a fake stretch ratio.
+ *   AXISYMMETRIC (rings, tubes, discs): NO grid and no corners, extremes only.
+ *     Their (φ, y) box spans the whole ±π turn, so every grid edge is a CHORD
+ *     and any radial dilation reads as stretch.
+ * Non-dominant sectors still contribute edge-less extreme samples. Real
+ * vertices only.
  */
 function pickShellSamples(mesh: THREE.Mesh, axi: boolean): PickedShell {
   const pos = mesh.geometry.getAttribute("position");
@@ -437,9 +417,8 @@ function pickShellSamples(mesh: THREE.Mesh, axi: boolean): PickedShell {
   };
 
   // AXISYMMETRIC pieces take that path for the WHOLE mesh: no edges means no
-  // stretch ratio (peakStretchOf skips an edge-less piece), and
-  // no corners means no roll remainder — the two numbers a ring cannot honestly
-  // produce. Everything else about the piece is measured as before.
+  // stretch ratio and no corners means no roll remainder — the two numbers a
+  // ring cannot honestly produce.
   if (axi) {
     addExtremes(dom);
     if (rest.length) addExtremes(rest);
@@ -651,12 +630,9 @@ export function createPathAnalysis(ctx: PathVizContext): PathAnalysis {
       name: uniqueName(mesh.name),
       kind: "solid",
       shell: mesh.name,
-      // Filled in on the first walk (from the seated pose), in the MODEL frame:
-      // a world-space box (scene units, model scale applied) read into a table
-      // keyed in model millimetres clamps every solid to rank 0. This module
-      // must rank solids correctly for interference adjacency, so it applies
-      // the shader's own law (0.01mm bucket into the shell-radius span) in the
-      // model frame.
+      // Filled in on the first walk, in the MODEL frame: a world-space box
+      // read into a table keyed in model millimetres would clamp every solid
+      // to rank 0.
       rank: NaN,
       mesh,
       base,
@@ -671,10 +647,9 @@ export function createPathAnalysis(ctx: PathVizContext): PathAnalysis {
   }
   const totalSamples = base;
 
-  // Solid seat ranks, on the shader's own law (0.01mm radius buckets
-  // normalized across the shell-radius span) but computed in
-  // the MODEL frame — see the rank comment above. The radius comes from the
-  // first walk's seated pose, so the flag defers it until one exists.
+  // Solid seat ranks, on the shader's own law but computed in the MODEL frame.
+  // The radius comes from the first walk's seated pose, so the flag defers this
+  // until one exists.
   const shellKeys = shellMeshes.map((m) =>
     Math.round((frameOf(m.geometry)?.R ?? 0) * 100),
   );
@@ -687,10 +662,9 @@ export function createPathAnalysis(ctx: PathVizContext): PathAnalysis {
     );
   let solidsRanked = false;
 
-  // One probe per row count: the default walk needs STEPS+1 rows, a walk over
-  // its own `ps` grid needs its own steps+1. All probes share the sample list,
-  // so their CPU-built `seated` arrays are identical — `probe` (the default
-  // one, created eagerly) stays the single rest-geometry reference.
+  // One probe per row count. All probes share the sample list, so their
+  // CPU-built `seated` arrays are identical and the default `probe` stays the
+  // single rest-geometry reference.
   interface ProbeEntry {
     probe: PositionProbe;
     compiled: boolean;
@@ -984,9 +958,8 @@ export function createPathAnalysis(ctx: PathVizContext): PathAnalysis {
   }
 
   /** Outward excursions of a series: rises > eps off the preceding trough that
-   *  come back down (a rise the series ends inside is not an excursion yet —
-   *  windowed callers must widen the window to see it whole). Same algorithm
-   *  reversalsOf always used, now also reporting WHERE each rise started. */
+   *  come back down. A rise the series ends inside is not an excursion yet, so
+   *  a windowed caller must widen the window to see it whole. */
   interface Excursion {
     troughIdx: number;
     peakIdx: number;
@@ -1371,10 +1344,8 @@ export function createPathAnalysis(ctx: PathVizContext): PathAnalysis {
   }
 
   async function curlCorners(
-    // The /lens bench keeps two sheet constructions to compare: the assemble
-    // recipe's wrap-on and the rose recipe's bloom. (The `rollout` unroll this
-    // once defaulted against went with the bench-recipe cleanup; pass any two
-    // animation ids.)
+    // The two sheet constructions worth comparing by default; any two
+    // animation ids work.
     idA = "assemble",
     idB = "x-rose",
   ): Promise<CurlCornerResult> {
@@ -1411,9 +1382,8 @@ export function createPathAnalysis(ctx: PathVizContext): PathAnalysis {
         const arr = lift.get(label)!;
         const excess = (k: number) => arr[k] - floor[k];
         // last step still lifted, then the crossing INTERPOLATED between
-        // steps — corner differences within one wedge are often finer than
-        // the step grid, and an un-interpolated threshold reads as a tie
-        // broken by insertion order (measured before this fix)
+        // steps: corner differences within one wedge are often finer than the
+        // step grid, and an un-interpolated threshold reads as a tie
         let p = 0;
         for (let k = steps - 1; k >= 0; k--) {
           const d = excess(k);
@@ -1434,9 +1404,8 @@ export function createPathAnalysis(ctx: PathVizContext): PathAnalysis {
       entries.sort((a, b) => a[1] - b[1]);
       const spread = entries[entries.length - 1][1] - entries[0][1];
       // Per-dimension leads: mean the two corners on each side so the arc
-      // progression (seam→far) and the axial shear tilt (front↔rear) are read
-      // INDEPENDENTLY — the arc effect is much larger and buries the axial
-      // one in a single argmin.
+      // progression and the axial shear are read INDEPENDENTLY — the arc
+      // effect is much larger and buries the axial one in a single argmin.
       const mean = (labels: CornerLabel[]) => {
         const vals = labels
           .map((l) => exact[l])

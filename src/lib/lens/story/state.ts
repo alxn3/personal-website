@@ -1,72 +1,34 @@
-// ============================================================================
-// storyStateAt(p) — THE WHOLE STORY AT ONE SCROLL POSITION, as plain JSON.
+// storyStateAt(p) — the whole story at one scroll position, as plain JSON.
 //
-// WHY IT EXISTS: "where is the camera / the lens / this channel at p, and which
-// windows are open there" was answered by hand — re-deriving a p-table from the
-// durations in story/story.ts, screenshotting through the ?story scrubber, and
-// poking four unrelated `window.__lens*` handles. Every wave-6 recon rebuilt the
-// same tables; so did a shipped test. This is the composition point.
-//
-// IT ADDS NO LAWS. Every number below comes from a function some other module
-// already exports and the drivers already call — story/envelopes.ts (the hero
-// driver's own envelopes), story/camera.ts, story/reveal.ts,
-// story/peelcards.ts, story/internals.ts, story/fly.ts, story/trails.ts,
-// story/constellations.ts. If a value here is wrong, the module that owns it is
-// wrong. NOTHING MAY BE RE-DERIVED HERE — not a window edge, and not a
-// one-line composition either: where a driver used to compose a value inline in
-// its own frame() (story/fly.ts's centre, fov mix, focus rack, sky mix and
-// darkness), that line was given a name in the module that owns it and BOTH the
-// driver and this file call it, so the two cannot drift. A field with no p-only
-// law left to read is reported as `null` rather than copied.
+// IT ADDS NO LAWS. Every number comes from a function another module already
+// exports and the drivers already call. NOTHING MAY BE RE-DERIVED HERE — not a
+// window edge, and not a one-line composition either: a value a driver composes
+// inline gets a name in the module that owns it, and both call that, so the two
+// cannot drift. A field with no p-only law left to read is reported as `null`.
 //
 // LAZY — NEVER STATICALLY REACHABLE FROM THE HOMEPAGE. It imports story/fly.ts,
 // story/trails.ts and story/constellations.ts, which statically import optics/
-// (three/tsl node graphs, the sky catalog, the wormhole pass). Those must stay
-// out of the homepage's initial chunk, which is why the driver reaches them
-// through `import()` and never re-exports them (story/fly.ts's header states the
-// law). So: this module is reached ONLY by `await import("./state")` from a
-// DEV-gated block, or by a test in node. It must NEVER be added to index.ts, and
-// never imported statically by anything on the hero's path.
+// (three/tsl node graphs) that must stay out of the homepage's initial chunk.
+// So it is reached ONLY by `await import("./state")` from a DEV-gated block
+// or by a test in node: NEVER added to index.ts, never imported statically by
+// anything on the hero's path.
 //
-// WHAT IT REPORTS: the AUTHORED state at p — what the drivers would write on a
-// frame handed exactly this p, in a settled session where every lazy module has
-// loaded and every latch has caught up. That is deliberately NOT what is on
-// screen, and the difference is the honest residual:
+// WHAT IT REPORTS is the AUTHORED state at p — what the drivers would write on
+// a frame handed exactly this p in a settled session, deliberately NOT what is
+// on screen. The difference is the honest residual: EASE LAG (core/scene eases
+// `state.story` toward `storyTarget`, though `peel` and `assemble` below
+// WRAP_EASE_P0 are written value-and-target off the raw scroll, so for those
+// this IS the drawn value — which is what the two chapters' illegal-pair laws
+// rest on); PHASE CLOCKS (the internals rack/breath and the card orbit run on
+// accumulated dt, so only their envelopes are knowable); LATCHES AND WARM-UP;
+// the VIEWPORT and THEME (`framing` needs `opts.canvas`, the tint is for the
+// `opts.light` you ask for); and THE FRAME ITSELF — occlusion, depth fade,
+// glass. Nothing replaces looking.
 //
-//   · EASE LAG. core/scene eases `state.story` toward `storyTarget` every tick
-//     and samples the camera at the eased value, so the live frame trails the
-//     target world by several frames. `?mtrace` records both (p vs pe). TWO
-//     CHANNELS ARE EXEMPT AND SAY SO: `peel` is written value-and-target off the
-//     raw scroll (story/peelcards.ts), and so is `assemble` below
-//     story/envelopes.ts's WRAP_EASE_P0 — for those the row below IS the drawn
-//     value, which is what the two chapters' illegal-pair laws rest on. The
-//     `rose` row is the authored envelope; the live target additionally WAITS
-//     for the wrap to be spent (story/envelopes.ts wrapBloomWrite), so the bloom
-//     opens 0.07 s after this says it does at 300 px/s, 0.20 s at 500 and 0.50 s
-//     on a 2000 px/s fling — and lands exactly where this says.
-//   · PHASE CLOCKS. The internals rack/breath (story/internals.ts) and the card
-//     orbit (story/peelcards.ts) run on accumulated dt, not on p. Their
-//     ENVELOPES are reported; their phase cannot be.
-//   · LATCHES AND WARM-UP. Whether fly.js/trails.js/constellations.js have
-//     imported, whether the wormhole pipeline compiled, and the fly's own
-//     hysteresis latch are session facts. A deep link at the same p renders
-//     differently on its first frame.
-//   · THE VIEWPORT AND THE THEME. `parkScale` and the portrait lift need a live
-//     canvas — pass `opts.canvas` to get them for a SUPPLIED size. The tint is
-//     reported for the `opts.light` you ask for, not for the live html.dark.
-//   · THE FRAME ITSELF. Occlusion, the depth-fade dissolve, transmissive glass,
-//     whether a caption collides with the lens. Nothing here replaces looking.
-//
-// AND WHAT IT CANNOT REPORT AT ALL, by the no-second-law rule above:
-//   · focus and aperture inside the internals span — story/internals.ts runs
-//     them on an accumulated-dt phase clock, so there is no value at p. Their
-//     two ENVELOPES are reported (`ambient`), which is the whole of what p owns;
-//   · the per-element glass passage fades — story/fly.ts measures the element
-//     ruler off the live GLB at rest, so they are not a function of p;
-//   · the room light and the glass glint as LEVELS — story/fly.ts composes them
-//     inline in frame() as lerp(1, FLY.darkFloor/glintFloor, dark). The `dark`
-//     ramp itself is reported; the two levels are that one lerp away.
-// ============================================================================
+// And what it cannot report at all, by the no-second-law rule: focus and
+// aperture inside the internals span (a phase clock, so only their envelopes),
+// the per-element glass passage fades (measured off the live GLB), and the room
+// light and glass glint as LEVELS (one lerp off the reported `dark` ramp).
 
 import * as THREE from "three/webgpu";
 import {
@@ -114,13 +76,9 @@ import {
 } from "./envelopes";
 import { ROLL_P1, TURN_P0, TURN_P1, revealRollAt, turnAt } from "./reveal";
 import {
-  BODY_FADE_BACK,
-  BODY_FADE_OUT,
   RELEASE_SPAN,
   SPIN_SPAN,
-  VALLEY,
   WINK_SPAN,
-  peelBodyFadeAt,
   peelRollAt,
   peelSpinAt,
   peelValueAt,
@@ -169,21 +127,14 @@ import { band, clamp01 } from "../core/math";
 
 const flyR = rangeOf("flythrough");
 
-/** A named window and where it sits in absolute story p — a smoothstep RAMP
- *  (`ink.drop`, `preShut`), or a SPAN with one owner (`fly.span`, `body.valley`,
- *  `iris.handover`). Both answer the same question: is p inside it, and how far.
+/** A named window and where it sits in absolute story p — a smoothstep RAMP or
+ *  a SPAN with one owner. Both answer: is p inside it, and how far.
  *
  *  ONLY windows whose EDGES their owning module exports are listed. A window
- *  authored as literals inside its own expression (story/fly.ts's skyOutAt,
- *  flyRevealAt, flySeatAt and flyFovBackAt; story/trails.ts's trailEnvAt and
- *  crownEnvAt; story/constellations.ts's envelopes) is deliberately absent —
- *  its VALUE is still reported in `look`/`sky` below, and spelling its edges
- *  here would be a second copy of numbers this module has no right to own.
- *
- *  So is a window on the DIVE'S clock rather than the story's — the sky's
- *  arrival, the darkness and the fly's focus rack ride `FLY.pSkyIn`/`pDark`/
- *  `pFocus`, which are fractions of dive progress (story/fly.ts flyDiveP), and
- *  the story-p pair is a derivation, not a number anyone authored. */
+ *  authored as literals inside its own expression is deliberately absent, as is
+ *  one on the DIVE's clock rather than the story's — its VALUE is still
+ *  reported in `look`/`sky`, and spelling its edges here would copy numbers
+ *  this module has no right to own. */
 export interface StoryWindowSpan {
   name: string;
   p0: number;
@@ -209,18 +160,14 @@ export const STORY_WINDOWS: StoryWindowSpan[] = (
     ["interior.back", INTERIOR_BACK],
     ["scrollCue", SCROLL_CUE],
     ["chrome", CHROME_FADE],
-    ["body.out", BODY_FADE_OUT],
-    ["body.valley", VALLEY],
-    ["body.back", BODY_FADE_BACK],
     ["wink", WINK_SPAN],
     ["peel.spin", SPIN_SPAN],
     ["peel.release", RELEASE_SPAN],
     ["cards.apart.rise", windowEdges(CARDS_APART.rise)],
     ["cards.apart.fall", windowEdges(CARDS_APART.fall)],
     ["turn", [TURN_P0, TURN_P1]],
-    // the roll's true support: −MAX·(1−rollTurnAt)·assemble is nonzero from
-    // the assemble RISE's foot (invisible — the body cover is 0 there), not
-    // from TURN_P0 where the cruise window begins.
+    // the roll's true support: nonzero from the assemble RISE's foot (invisible
+    // — the body cover is 0 there), not from TURN_P0 where the cruise begins.
     ["roll", [windowEdges(ASSEMBLE_PULSE.rise)[0], ROLL_P1]],
     ["fly.span", [DIVE_P0, EXIT_END]],
     ["fly.dive", [DIVE_P0, flyR.p1]],
@@ -263,9 +210,9 @@ export interface StoryState {
     /** |pos| — the orbit radius the flatten's pullback has already been applied to */
     radius: number;
   };
-  /** only with opts.canvas: the view offset story/camera.ts writes for the park.
-   *  The portrait lift is folded INTO offsetY — applyStoryFraming composes them
-   *  into one setViewOffset call, so there is no separate number to read back. */
+  /** only with opts.canvas: the view offset story/camera.ts writes for the
+   *  park. The portrait lift is folded INTO offsetY, since applyStoryFraming
+   *  composes them into one setViewOffset call. */
   framing: { offsetX: number; offsetY: number } | null;
   model: {
     /** world X of the lens under the parked camera (story/fly.ts flyDollyAt) */
@@ -277,9 +224,8 @@ export interface StoryState {
     peelRoll: number;
   };
   /** every channel's AUTHORED target at p. `null` where the value is not a
-   *  function of p alone (see `irisOwner`) — which is now only the internals
-   *  span: story/internals.ts's rack and breath run on a phase clock, so there
-   *  only their envelopes (in `ambient`) are knowable. */
+   *  function of p alone (see `irisOwner`) — only the internals span, whose
+   *  rack and breath run on a phase clock. */
   channels: {
     zoom: number;
     focus: number | null;
@@ -304,13 +250,13 @@ export interface StoryState {
     storyCentre: number;
     bodyFade: number;
     /** which module owns setBodyFade at this p (the range-tiled writer map) */
-    bodyFadeOwner: "peelcards" | "fly";
+    bodyFadeOwner: "driver" | "fly";
     shellFade: number;
     interiorFade: number;
     /** the stage tint for opts.light (default: the dark palette) */
     bg: Rgb;
     /** the fly's fov override, or null where the span has released it — exit()
-     *  writes `null`, which is a cut, so there is no value to report there */
+     *  writes `null`, so there is no value to report there */
     storyFov: { fov: number; mix: number } | null;
     /** what both sky fade uniforms get (story/fly.ts flySkyMixAt): the arrival
      *  ramp less the reveal's fade. 0 outside the span, by its own law. */
@@ -319,9 +265,8 @@ export interface StoryState {
     streak: number;
     /** the sky's own way OUT (story/fly.ts skyOutAt), a factor on skyMix above */
     skyOut: number;
-    /** the darkness ramp (story/fly.ts flyDarkAt); room light =
-     *  lerp(1, FLY.darkFloor, dark) and glass glint = lerp(1, FLY.glintFloor,
-     *  dark) — the two LEVELS fly.ts still composes inline in frame() */
+    /** the darkness ramp (story/fly.ts flyDarkAt) — the room light and glass
+     *  glint LEVELS are one lerp off it, composed inline in fly.ts's frame() */
     dark: number;
     /** the reveal's crossfade — the exploded lens coming back on screen */
     reveal: number;
@@ -353,17 +298,16 @@ export interface StoryState {
     a: number;
     b: number;
     /** --beat-visibility: the band's fade at p. --beat-progress is NOT here —
-     *  its window is authored per BLOCK in the markup (data-progress-from/-to),
-     *  so it is a property of the DOM, not of the story. */
+     *  its window is authored per BLOCK in the markup, so it is a property of
+     *  the DOM, not of the story. */
     visibility: number;
   };
   hud: {
     scn: string;
     title: string;
     focalMm: number;
-    /** from the AUTHORED aperture; the shipped HUD reads the eased live channel,
-     *  which is why it is composed last in the driver's frame(). `null` where
-     *  the aperture itself is (the internals span). */
+    /** from the AUTHORED aperture; the shipped HUD reads the eased live
+     *  channel. `null` where the aperture itself is (the internals span). */
     fStop: string | null;
     explodePct: number;
     chrome: number;
@@ -382,7 +326,7 @@ export interface StoryStateOpts {
   canvas?: { w: number; h: number; parkScale: number };
 }
 
-/** THE WHOLE DECLARATIVE STATE AT `p`. Pure: same p, same output, no globals
+/** The whole declarative state at `p`. Pure: same p, same output, no globals
  *  read and nothing in the live scene touched. Safe from node. */
 export function storyStateAt(p: number, opts: StoryStateOpts = {}): StoryState {
   const light = opts.light ?? false;
@@ -421,20 +365,17 @@ export function storyStateAt(p: number, opts: StoryStateOpts = {}): StoryState {
 
   const explode = explodeAt(p);
   const zoom = zoomAt(p);
-  // the roll's gate is the ASSEMBLE channel (story/reveal.ts ROLL_P1 — the
-  // spin lives through the whole visible reassembly). hero-driver's writer
-  // passes the LIVE eased channel (its fast-scroll smear); the authored value
-  // here is what that write settles to at p, per the header's ease-lag residual.
+  // the roll's gate is the ASSEMBLE channel (story/reveal.ts ROLL_P1).
+  // hero-driver's writer passes the LIVE eased channel; this is what that write
+  // settles to at p — the header's ease-lag residual.
   const revealRoll = revealRollAt(p, assembleAt(p));
-  // The PEEL's half is not eased — the writer takes it at the raw p, the clock
-  // the body fade and the drift run on (story/hero-driver.ts) — so this line is
-  // not a settled approximation of that write but exactly it.
+  // The PEEL's half is not eased — the writer takes it at the raw p — so this
+  // is not a settled approximation of that write but exactly it.
   const peelRoll = peelRollAt(p);
 
   // THE IRIS' THREE WRITERS, tiled by range. The fly is checked FIRST because
-  // its writes land last in the driver's frame() — inside its span it wins
-  // whatever the driver's own gate said (story/envelopes.ts driverOwnsIris is
-  // deliberately true there).
+  // its writes land last in the driver's frame(), so inside its span it wins
+  // whatever driverOwnsIris said.
   const flyActive = p >= DIVE_P0 && p <= EXIT_END;
   const irisOwner: IrisOwner = flyActive
     ? "fly"
@@ -442,10 +383,9 @@ export function storyStateAt(p: number, opts: StoryStateOpts = {}): StoryState {
       ? "driver"
       : "internals";
   const pFly = flyDiveP(p);
-  // Inside the internals span both channels ride a phase clock (rack, breath),
-  // so there is no value at p — only the envelopes, reported in `ambient`.
-  // Everywhere else a p-only law owns them: the driver's reset, or the fly's
-  // own two ramps.
+  // Inside the internals span both channels ride a phase clock, so there is no
+  // value at p — only the envelopes, reported in `ambient`. Everywhere else a
+  // p-only law owns them: the driver's reset, or the fly's two ramps.
   const focus =
     irisOwner === "driver" ? 0 : irisOwner === "fly" ? flyFocusAt(pFly) : null;
   const aperture =
@@ -505,17 +445,16 @@ export function storyStateAt(p: number, opts: StoryStateOpts = {}): StoryState {
       inkFill: inkFillAt(p),
       inkMix,
       storyCentre: flyCentreAt(p),
-      bodyFade: p < DIVE_P0 ? peelBodyFadeAt(p) : flyBodyFadeAt(p),
-      bodyFadeOwner: p < DIVE_P0 ? "peelcards" : "fly",
+      bodyFade: p < DIVE_P0 ? 1 : flyBodyFadeAt(p),
+      bodyFadeOwner: p < DIVE_P0 ? "driver" : "fly",
       shellFade: shellFadeAt(p),
       interiorFade: interiorFadeAt(p),
       bg: bgAt(p, light),
       storyFov: pose ? { fov: flyFovOf(pose), mix: flyFovMixAt(p) } : null,
-      // The four span uniforms are reported EVERYWHERE rather than zeroed
-      // outside the span, because each of these functions is itself exactly 0
-      // there — which is what exit() leaves on screen. Pinned as a law in
-      // story/__tests__/story-fly.test.ts, so this is a read of the owner's
-      // ramp and not a copy of the teardown.
+      // The span uniforms are reported EVERYWHERE rather than zeroed outside
+      // the span, because each function is itself exactly 0 there — which is
+      // what exit() leaves on screen. A read of the owner's ramp, not a copy
+      // of the teardown.
       skyMix: flySkyMixAt(p),
       skyOut: skyOutAt(p),
       warp: flyWarpAt(p),
@@ -561,11 +500,10 @@ export function storyStateAt(p: number, opts: StoryStateOpts = {}): StoryState {
   };
 }
 
-/** Every p worth tabulating: each scene's edges, each caption band's edges and
- *  each window's edges, plus the two constants the whole hand-over is built on.
- *  Sorted, deduped and clamped to [0, 1] — the STORY-MAP's row set, and a ready
- *  sample grid for a law test that wants to walk the interesting frames rather
- *  than a blind lattice. */
+/** Every p worth tabulating: each scene's, caption band's and window's edges,
+ *  plus the two constants the hand-over is built on. Sorted, deduped and
+ *  clamped to [0, 1] — the STORY-MAP's row set, and a sample grid for a law
+ *  test that wants the interesting frames rather than a blind lattice. */
 export const STORY_SAMPLE_PS: number[] = (() => {
   const out = new Set<number>([0, 1, DIVE_P0, REVEAL_END]);
   for (const r of RANGES) {

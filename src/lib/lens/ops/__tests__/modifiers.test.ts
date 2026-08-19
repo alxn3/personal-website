@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { NUM } from "../algebra";
+import { atPolar, frameAt, polarOf, vertexAt } from "./fixture-state";
 import { fixtureGateAt } from "./fixture-gate";
 import {
   anchor,
@@ -11,6 +12,7 @@ import {
   selAxialBand,
   selFront,
   stickPress,
+  straight,
   twist,
   PART_CLASS,
   type OpCtx,
@@ -81,14 +83,12 @@ function ctxAt(d: number, over: Partial<OpCtx<number>> = {}): OpCtx<number> {
 // The seated vertex state at material coordinate d: on the barrel (plus any wall
 // offset), at the seated meridian, with a zero rotation accumulator.
 function seatedAt(ctx: OpCtx<number>): VertexState<number> {
-  return {
-    theta: ctx.t0 + ctx.phi,
-    radius: ctx.R + ctx.off,
+  return vertexAt(ctx.t0 + ctx.phi, ctx.R + ctx.off, {
     axial: 0.7,
     rot: 0,
     aim: ctx.t0,
     rem: 0,
-  };
+  });
 }
 
 // A modifier does not take the selection weight: `walk` folds it into the ctx it
@@ -97,12 +97,7 @@ function seatedAt(ctx: OpCtx<number>): VertexState<number> {
 // does the fold. `selFront` is intrinsic, so the frame below is inert for the
 // modifiers; `rot` reads its `orient` (the piece's own meridian, T0) to place a
 // chain on the seam.
-const FRAME: PieceFrame<number> = {
-  theta: T0,
-  radius: R,
-  axial: 0,
-  orient: T0,
-};
+const FRAME: PieceFrame<number> = frameAt(T0, R, { axial: 0, orient: T0 });
 
 function runM(
   ops: OpItem<number>[],
@@ -115,7 +110,7 @@ function runM(
 
 // A bent vertex's position in the radial plane.
 function xzOf(v: VertexState<number>): [number, number] {
-  return [v.radius * Math.cos(v.theta), v.radius * Math.sin(v.theta)];
+  return [v.x, v.z];
 }
 
 function dist(a: [number, number], b: [number, number]): number {
@@ -135,8 +130,8 @@ describe("anchor / arc — the developable bend chain", () => {
     for (const d of [-1.5, 0, 0.001, 2, L / 2, L, L + 2.5]) {
       const ctx = ctxAt(d);
       const out = runM(op, seatedAt(ctx), 1, ctx);
-      expect(out.theta - (ctx.t0 + ctx.phi)).toBeCloseTo(0, 9);
-      expect(out.radius - ctx.R).toBeCloseTo(0, 9);
+      expect(polarOf(out).theta - (ctx.t0 + ctx.phi)).toBeCloseTo(0, 9);
+      expect(polarOf(out).radius - ctx.R).toBeCloseTo(0, 9);
       expect(out.rot).toBeCloseTo(0, 9);
       expect(out.axial).toBe(0.7); // v.axial passes through UNCHANGED
     }
@@ -144,8 +139,8 @@ describe("anchor / arc — the developable bend chain", () => {
     // The wall offset rides the final normal ⇒ radius = R + off.
     const offCtx = ctxAt(2, { off: 0.35 });
     const offOut = runM(op, seatedAt(offCtx), 1, offCtx);
-    expect(offOut.radius - (offCtx.R + offCtx.off)).toBeCloseTo(0, 9);
-    expect(offOut.theta - (offCtx.t0 + offCtx.phi)).toBeCloseTo(0, 9);
+    expect(polarOf(offOut).radius - (offCtx.R + offCtx.off)).toBeCloseTo(0, 9);
+    expect(polarOf(offOut).theta - (offCtx.t0 + offCtx.phi)).toBeCloseTo(0, 9);
   });
 
   it("(b) a roll-step chain lays a flat run then rolls: closed-form cartesian check", () => {
@@ -267,8 +262,8 @@ describe("anchor / arc — the developable bend chain", () => {
       const ctx = ctxAt(d);
       const a = runM(withZero, seatedAt(ctx), 1, ctx);
       const b = runM(without, seatedAt(ctx), 1, ctx);
-      expect(a.theta).toBeCloseTo(b.theta, 12);
-      expect(a.radius).toBeCloseTo(b.radius, 12);
+      expect(a.x).toBeCloseTo(b.x, 12);
+      expect(a.z).toBeCloseTo(b.z, 12);
       expect(a.rot).toBeCloseTo(b.rot, 12);
     }
 
@@ -312,8 +307,8 @@ describe("crease — the hard fold between two panels", () => {
         // STRICT equality, not toBeCloseTo: rad = 0 makes q exactly 1 through
         // the shared chainStep, so crease-vs-plain is bit-for-bit — the
         // property a gate-driven crease actually rests on.
-        expect(a.theta).toBe(b.theta);
-        expect(a.radius).toBe(b.radius);
+        expect(a.x).toBe(b.x);
+        expect(a.z).toBe(b.z);
         expect(a.rot).toBe(b.rot);
         // …and that is the seated state to float rounding: the ARC itself
         // rebuilds the seat through trig (rot carries ~1e-16 of residue on
@@ -321,7 +316,7 @@ describe("crease — the hard fold between two panels", () => {
         // force-zeroes it at channel 0. Crease adds nothing on top; the
         // strict a-vs-b pins that.
         expect(a.rot).toBeCloseTo(0, 12);
-        expect(a.radius).toBeCloseTo(ctx.R + off, 12);
+        expect(polarOf(a).radius).toBeCloseTo(ctx.R + off, 12);
       }
     }
   });
@@ -362,8 +357,8 @@ describe("crease — the hard fold between two panels", () => {
     const short: OpItem<number>[] = [...SEAM(), arc<number>(0, 3)];
     const a = runM(op, seatedAt(early), 1, early);
     const b = runM(short, seatedAt(early), 1, early);
-    expect(a.theta).toBeCloseTo(b.theta, 12);
-    expect(a.radius).toBeCloseTo(b.radius, 12);
+    expect(a.x).toBeCloseTo(b.x, 12);
+    expect(a.z).toBeCloseTo(b.z, 12);
   });
 
   it("(h″) the tent: flat panels stay dead straight and the whole turn sits in the two folds", () => {
@@ -411,25 +406,121 @@ describe("crease — the hard fold between two panels", () => {
   });
 });
 
+describe("straight — the chain's flat run", () => {
+  // A chain with a real bend in front of the flat run, so the tail inherits a
+  // turned aim and a part-spent cursor rather than the seated ones.
+  const bentThen = (tail: OpItem<number>): OpItem<number>[] => [
+    ...SEAM(),
+    arc<number>(1, L / 3),
+    arc<number>(-0.6, L / 3),
+    tail,
+  ];
+
+  it("(i) straight walks the EXACT chord along the aim, where arc(0) fell short", () => {
+    // Straight off the seam anchor: the point lands `len` down the tangent
+    // there, to the bit the closed form can be evaluated to.
+    const ctx = ctxAt(L, { flight: 1, stick: 0 });
+    const len = 3;
+    const out = runM([...SEAM(), straight<number>(len)], seatedAt(ctx), 1, ctx);
+    expect(
+      dist(xzOf(out), [
+        R * NHAT[0] + len * THAT[0],
+        R * NHAT[1] + len * THAT[1],
+      ]),
+    ).toBeLessThan(1e-13);
+
+    // arc(0) says the same thing but walks `len·sinc(ε)` — the singularity
+    // guard's clamp, which is the whole reason this op exists. It is SHORT,
+    // never long, and short by the clamp exactly.
+    const viaArc = runM(
+      [...SEAM(), arc<number>(0, len)],
+      seatedAt(ctx),
+      1,
+      ctx,
+    );
+    const shortfall = dist(xzOf(out), xzOf(viaArc));
+    expect(shortfall).toBeGreaterThan(0);
+    expect(shortfall).toBeCloseTo(len * (1 - Math.sin(1e-5) / 1e-5), 15);
+  });
+
+  it("(i′) straight ≡ arc(0) across the gate and the whole sheet, to that residual", () => {
+    for (const flight of [0.25, 0.5, 0.75, 1]) {
+      for (const frac of [-0.2, 0, 0.25, 0.5, 0.75, 1, 1.2]) {
+        for (const off of [0, 0.35]) {
+          const ctx = ctxAt(frac * L, { flight, stick: 0, off });
+          for (const chain of [
+            bentThen,
+            (t: OpItem<number>) => [...SEAM(), t],
+          ]) {
+            const a = runM(chain(straight<number>()), seatedAt(ctx), 1, ctx);
+            const b = runM(chain(arc<number>(0)), seatedAt(ctx), 1, ctx);
+            // The bound is the clamp times the material a tail can spend, so it
+            // is nine orders under anything the chain means in model-mm.
+            expect(
+              dist(xzOf(a), xzOf(b)),
+              `flight ${flight} frac ${frac} off ${off}`,
+            ).toBeLessThan(1e-9);
+            expect(a.rot, `rot flight ${flight} frac ${frac}`).toBe(b.rot);
+            expect(a.rem).toBeCloseTo(b.rem, 12);
+          }
+        }
+      }
+    }
+  });
+
+  it("(i″) a flat run turns nothing: rot and the aim pass straight through", () => {
+    const ctx = ctxAt(L / 2, { flight: 1, stick: 0 });
+    const before = runM(bentThen(arc<number>(1, 0)), seatedAt(ctx), 1, ctx);
+    const after = runM(bentThen(straight<number>()), seatedAt(ctx), 1, ctx);
+    expect(after.rot).toBe(before.rot);
+    expect(after.aim).toBe(before.aim);
+    expect(after.axial).toBe(before.axial);
+  });
+
+  it("(i‴) the cursor spends min(rem, len), the negative overrun included", () => {
+    // rem is seeded UNCLAMPED from ctx.d, so a seam-overrun vertex carries a
+    // NEGATIVE cursor and the flat run walks it backwards.
+    for (const [d, len, spent] of [
+      [L, 3, 3], // len < rem: spend len
+      [2, 5, 2], // len > rem: spend the remainder
+      [-1.5, 3, -1.5], // negative overrun: min picks the cursor, walk-back
+    ]) {
+      const ctx = ctxAt(d, { flight: 1, stick: 0 });
+      const out = runM([...SEAM(), straight<number>(len)], seatedAt(ctx), 1, ctx); // prettier-ignore
+      expect(out.rem, `d = ${d}`).toBeCloseTo(d - spent, 12);
+      // …and the walk itself is that same signed length down the tangent.
+      const seat = runM([...SEAM()], seatedAt(ctx), 1, ctx);
+      expect(
+        (out.x - seat.x) * THAT[0] + (out.z - seat.z) * THAT[1],
+        `walk d = ${d}`,
+      ).toBeCloseTo(spent, 12);
+    }
+
+    // No `len` at all takes the whole remainder and leaves the cursor empty.
+    const ctx = ctxAt(L, { flight: 1, stick: 0 });
+    const all = runM([...SEAM(), straight<number>()], seatedAt(ctx), 1, ctx);
+    expect(all.rem).toBe(0);
+  });
+});
+
 describe("coil / twist / stickPress", () => {
-  it("(e) identity at flight 0 / stick 1, and twist adds rad·flight·w·yN to theta AND rot", () => {
+  it("(e) identity at flight 0 / stick 1, and twist adds rad·flight·w·yN to the meridian AND rot", () => {
     const idle = ctxAt(2, { flight: 0, stick: 1, yN: 0.4 });
-    const v: VertexState<number> = {
-      theta: 0.42,
-      radius: 10.6,
+    const vP = { theta: 0.42, radius: 10.6 };
+    const v: VertexState<number> = vertexAt(vP.theta, vP.radius, {
       axial: 1.1,
       rot: 0.07,
       aim: T0,
       rem: 0,
-    };
+    });
     for (const op of [
       coil<number>(0.5),
       twist<number>(0.7),
       stickPress<number>(4, 0.3, FROM),
     ]) {
       const out = runM([op], v, 1, idle);
-      expect(out.theta).toBe(v.theta);
-      expect(out.radius).toBe(v.radius);
+      expect(out.x).toBe(v.x);
+      expect(out.z).toBe(v.z);
       expect(out.axial).toBe(v.axial);
       expect(out.rot).toBe(v.rot);
     }
@@ -438,9 +529,9 @@ describe("coil / twist / stickPress", () => {
     const ctx = ctxAt(2, { flight: 0.8, yN: 0.4 });
     const tw = runM([twist<number>(0.7)], v, 0.5, ctx);
     const ang = 0.7 * 0.8 * 0.5 * 0.4;
-    expect(tw.theta).toBeCloseTo(v.theta + ang, 12);
+    expect(polarOf(tw).theta).toBeCloseTo(vP.theta + ang, 12);
     expect(tw.rot).toBeCloseTo(v.rot + ang, 12);
-    expect(tw.radius).toBe(v.radius);
+    expect(polarOf(tw).radius).toBeCloseTo(vP.radius, 12);
     expect(tw.axial).toBe(v.axial);
 
     // coil: constant-arc radius morph — the wedge-local angle opens ∝ 1/factor.
@@ -448,9 +539,9 @@ describe("coil / twist / stickPress", () => {
     const co = runM([coil<number>(0.5)], v, 1, coilCtx);
     const coilF = NUM.mix(1, 0.5, 0.5);
     const open = coilCtx.phi / coilF - coilCtx.phi;
-    expect(co.theta).toBeCloseTo(v.theta + open, 12);
+    expect(polarOf(co).theta).toBeCloseTo(vP.theta + open, 12);
     expect(co.rot).toBeCloseTo(v.rot + open, 12);
-    expect(co.radius).toBeCloseTo(v.radius + R * (coilF - 1), 12);
+    expect(polarOf(co).radius).toBeCloseTo(vP.radius + R * (coilF - 1), 12);
 
     // stickPress: the hover S-bend sweeps along the axis from the contact end.
     const pressCtx = ctxAt(2, { stick: 0.4, yN: 0.1 });
@@ -458,28 +549,27 @@ describe("coil / twist / stickPress", () => {
     const u = 0.5 - pressCtx.yN * FROM;
     const front = pressCtx.stick * 1.3;
     const amt = 4 * NUM.smoothstep(0, 0.3, u - front + 0.3);
-    expect(pr.radius).toBeCloseTo(v.radius + amt, 12);
-    expect(pr.theta).toBe(v.theta);
+    expect(polarOf(pr).radius).toBeCloseTo(vP.radius + amt, 12);
+    expect(polarOf(pr).theta).toBeCloseTo(vP.theta, 12);
     expect(pr.rot).toBe(v.rot);
   });
 
   it("(e′) the gate law at an INTERMEDIATE w: flightEff = flight·w, stickEff = mix(1, stick, w)", () => {
-    const v: VertexState<number> = {
-      theta: 0.42,
-      radius: 10.6,
+    const vP = { theta: 0.42, radius: 10.6 };
+    const v: VertexState<number> = vertexAt(vP.theta, vP.radius, {
       axial: 1.1,
       rot: 0.07,
       aim: T0,
       rem: 0,
-    };
+    });
 
     // coil at w = 0.5, flight 0.8, factor 0.5:
     //   flightEff = 0.8·0.5 = 0.4   ⇒ coilF = mix(1, 0.5, 0.4) = 0.8
     //   phi(d = 2) = 0.2 ⇒ open = 0.2/0.8 − 0.2 = 0.05, radius += R·(0.8 − 1) = −2.
     // Any w-nonlinearity (flight·w² would give coilF = 0.9) misses these.
     const co = runM([coil<number>(0.5)], v, 0.5, ctxAt(2, { flight: 0.8 }));
-    expect(co.theta).toBeCloseTo(0.47, 12);
-    expect(co.radius).toBeCloseTo(8.6, 12);
+    expect(polarOf(co).theta).toBeCloseTo(0.47, 12);
+    expect(polarOf(co).radius).toBeCloseTo(8.6, 12);
     expect(co.rot).toBeCloseTo(0.12, 12);
 
     // stickPress at w = 0.5, stick 0.4, yN 0.26, hover 4, blendFrac 0.3:
@@ -492,8 +582,8 @@ describe("coil / twist / stickPress", () => {
       0.5,
       ctxAt(2, { stick: 0.4, yN: 0.26 }),
     );
-    expect(pr.radius).toBeCloseTo(12.6, 12);
-    expect(pr.theta).toBe(v.theta);
+    expect(polarOf(pr).radius).toBeCloseTo(12.6, 12);
+    expect(polarOf(pr).theta).toBeCloseTo(vP.theta, 12);
     expect(pr.rot).toBe(v.rot);
   });
 });
@@ -516,14 +606,14 @@ describe("modifier weight law — a masked piece stays seated", () => {
       const ctx = ctxAt(d, { flight: 1, stick: 0 });
       const seated = seatedAt(ctx);
       const out = runM(op, seated, 0, ctx);
-      expect(out.theta).toBeCloseTo(ctx.t0 + ctx.phi, 12);
-      expect(out.radius).toBeCloseTo(ctx.R, 12);
+      expect(polarOf(out).theta).toBeCloseTo(ctx.t0 + ctx.phi, 12);
+      expect(polarOf(out).radius).toBeCloseTo(ctx.R, 12);
       expect(out.rot).toBeCloseTo(0, 12);
       expect(out.axial).toBe(seated.axial);
 
       // …and at w = 1 the same profile actually deforms (the law is not a no-op).
       const live = runM(op, seated, 1, ctx);
-      expect(Math.abs(live.radius - ctx.R)).toBeGreaterThan(1e-3);
+      expect(Math.abs(polarOf(live).radius - ctx.R)).toBeGreaterThan(1e-3);
     }
   });
 
@@ -581,8 +671,8 @@ describe("modifier weight law — a masked piece stays seated", () => {
       const out = runM(op, seatedAt(ctx), 0.5, ctx);
       // 10 places (≈1e-10 rad / model-mm) — the chain rebuilds these through
       // trig, so the last couple of ULPs are float noise, not the law.
-      expect(out.theta, `d = ${g.d} theta`).toBeCloseTo(g.theta, 10);
-      expect(out.radius, `d = ${g.d} radius`).toBeCloseTo(g.radius, 10);
+      expect(polarOf(out).theta, `d = ${g.d} theta`).toBeCloseTo(g.theta, 10);
+      expect(polarOf(out).radius, `d = ${g.d} radius`).toBeCloseTo(g.radius, 10); // prettier-ignore
       expect(out.rot, `d = ${g.d} rot`).toBeCloseTo(g.rot, 12);
     }
 
@@ -594,39 +684,31 @@ describe("modifier weight law — a masked piece stays seated", () => {
     const ctx = ctxAt(8, { flight: 1, stick: 0 });
     const seated = seatedAt(ctx);
     const full = runM(op, seated, 1, ctx);
-    const mixed = {
-      x: (seated.radius * Math.cos(seated.theta) + full.radius * Math.cos(full.theta)) / 2, // prettier-ignore
-      z: (seated.radius * Math.sin(seated.theta) + full.radius * Math.sin(full.theta)) / 2, // prettier-ignore
-    };
-    expect(
-      dist(
-        [mixed.x, mixed.z],
-        [
-          GOLDEN[0].radius * Math.cos(GOLDEN[0].theta),
-          GOLDEN[0].radius * Math.sin(GOLDEN[0].theta),
-        ],
-      ),
-    ).toBeGreaterThan(0.5);
+    const mixed: [number, number] = [
+      (seated.x + full.x) / 2,
+      (seated.z + full.z) / 2,
+    ];
+    const pinned = atPolar(GOLDEN[0].theta, GOLDEN[0].radius);
+    expect(dist(mixed, [pinned.x, pinned.z])).toBeGreaterThan(0.5);
   });
 
   it("(f′) coil / twist / stickPress at w = 0 are exact identities at full channel", () => {
     const ctx = ctxAt(2, { flight: 1, stick: 0, yN: 0.4 });
-    const v: VertexState<number> = {
-      theta: 0.42,
-      radius: 10.6,
+    const vP = { theta: 0.42, radius: 10.6 };
+    const v: VertexState<number> = vertexAt(vP.theta, vP.radius, {
       axial: 1.1,
       rot: 0.07,
       aim: T0,
       rem: 0,
-    };
+    });
     for (const op of [
       coil<number>(0.5),
       twist<number>(0.7),
       stickPress<number>(4, 0.3, FROM),
     ]) {
       const out = runM([op], v, 0, ctx);
-      expect(out.theta).toBe(v.theta);
-      expect(out.radius).toBe(v.radius);
+      expect(out.x).toBe(v.x);
+      expect(out.z).toBe(v.z);
       expect(out.axial).toBe(v.axial);
       expect(out.rot).toBe(v.rot);
     }
@@ -634,12 +716,7 @@ describe("modifier weight law — a masked piece stays seated", () => {
 });
 
 describe("selAxialBand — open bypass", () => {
-  const F0: PieceFrame<number> = {
-    theta: 0.3,
-    radius: 1,
-    axial: 0,
-    orient: 0.3,
-  };
+  const F0: PieceFrame<number> = frameAt(0.3, 1, { axial: 0, orient: 0.3 });
 
   it("(g) a band wider than the ±1e5 sentinel is exactly 1 anywhere", () => {
     const sel = selAxialBand<number>(-1e5, 1e5);

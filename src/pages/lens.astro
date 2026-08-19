@@ -413,11 +413,9 @@ const shadingTransitions = [
       // fits fully inside the region the floating panel doesn't cover.
       scene = await initScene(canvas, { cameraDistance: 1.22 });
     } catch (err) {
-      // Swap the canvas for a static message instead of leaving a silently blank
-      // page, and skip the controls (they'd drive nothing). Only blame the
-      // browser when it truly lacks WebGPU/WebGL2 — this catch also sees model
-      // fetch failures (bad deploy, flaky network), and telling a perfectly
-      // capable browser it's unsupported sends the user down the wrong path.
+      // Swap the canvas for a static message and skip the controls. Only
+      // blame the browser when it truly lacks WebGPU/WebGL2 — this catch also
+      // sees model fetch failures.
       console.warn("lens viewer: init failed, showing fallback message", err);
       canvas.remove();
       const fallback = document.getElementById("scene-fallback");
@@ -434,10 +432,9 @@ const shadingTransitions = [
       return;
     }
 
-    // The canned animations arrive via their own lazy chunk (lib/lens
-    // index.ts loadAnimations — module-scope recipeKnob calls make the family
-    // layer unshakeable from a static graph, so the homepage hero must not
-    // carry it). Awaited here, before any tab wiring reads the list.
+    // The canned animations arrive via their own lazy chunk: module-scope
+    // recipeKnob calls make the family layer unshakeable from a static graph,
+    // so the homepage hero must not carry it.
     const { ANIMATIONS, fmtParam } = await loadAnimations();
     // Refresh one slider's physical-value readout off its uniform (the truth
     // after KNOB_LIMITS clamping — what a baked default would be).
@@ -452,9 +449,8 @@ const shadingTransitions = [
       if (out && v !== undefined) out.textContent = fmtParam(v);
     };
 
-    // Slider ids match SceneState channel names 1:1 (`slider-zoom` →
-    // `state.zoomTarget`), so adding a slider is one row in the frontmatter
-    // table plus one entry here — the template-literal key keeps it type-safe.
+    // Slider ids match SceneState channel names 1:1, so adding a slider is one
+    // row in the frontmatter table plus one entry here.
     const sliderChannels = ["zoom", "focus", "aperture", "explode"] as const;
     for (const id of sliderChannels) {
       const input = document.getElementById(
@@ -477,10 +473,8 @@ const shadingTransitions = [
     // follow the site theme toggle — re-palettes the current shading mode
     watchTheme((light) => scene.setTheme(light));
 
-    // The seven technical looks arrive via their own lazy chunk
-    // (materials/shading-bench.ts — the homepage hero wears only the story's
-    // realistic/ink pair and must not carry the palettes). Awaited here, before
-    // the buttons are wired, so every swap below stays SYNCHRONOUS: a
+    // The seven technical looks arrive via their own lazy chunk. Awaited here,
+    // before the buttons are wired, so every swap below stays SYNCHRONOUS — a
     // transition cuts on its own apex frame and cannot wait for a fetch.
     const benchOk = await scene.enableShadingBench();
     const shadingButtons = [
@@ -517,9 +511,8 @@ const shadingTransitions = [
     scene.setShading("ink");
 
     // --- Control-panel tabs --------------------------------------------------
-    // Each tab's aria-controls names its panel. Panels grid-stack in ONE cell,
-    // so the inactive one is hidden with VISIBILITY (keeps its layout box —
-    // the panel never resizes when tabs switch), never with display.
+    // Panels grid-stack in ONE cell, so the inactive one is hidden with
+    // VISIBILITY — it keeps its layout box and the panel never resizes.
     const tabs = [
       ...document.querySelectorAll<HTMLButtonElement>(
         '[role="tablist"] [role="tab"]',
@@ -569,8 +562,7 @@ const shadingTransitions = [
 
     // --- Motion paths --------------------------------------------------------
     // The checkbox is the only gate: ticking it dynamically imports the
-    // visualizer, so an untouched page fetches none of it. `refreshPaths` is a
-    // no-op until then.
+    // visualizer, so an untouched page fetches none of it.
     const pathsToggle = document.getElementById(
       "paths-toggle",
     ) as HTMLInputElement | null;
@@ -584,16 +576,13 @@ const shadingTransitions = [
       pathsStatus.classList.toggle("text-text-muted", ok);
     };
     const refreshPaths = async () => {
-      // BOTH gates: pathViz existing is not enough — unticking the box leaves
-      // the visualizer instantiated, and the show() walk (a 96-row GPU probe
-      // plus a geometry rebuild) must not keep running invisibly on every
-      // knob drag. The checkbox is the intent, so it is the gate.
+      // BOTH gates: unticking leaves the visualizer instantiated, and its
+      // show() walk must not keep running invisibly on every knob drag.
       if (!pathViz || !pathsToggle?.checked) return;
       await pathViz.show(activeAnim, progressOf);
     };
     // (Re)apply the toggle. Split out of the listener because the BROWSER
-    // restores `checked` across a reload without firing `change` — see the
-    // restore block near the end of boot().
+    // restores `checked` across a reload without firing `change`.
     const applyPathsToggle = async () => {
       if (pathsToggle?.checked) {
         pathViz ??= await scene.enablePathViz(setPathStatus);
@@ -627,11 +616,9 @@ const shadingTransitions = [
     };
     inspectToggle?.addEventListener("change", () => void applyInspectToggle());
 
-    // fromDefaults: while an ANIMATION is active, slider channels must sit at
-    // their markup defaults, NOT the user's current slider positions — a
-    // dragged explode slider would otherwise keep flying the ladder recipe
-    // underneath the animation (adversarial review finding). The live values
-    // return when None re-enables manual control.
+    // fromDefaults: while an ANIMATION is active, slider channels sit at their
+    // markup defaults, not the user's positions — a dragged explode slider
+    // would otherwise keep flying the ladder recipe under the animation.
     const applyManualSliders = (anim?: { manualMech?: boolean } | null) => {
       for (const id of sliderChannels) {
         const input = document.getElementById(
@@ -648,12 +635,10 @@ const shadingTransitions = [
       }
     };
 
-    // Channels an animation may drive — rest each to its registry default on
-    // switch/None so no stale pose survives. The LIST is derived from the one
-    // channel registry (core/scene ANIM_RESET_CHANNELS), so a new animReset
-    // channel needs no edit here. Slider channels are restored by
-    // applyManualSliders instead (explode is in both — the slider default wins
-    // because applyManualSliders runs right after this).
+    // Channels an animation may drive — reset to registry defaults on
+    // switch/None so no stale pose survives. The list is DERIVED from the
+    // channel registry, so a new animReset channel needs no edit here. Slider
+    // channels are restored by applyManualSliders instead.
     const resetAnimChannels = () => {
       for (const c of ANIM_RESET_CHANNELS)
         scene.state[`${c}Target`] = CHANNEL_DEFAULTS[c];
@@ -662,13 +647,9 @@ const shadingTransitions = [
     const progressOf = () => Number(progressInput?.value ?? 0) / 100;
 
     // --- Hero camera preview -------------------------------------------------
-    // Maps animation progress p (0..1) onto the hero's story progress: p=0
-    // opens on the rewrap scene's camera, p=1 lands on the END of the caps-on
-    // scene — the hand-off pose. Both ends are derived, so appending a beat
-    // after capsOn keeps the preview on the finale instead of stretching it
-    // over the new scene. THE span to tune if the preview should cover a
-    // different slice of the story (e.g. start mid-rewrap): [storyP at p=0,
-    // storyP at p=1].
+    // Maps animation progress p onto the hero's story progress. Both ends are
+    // DERIVED from scene ranges, so appending a beat after capsOn keeps the
+    // preview on the finale instead of stretching it over the new scene.
     const STORY_CAM_SPAN: readonly [number, number] = [
       rangeOf("rewrap").p0,
       rangeOf("capsOn").p1,
@@ -680,8 +661,7 @@ const shadingTransitions = [
     ) as HTMLInputElement | null;
     const storyCamActive = () => Boolean(storyCamToggle?.checked && activeAnim);
     // (Re)apply the toggle. Engaging SNAPS the story channel (value AND
-    // target) — easing up from 0 would fly the camera through the whole
-    // earlier story just to reach the mapped p.
+    // target): easing up from 0 would fly the camera through the whole story.
     const syncStoryCam = () => {
       const on = storyCamActive();
       scene.setStoryCamera(on);
@@ -693,14 +673,11 @@ const shadingTransitions = [
       syncStoryCam();
     });
 
-    // Ease the INPUT, not the channels: `shown` chases the slider p with the
-    // classic scrub cushion (EASE of the remaining gap per 60Hz frame,
-    // dt-normalized), then LANDS EXACTLY on the input p. Same damped feel the
-    // target-easing bench had — but in p-space, so every transient frame
-    // replays the actual choreography (a drag is low-passed between pointer
-    // pixels; a click fast-forwards through the scene) and at rest the frame
-    // is still a pure function of the slider: no easing residue, exact
-    // endpoints. Reduced-motion always lands directly.
+    // Ease the INPUT, not the channels: `shown` chases the slider p with a
+    // scrub cushion and LANDS EXACTLY on it. In p-space, so every transient
+    // frame replays the actual choreography and at rest the frame is a pure
+    // function of the slider — no easing residue, exact endpoints.
+    // Reduced-motion always lands directly.
     const makeScrubGlide = (applyAt: (p: number) => void) => {
       const EASE = 0.15;
       let shown = 0;
@@ -752,11 +729,9 @@ const shadingTransitions = [
 
     const selectAnimation = (anim: LensAnimation | null) => {
       activeAnim?.exit?.(); // restore anything the outgoing animation turned on
-      // …then put EVERY recipe knob back on its default. The exits above only
-      // undo what an animation hand-listed; the three core animations expose 28
-      // knob sliders and have no exit() at all, so without this a knob dragged
-      // under one animation followed the selection into the next one.
-      // BETWEEN the two calls on purpose: after exit() so a restore isn't
+      // …then put EVERY recipe knob back on its default: exit() only undoes
+      // what an animation hand-listed, and most expose knobs without one.
+      // BETWEEN the two calls on purpose — after exit() so a restore isn't
       // re-clobbered, before enter() so the incoming preset survives.
       resetRecipeKnobs();
       activeAnim = anim;
@@ -775,9 +750,8 @@ const shadingTransitions = [
       animGlide.snap(progressOf());
       scene.invalidate(); // enter/apply may drive bare uniforms
       const disabled = Boolean(anim);
-      // A manualMech bench (rose/scratch) keeps zoom/focus/aperture LIVE —
-      // only explode is animation-owned there, so the group-level dimming
-      // stays off and each slider decides for itself.
+      // A manualMech bench keeps zoom/focus/aperture LIVE — only explode is
+      // animation-owned there, so each slider decides for itself.
       const mechFree = Boolean(anim?.manualMech);
       sliderGroup?.classList.toggle(
         "pointer-events-none",
@@ -802,12 +776,9 @@ const shadingTransitions = [
       if (animHint) animHint.textContent = anim?.hint ?? "";
       for (const c of paramContainers) {
         setStacked(c, c.dataset.animParams === anim?.id);
-        // Every knob behind these sliders was just put back on its default
-        // (resetRecipeKnobs) or re-preset by enter(), and each input's markup
-        // `value` is the position that reproduces exactly that — so put the
-        // thumbs back on it rather than leaving one claiming a value the
-        // uniform no longer holds. The readout re-reads the uniform itself,
-        // so it shows the post-reset (or enter()-preset) truth.
+        // Every knob behind these sliders was just reset or re-preset by
+        // enter(), and each input's markup `value` reproduces exactly that, so
+        // the thumbs go back to it. The readout re-reads the uniform.
         const ca = ANIMATIONS.find((a) => a.id === c.dataset.animParams);
         for (const input of c.querySelectorAll<HTMLInputElement>(
           "input[data-param]",
@@ -829,10 +800,8 @@ const shadingTransitions = [
       });
     }
 
-    // Frictionless test loop: boot into the state you were last in. The
-    // Animations tab is the default home during the exploration; the last
-    // animation, its progress, and the hero-camera choice all restore, so a
-    // reload (or an HMR-triggered one) drops you exactly where you left off.
+    // Boot into the state you were last in: tab, animation, progress and the
+    // hero-camera choice all restore, so a reload lands where you left off.
     {
       const tabId = localStorage.getItem("lens-tab") ?? "tab-animations";
       const tab = tabs.find((t) => t.id === tabId);
@@ -848,12 +817,10 @@ const shadingTransitions = [
         storyCamToggle.checked = true;
         syncStoryCam();
       }
-      // The two dev toggles restore themselves — the BROWSER reinstates a
-      // checkbox's `checked` across a reload, but silently: no `change` fires,
-      // so the listener alone leaves the box ticked over a dead instrument
-      // (the fix is to honour the restored state, not to clear it — these stay
-      // on all session). Applied HERE, after the animation restore, because
-      // the path walk is of the selected animation.
+      // The BROWSER reinstates a checkbox's `checked` across a reload, but
+      // silently — no `change` fires, so the listener alone would leave the box
+      // ticked over a dead instrument. Applied HERE, after the animation
+      // restore, because the path walk is of the selected animation.
       void applyPathsToggle();
       void applyInspectToggle();
     }
@@ -867,12 +834,11 @@ const shadingTransitions = [
     });
 
     // Per-animation param sliders push into their backing shader uniform; the
-    // scene only repaints on dirty/easing, so a bare uniform tweak needs invalidate().
+    // scene only repaints on dirty/easing, so a bare tweak needs invalidate().
     for (const c of paramContainers) {
       const anim = ANIMATIONS.find((a) => a.id === c.dataset.animParams);
-      // Reset: every thumb back to its markup default (the position that
-      // reproduces the shipped knobDefaults), pushed through setParam so the
-      // uniforms follow, readouts re-synced off the uniforms themselves.
+      // Reset: every thumb back to its markup default, pushed through setParam
+      // so the uniforms follow and the readouts re-sync off them.
       c.querySelector<HTMLButtonElement>(
         "button[data-param-reset]",
       )?.addEventListener("click", () => {
@@ -900,9 +866,8 @@ const shadingTransitions = [
           );
           syncParamOut(anim, input);
           scene.invalidate();
-          // A knob change reshapes the whole path, so the drawn one is now
-          // stale — re-walk once the drag settles (the visualizer's own live
-          // check flags the gap in the meantime).
+          // A knob change reshapes the whole path, so re-walk once the drag
+          // settles; the visualizer's live check flags the gap meanwhile.
           window.clearTimeout(pathsDebounce);
           pathsDebounce = window.setTimeout(() => void refreshPaths(), 250);
         });

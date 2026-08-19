@@ -144,25 +144,23 @@ const isCurrentPath = (href: string) => {
     : null;
 
   if (header && backdrop) {
-    let queued = false;
-    const sync = () => {
-      queued = false;
-      header.toggleAttribute(
-        "data-clear",
-        backdrop.getBoundingClientRect().bottom > header.offsetHeight,
+    // "the backdrop still covers the bar" IS the backdrop intersecting a
+    // viewport clipped to the bar's own height, so the observer answers it
+    // without measuring on the scroll. rootMargin is fixed at construction —
+    // re-arm when the bar's height can have changed.
+    let io: IntersectionObserver | null = null;
+    const arm = () => {
+      io?.disconnect();
+      io = new IntersectionObserver(
+        ([entry]) => header.toggleAttribute("data-clear", entry.isIntersecting),
+        { rootMargin: `-${header.offsetHeight}px 0px 0px 0px` },
       );
+      io.observe(backdrop);
     };
-    const onScroll = () => {
-      if (queued) return;
-      queued = true;
-      requestAnimationFrame(sync);
-    };
-    addEventListener("scroll", onScroll, { passive: true });
-    addEventListener("resize", onScroll);
-    // bfcache restores skip module re-eval, and a restored scroll position may
-    // land below the hero before any scroll event fires — re-sync on both.
-    addEventListener("pageshow", onScroll);
-    sync();
+    arm();
+    addEventListener("resize", arm);
+    // bfcache restores skip module re-eval; observing again re-syncs
+    addEventListener("pageshow", arm);
   } else if (import.meta.env.DEV && header) {
     console.warn(
       `navbar: clearOver selector "${header.dataset.clearOver}" matched nothing — the bar will stay chrome-less everywhere`,

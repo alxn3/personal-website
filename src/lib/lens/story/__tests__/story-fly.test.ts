@@ -9,7 +9,6 @@ import {
   DIVE_P0,
   REVEAL_END,
 } from "../story";
-import { peelBodyFadeAt } from "../peelcards";
 import {
   HYST,
   X_PARK,
@@ -114,7 +113,7 @@ describe("story fly span", () => {
       expect(d).toBeLessThanOrEqual(prev + 1e-12);
       prev = d;
     }
-    // THE GATING LAW, RESTATED (the owner moved the ink return under the
+    // THE GATING LAW, RESTATED (the ink return now sits under the
     // seat). It used to be "dolly ≠ 0 ⇒ ink exactly 0", and its PURPOSE was
     // the depth fade: the ink's opacity rides ×uInk × depthFade, and the fade
     // planes were placed from the camera's distance to the ORIGIN — ink over a
@@ -134,7 +133,7 @@ describe("story fly span", () => {
     const seating = atFrac(rwR, 0.3);
     expect(flyDollyAt(seating)).toBeGreaterThan(0);
     expect(flyInkAt(seating)).toBeGreaterThan(0);
-    // …and the look is FULLY ink well before caps-on (the owner's far edge)
+    // …and the look is FULLY ink well before caps-on (the far edge)
     expect(flyInkAt(atFrac(rwR, 0.5))).toBe(1);
     expect(flyInkAt(atFrac(rangeOf("capsOn"), 0.1))).toBe(1);
   });
@@ -146,9 +145,9 @@ describe("story fly span", () => {
   // is where story/fly.ts lifts the body cover.
   //
   // IT DOES NOT RETURN HOME, THOUGH — it returns to REVEAL_X, three and a half
-  // units PAST home, and stands there for the whole reveal (owner: "the lens is
-  // a bit too close to the camera during the reveal"). The last leg is a beat of
-  // its own, after the reveal, with the camera's move.
+  // units PAST home, and stands there for the whole reveal — seated at home the
+  // lens reads too close to the camera there. The last leg is a beat of its
+  // own, after the reveal, with the camera's move.
   it("parks the lens at the overshoot before the reveal uncovers it, and seats it after", () => {
     // out through the whole sky chapter, right up to the trails' last tenth…
     expect(flyDollyAt(atFrac(rangeOf("constellations"), 0.5))).toBeCloseTo(
@@ -197,7 +196,7 @@ describe("story fly span", () => {
     }
   });
 
-  // THE REVEAL'S OWN ORDER (task 69). The owner's beat is: the exploded, still
+  // THE REVEAL'S OWN ORDER. The beat is: the exploded, still
   // spinning lens crossfades in UNDER the last of the star trails, and the
   // framing only comes back once the sky it would scale is gone.
   it("uncovers the lens while the trails are still on screen, and hands the fov back after they are gone", () => {
@@ -206,8 +205,8 @@ describe("story fly span", () => {
     expect(flyRevealAt(rwR.p0)).toBe(0);
     expect(flyRevealAt(atFrac(rwR, 0.06))).toBe(0);
     // …then up while the field is still fading (story/trails.ts trailEnvAt runs
-    // its fall over rewrap-local [0.02, 0.28]) — the crossfade the owner asked
-    // for is this overlap, and the fluid-transition correction made it LONG:
+    // its fall over rewrap-local [0.02, 0.28]) — the crossfade IS this overlap,
+    // and the fluid-transition correction made it LONG:
     // the shell is fully drawn at 0.16 with the arcs' fall not even half spent,
     // so the two figures share the frame for 0.12 of the scene after the
     // crossfade tops out (the trail side of the law is pinned in trails.test.ts)
@@ -231,8 +230,8 @@ describe("story fly span", () => {
     expect(flyFovBackAt(EXIT_END)).toBe(1);
   });
 
-  // THE STAGGERED ONSETS (owner: the trails→reassemble camera work was "very
-  // jarring"). Three movers used to start on the SAME frame out of a bit-still
+  // THE STAGGERED ONSETS (the trails→reassemble camera work read as very
+  // jarring). Three movers used to start on the SAME frame out of a bit-still
   // hold — the fused chain, the fov push-in and the dolly's last leg, all on
   // REVEAL_END — a dead stop into a fast move. Each now has its own edge, in
   // a fixed order, so no frame carries more than one onset: the chain creeps
@@ -300,18 +299,16 @@ describe("story fly span", () => {
   });
 
   // THE BODY-FADE CHANNEL'S HAND-OVER — the other half of the range-tiled
-  // writer map. hero-driver writes story/peelcards.ts's peelBodyFadeAt for every
-  // p BELOW DIVE_P0 and this module's cover from DIVE_P0 on, off the SAME
-  // constant, so the channel has an owner at every p. It did not: the tile used
-  // to end at the flythrough scene's p0, 0.024 of p earlier, and applyBodyFade
-  // holds its last level when a write does not change it — so a frame(p) that
-  // jumped out of the peel/cards valley (level 0) into that band left the whole
-  // lens hidden, ink and glass with it, for the dive's entire approach, with
-  // nothing to restore it until a frame landed outside the band again.
+  // writer map. hero-driver holds a constant 1 for every p BELOW DIVE_P0 and
+  // this module's cover owns it from DIVE_P0 on, off the SAME constant, so the
+  // channel has an owner at every p. It did not: the tile used to end at the
+  // flythrough scene's p0, 0.024 of p earlier, and applyBodyFade holds its last
+  // level when a write does not change it — so a frame(p) that jumped into that
+  // band could leave the lens hidden with nothing to restore it.
   it("takes the body-fade channel over from the story with NO unowned p", () => {
-    // the seam itself: both owners write exactly 1 where they meet, so the
-    // hand-over is not just gapless but stepless
-    expect(peelBodyFadeAt(DIVE_P0)).toBe(1);
+    // the seam itself: the driver holds a constant 1 below DIVE_P0 (nothing
+    // hides the lens there any more) and the fly opens on 1, so the hand-over
+    // is not just gapless but stepless
     expect(flyBodyFadeAt(DIVE_P0)).toBe(1);
     // …and the cover stays out of the way until the lens is behind the camera
     for (let i = 0; i <= 100; i++)
@@ -323,7 +320,6 @@ describe("story fly span", () => {
     // writes while hero-driver also does: both are 1, so the double-write is
     // harmless in either order
     expect(flyBodyFadeAt(DIVE_P0 - HYST)).toBe(1);
-    expect(peelBodyFadeAt(DIVE_P0 - HYST)).toBe(1);
   });
 
   it("writes NOTHING to the channel below DIVE_P0 — a deep link into the approach", () => {
@@ -412,7 +408,7 @@ describe("story fly span", () => {
     // them: the dissolve OUT is finished a slack's width BEFORE the span
     // opens, and the way back does not start until well past the glass edge —
     // the return ramp itself now runs INSIDE the active span, deliberately
-    // (the owner moved it to right after the lens appears).
+    // (the return sits right after the lens appears).
     expect(flyInkAt(DIVE_P0 - HYST)).toBe(0);
     expect(flyInkAt(GLASS_OUT)).toBe(0);
     expect(flyInkAt(GLASS_OUT + HYST)).toBe(0);
@@ -422,8 +418,8 @@ describe("story fly span", () => {
     // a REAL margin, not an epsilon: the return opens a tenth of the scene
     // above the glass edge
     expect(INK_RETURN[0]).toBeGreaterThan(GLASS_OUT + HYST);
-    // …and the reveal window itself plays fully realistic (the owner's
-    // "appearance stays realistic"): ink exactly 0 until the lens is whole
+    // …and the reveal window itself plays fully realistic: ink exactly 0
+    // until the lens is whole
     expect(flyRevealAt(INK_RETURN[0])).toBe(1);
     expect(flyInkAt(atFrac(rwR, 0.16))).toBe(0);
     // both ramps are real dissolves, not cuts
@@ -593,7 +589,7 @@ describe("story fly span", () => {
   });
 
   it("names the one-line compositions frame() used to write inline", () => {
-    // the class the review found: a value composed inside frame() cannot be
+    // the class this pins: a value composed inside frame() cannot be
     // reported without a second copy of it, so each got a name in its owner.
     // These pin the compositions themselves; that frame() CALLS them is
     // structural (it holds no expression of its own for any of the four).
@@ -623,12 +619,11 @@ describe("story fly span", () => {
 
   // THE WARP LIVES AND DIES WITH THE DIVE'S MOTION — the demo's own arc, back
   // on the demo's own clock. It was briefly SUSTAINED into the sky scenes
-  // (task 62 re-hosted the fall onto scroll), and the owner walked that back:
-  // the sustain parked the frame at meaningful warp strength after the dive's
-  // travel had ended, and "No pause. I just wanted the ring to look better
-  // when you slowly scroll down." The ring's visual-quality work from that
-  // task (mask co-location, profile, radius-scaled widths) lives in optics/,
-  // untouched; only the envelope came home. The laws, not the numbers:
+  // (the fall was re-hosted onto scroll), and that was walked back: the
+  // sustain parked the frame at meaningful warp strength after the dive's
+  // travel had ended, which reads as a pause. The ring's visual-quality work
+  // from that era (mask co-location, profile, radius-scaled widths) lives in
+  // optics/, untouched; only the envelope came home. The laws, not the numbers:
   describe("the wormhole envelope", () => {
     it("is exactly 0 for every frame of the trails scene and after", () => {
       // THE HARD ONE. The star trails are perfect circles concentric with the
@@ -665,7 +660,7 @@ describe("story fly span", () => {
     });
 
     it("dies with the dive's motion — no parked full-warp frames", () => {
-      // THE OWNER CORRECTION (supersedes task 62's sustain law, which pinned
+      // THE CORRECTION (supersedes the old sustain law, which pinned
       // the opposite: WARP_OUT[1] > flyR.p1). The fall is spent at
       // FLY.pWormhole[2] = 0.84 of the dive, while the travel itself still has
       // its slow drift to run — so every frame with meaningful warp strength

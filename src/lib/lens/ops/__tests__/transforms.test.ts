@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { NUM } from "../algebra";
 import { fixtureGateAt } from "./fixture-gate";
+import { atPolar, frameAt, polarOf, vertexAt } from "./fixture-state";
 import {
   approach,
   ladder,
@@ -23,20 +24,20 @@ import {
 // hand-built ctx/state, mirroring pipeline.test.ts. A transform is called
 // directly: run(v, f, w, ctx) → { v, f }.
 
-const V0: VertexState<number> = {
-  theta: 0.3,
-  radius: 2,
+// The seated pair in BARREL terms, which is how the laws below are stated;
+// `fixture-state.ts` converts to the cartesian the state actually carries.
+const V0P = { theta: 0.3, radius: 2 };
+const F0P = { theta: 0.2, radius: 1.5 };
+const V0: VertexState<number> = vertexAt(V0P.theta, V0P.radius, {
   axial: 0.5,
   rot: 0.1,
   aim: 0.3, // seeded to ctx.t0
   rem: 0,
-};
-const F0: PieceFrame<number> = {
-  theta: 0.2,
-  radius: 1.5,
+});
+const F0: PieceFrame<number> = frameAt(F0P.theta, F0P.radius, {
   axial: 0.2,
   orient: 0.3, // absolute, seeded to ctx.t0
-};
+});
 
 // `channel` / `gateAt` are the raw clock and the REAL gate a `during` scope
 // would re-run (see fixture-gate.ts); the flight/stick pair each case passes is
@@ -82,20 +83,22 @@ function runT(
   return op.run(v, f, w, ctx);
 }
 
-// Assert a transform is a no-op on both vertex and frame (allowing for the
-// cartesian round-trip's floating-point dust in scale/shear).
+// Assert a transform is a no-op on both vertex and frame. The POINT is strict —
+// every transform returns the components it was handed. `axial` is not, because
+// `tilt` rebuilds it as pivot + (axial − pivot), which cancels to within an ULP
+// for a distant hinge; that is the pivot's arithmetic, not the op's.
 function expectIdentity(out: {
   v: VertexState<number>;
   f: PieceFrame<number>;
 }): void {
-  expect(out.v.theta).toBeCloseTo(V0.theta, 12);
-  expect(out.v.radius).toBeCloseTo(V0.radius, 12);
+  expect(out.v.x).toBe(V0.x);
+  expect(out.v.z).toBe(V0.z);
+  expect(out.v.rot).toBe(V0.rot);
+  expect(out.f.x).toBe(F0.x);
+  expect(out.f.z).toBe(F0.z);
+  expect(out.f.orient).toBe(F0.orient);
   expect(out.v.axial).toBeCloseTo(V0.axial, 12);
-  expect(out.v.rot).toBeCloseTo(V0.rot, 12);
-  expect(out.f.theta).toBeCloseTo(F0.theta, 12);
-  expect(out.f.radius).toBeCloseTo(F0.radius, 12);
   expect(out.f.axial).toBeCloseTo(F0.axial, 12);
-  expect(out.f.orient).toBeCloseTo(F0.orient, 12);
 }
 
 describe("transforms", () => {
@@ -118,7 +121,7 @@ describe("transforms", () => {
     for (const op of ops) expectIdentity(runT(op, V0, F0, w, ctx));
   });
 
-  it("(b) approach moves axial by flight·w·(axialMm + rank01·pitchMm), frame too, theta/rot untouched", () => {
+  it("(b) approach moves axial by flight·w·(axialMm + rank01·pitchMm), frame too, the point and rot untouched", () => {
     const ctx = makeCtx({ flight: 0.8, rank01: 0.5 });
     const w = 1;
     const out = runT(approach(3, 4), V0, F0, w, ctx);
@@ -126,29 +129,31 @@ describe("transforms", () => {
     expect(out.v.axial).toBeCloseTo(V0.axial + delta, 12);
     expect(out.f.axial).toBeCloseTo(F0.axial + delta, 12);
     // Untouched:
-    expect(out.v.theta).toBe(V0.theta);
+    expect(out.v.x).toBe(V0.x);
+    expect(out.v.z).toBe(V0.z);
     expect(out.v.rot).toBe(V0.rot);
-    expect(out.f.theta).toBe(F0.theta);
+    expect(out.f.x).toBe(F0.x);
+    expect(out.f.z).toBe(F0.z);
     expect(out.f.orient).toBe(F0.orient);
   });
 
-  it("(c) orbit about the AXIS adds the SAME angle to v.theta, v.rot, f.theta, f.orient", () => {
+  it("(c) orbit about the AXIS turns the point, v.rot, the frame and f.orient by the SAME angle", () => {
     // The sign is the CALLER's now — ctx.wrapDir does not reach into the op —
     // so a −1 wrapDir must not change the angle by itself.
     for (const wrapDir of [1, -1]) {
       const ctx = makeCtx({ flight: 0.5, wrapDir });
       const out = runT(orbit(1.2), V0, F0, 1, ctx);
       const a = 0.5 * 1.2; // = 0.6
-      expect(out.v.theta, `wrapDir ${wrapDir}`).toBeCloseTo(V0.theta + a, 12);
+      expect(polarOf(out.v).theta, `wrapDir ${wrapDir}`).toBeCloseTo(V0P.theta + a, 12); // prettier-ignore
       expect(out.v.rot).toBeCloseTo(V0.rot + a, 12);
-      expect(out.f.theta).toBeCloseTo(F0.theta + a, 12);
+      expect(polarOf(out.f).theta).toBeCloseTo(F0P.theta + a, 12);
       expect(out.f.orient).toBeCloseTo(F0.orient + a, 12);
     }
 
     // …and a recipe that WANTS the peel handedness multiplies it in itself.
     const ctx = makeCtx({ flight: 0.5, wrapDir: -1 });
     const signed = runT(orbit(1.2 * ctx.wrapDir), V0, F0, 1, ctx);
-    expect(signed.v.theta).toBeCloseTo(V0.theta - 0.6, 12);
+    expect(polarOf(signed.v).theta).toBeCloseTo(V0P.theta - 0.6, 12);
   });
 
   it("(c′) swirl is orbit plus the fly-in couplings: flight^exp, (rank01 + ½), wrapDir", () => {
@@ -164,45 +169,34 @@ describe("transforms", () => {
       ctx,
     );
     const a = Math.pow(0.5, 0.65) * 1.2 * (0.5 + 0.5) * -1;
-    expect(out.v.theta).toBeCloseTo(V0.theta + a, 12);
+    expect(polarOf(out.v).theta).toBeCloseTo(V0P.theta + a, 12);
     expect(out.v.rot).toBeCloseTo(V0.rot + a, 12);
-    expect(out.f.theta).toBeCloseTo(F0.theta + a, 12);
+    expect(polarOf(out.f).theta).toBeCloseTo(F0P.theta + a, 12);
     expect(out.f.orient).toBeCloseTo(F0.orient + a, 12);
 
     // Plain swirl (no couplings) is orbit's angle × wrapDir.
     const plain = runT(swirl(1.2), V0, F0, 1, ctx);
-    expect(plain.v.theta).toBeCloseTo(V0.theta - 0.6, 12);
+    expect(polarOf(plain.v).theta).toBeCloseTo(V0P.theta - 0.6, 12);
     // …and the weight scales the angle linearly, as it does for orbit.
     const half = runT(swirl(1.2), V0, F0, 0.5, ctx);
-    expect(half.v.theta - V0.theta).toBeCloseTo(-0.3, 12);
+    expect(polarOf(half.v).theta - V0P.theta).toBeCloseTo(-0.3, 12);
   });
 
   it("(c″) orbit about the FRAME is a rigid spin in place", () => {
     const ctx = makeCtx({ flight: 0.5, wrapDir: 1 });
     const a = 0.5 * 1.2;
-    const cx = F0.radius * Math.cos(F0.theta);
-    const cz = F0.radius * Math.sin(F0.theta);
     const distToCentre = (v: VertexState<number>): number =>
-      Math.hypot(
-        v.radius * Math.cos(v.theta) - cx,
-        v.radius * Math.sin(v.theta) - cz,
-      );
+      Math.hypot(v.x - F0.x, v.z - F0.z);
 
     // RIGID: every vertex of the piece keeps its distance to the frame centre,
     // and turns by exactly `a` about it.
     for (const theta of [0.3, 1.9, -2.2]) {
       for (const radius of [0.4, 2, 5]) {
-        const v: VertexState<number> = { ...V0, theta, radius };
+        const v: VertexState<number> = { ...V0, ...atPolar(theta, radius) };
         const out = runT(orbit(1.2, { about: "frame" }), v, F0, 1, ctx);
         expect(distToCentre(out.v)).toBeCloseTo(distToCentre(v), 12);
-        const before = Math.atan2(
-          radius * Math.sin(theta) - cz,
-          radius * Math.cos(theta) - cx,
-        );
-        const after = Math.atan2(
-          out.v.radius * Math.sin(out.v.theta) - cz,
-          out.v.radius * Math.cos(out.v.theta) - cx,
-        );
+        const before = Math.atan2(v.z - F0.z, v.x - F0.x);
+        const after = Math.atan2(out.v.z - F0.z, out.v.x - F0.x);
         expect(Math.atan2(Math.sin(after - before), Math.cos(after - before)))
           .toBeCloseTo(a, 12); // prettier-ignore
       }
@@ -211,8 +205,8 @@ describe("transforms", () => {
     // The centre is the FIXED POINT: frame placement does not move. Direction
     // and normal still advance — the piece turned, it just did not travel.
     const out = runT(orbit(1.2, { about: "frame" }), V0, F0, 1, ctx);
-    expect(out.f.theta).toBe(F0.theta);
-    expect(out.f.radius).toBe(F0.radius);
+    expect(out.f.x).toBe(F0.x);
+    expect(out.f.z).toBe(F0.z);
     expect(out.f.axial).toBe(F0.axial);
     expect(out.f.orient).toBeCloseTo(F0.orient + a, 12);
     expect(out.v.rot).toBeCloseTo(V0.rot + a, 12);
@@ -227,7 +221,7 @@ describe("transforms", () => {
       F0,
       ctx,
     );
-    expect(composed.f.theta).toBeCloseTo(F0.theta + a, 12);
+    expect(polarOf(composed.f).theta).toBeCloseTo(F0P.theta + a, 12);
     expect(composed.f.orient).toBeCloseTo(F0.orient, 12);
     expect(composed.v.rot).toBeCloseTo(V0.rot, 12);
   });
@@ -246,16 +240,12 @@ describe("transforms", () => {
 
     const D = 0.5 * 0.4 * 2 * 1; // = 0.4
     const dir = 0.3 - 0.5 * 1; // = −0.2
-    const px = V0.radius * Math.cos(V0.theta) + D * Math.cos(dir);
-    const pz = V0.radius * Math.sin(V0.theta) + D * Math.sin(dir);
-    expect(out.v.theta).toBeCloseTo(Math.atan2(pz, px), 12);
-    expect(out.v.radius).toBeCloseTo(Math.hypot(px, pz), 12);
+    expect(out.v.x).toBeCloseTo(V0.x + D * Math.cos(dir), 12);
+    expect(out.v.z).toBeCloseTo(V0.z + D * Math.sin(dir), 12);
 
     // Frame runs the identical law:
-    const fpx = F0.radius * Math.cos(F0.theta) + D * Math.cos(dir);
-    const fpz = F0.radius * Math.sin(F0.theta) + D * Math.sin(dir);
-    expect(out.f.theta).toBeCloseTo(Math.atan2(fpz, fpx), 12);
-    expect(out.f.radius).toBeCloseTo(Math.hypot(fpx, fpz), 12);
+    expect(out.f.x).toBeCloseTo(F0.x + D * Math.cos(dir), 12);
+    expect(out.f.z).toBeCloseTo(F0.z + D * Math.sin(dir), 12);
 
     // The rot did the re-aiming; the spread is a translation, so it turns
     // neither the normal nor the direction it moved along.
@@ -270,7 +260,7 @@ describe("transforms", () => {
     // A body of revolution has no meridian (t0 is the pinned 0), so sliding the
     // whole piece along t0 would drag a ring off-axis in an arbitrary direction.
     // Instead every vertex moves out along its OWN meridian — the classic
-    // explode's radial dilation: theta unchanged, radius + D — and the frame,
+    // explode's radial dilation: same meridian, radius + D — and the frame,
     // which a dilation does not translate, stays exactly put.
     const ctx = makeCtx({
       flight: 0.5,
@@ -282,12 +272,12 @@ describe("transforms", () => {
     const D = 0.5 * 0.4 * 2 * 1;
 
     for (const theta of [0.3, -2.4, 3.0]) {
-      const v = { ...V0, theta, radius: 7 };
+      const v = { ...V0, ...atPolar(theta, 7) };
       const out = runT(spread(0.4), v, F0, 1, ctx);
-      expect(out.v.theta).toBeCloseTo(theta, 12); // same meridian
-      expect(out.v.radius).toBeCloseTo(7 + D, 12); // dilated outward
-      expect(out.f.theta).toBeCloseTo(F0.theta, 12); // frame stays put
-      expect(out.f.radius).toBeCloseTo(F0.radius, 12);
+      expect(polarOf(out.v).theta).toBeCloseTo(theta, 12); // same meridian
+      expect(polarOf(out.v).radius).toBeCloseTo(7 + D, 12); // dilated outward
+      expect(out.f.x).toBeCloseTo(F0.x, 12); // frame stays put
+      expect(out.f.z).toBeCloseTo(F0.z, 12);
     }
 
     // A re-aimed spread falls back the same way (an aimed meridian is still a
@@ -298,9 +288,9 @@ describe("transforms", () => {
       F0,
       ctx,
     );
-    expect(seam.v.theta).toBeCloseTo(V0.theta, 12);
-    expect(seam.v.radius).toBeCloseTo(V0.radius + D, 12);
-    expect(seam.f.radius).toBeCloseTo(F0.radius, 12);
+    expect(polarOf(seam.v).theta).toBeCloseTo(V0P.theta, 12);
+    expect(polarOf(seam.v).radius).toBeCloseTo(V0P.radius + D, 12);
+    expect(polarOf(seam.f).radius).toBeCloseTo(F0P.radius, 12);
 
     // …and axi = 0 is the unchanged piece-meridian law (regression guard).
     const wedge = makeCtx({
@@ -311,11 +301,9 @@ describe("transforms", () => {
       axi: 0,
     });
     const out = runT(spread(0.4), V0, F0, 1, wedge);
-    const px = V0.radius * Math.cos(V0.theta) + D * Math.cos(0.3);
-    const pz = V0.radius * Math.sin(V0.theta) + D * Math.sin(0.3);
-    expect(out.v.theta).toBeCloseTo(Math.atan2(pz, px), 12);
-    expect(out.v.radius).toBeCloseTo(Math.hypot(px, pz), 12);
-    expect(out.f.radius).not.toBeCloseTo(F0.radius, 6);
+    expect(out.v.x).toBeCloseTo(V0.x + D * Math.cos(0.3), 12);
+    expect(out.v.z).toBeCloseTo(V0.z + D * Math.sin(0.3), 12);
+    expect(polarOf(out.f).radius).not.toBeCloseTo(F0P.radius, 6);
   });
 
   it("(e) w = 0.5 halves every displacement", () => {
@@ -336,8 +324,8 @@ describe("transforms", () => {
     // orbit angle: linear in w.
     const oFull = runT(orbit(1.2), V0, F0, 1, ctx);
     const oHalf = runT(orbit(1.2), V0, F0, 0.5, ctx);
-    expect(oHalf.v.theta - V0.theta).toBeCloseTo(
-      (oFull.v.theta - V0.theta) / 2,
+    expect(polarOf(oHalf.v).theta - V0P.theta).toBeCloseTo(
+      (polarOf(oFull.v).theta - V0P.theta) / 2,
       12,
     );
 
@@ -353,17 +341,14 @@ describe("transforms", () => {
   it("(f) scale(2) at flight 1, w 1 doubles the vertex's offset from the frame centre; shear displaces theta-wise ∝ (axial − f.axial)", () => {
     const ctx = makeCtx({ flight: 1 });
 
-    // Frame centre and vertex in radial-plane cartesian.
-    const cx = F0.radius * Math.cos(F0.theta);
-    const cz = F0.radius * Math.sin(F0.theta);
-    const vx = V0.radius * Math.cos(V0.theta);
-    const vz = V0.radius * Math.sin(V0.theta);
-    const offBefore = Math.hypot(vx - cx, vz - cz, V0.axial - F0.axial);
+    const offBefore = Math.hypot(V0.x - F0.x, V0.z - F0.z, V0.axial - F0.axial);
 
     const out = runT(scale(2), V0, F0, 1, ctx);
-    const nx = out.v.radius * Math.cos(out.v.theta);
-    const nz = out.v.radius * Math.sin(out.v.theta);
-    const offAfter = Math.hypot(nx - cx, nz - cz, out.v.axial - F0.axial);
+    const offAfter = Math.hypot(
+      out.v.x - F0.x,
+      out.v.z - F0.z,
+      out.v.axial - F0.axial,
+    );
     expect(offAfter).toBeCloseTo(2 * offBefore, 12);
     // Frame is the fixed point; rot unchanged.
     expect(out.f).toEqual(F0);
@@ -388,12 +373,12 @@ describe("transforms", () => {
     const far: VertexState<number> = { ...V0, axial: F0.axial + 0.6 };
     const sNear = runT(shear(amt), near, F0, 1, ctx);
     const sFar = runT(shear(amt), far, F0, 1, ctx);
-    expect(sNear.v.theta).toBeCloseTo(
-      near.theta + Math.atan2(tangOf(near), near.radius),
+    expect(polarOf(sNear.v).theta).toBeCloseTo(
+      V0P.theta + Math.atan2(tangOf(near), V0P.radius),
       12,
     );
-    expect(sFar.v.theta).toBeCloseTo(
-      far.theta + Math.atan2(tangOf(far), far.radius),
+    expect(polarOf(sFar.v).theta).toBeCloseTo(
+      V0P.theta + Math.atan2(tangOf(far), V0P.radius),
       12,
     );
     // The raw tangential displacement is proportional to (axial − f.axial): the
@@ -402,14 +387,14 @@ describe("transforms", () => {
     // A vertex level with the frame (axial === f.axial) is unmoved.
     const level: VertexState<number> = { ...V0, axial: F0.axial };
     const sLevel = runT(shear(amt), level, F0, 1, ctx);
-    expect(sLevel.v.theta).toBeCloseTo(level.theta, 12);
-    expect(sLevel.v.radius).toBeCloseTo(level.radius, 12);
+    expect(sLevel.v.x).toBeCloseTo(level.x, 12);
+    expect(sLevel.v.z).toBeCloseTo(level.z, 12);
     // Frame + rot unchanged.
     expect(sNear.f).toEqual(F0);
     expect(sNear.v.rot).toBe(V0.rot);
   });
 
-  it("(g) tilt turns (radius, axial) about the hinge (f.radius, pivot); theta, rot and the working direction untouched", () => {
+  it("(g) tilt turns (radius, axial) about the hinge (frame radius, pivot); the meridian, rot and the working direction untouched", () => {
     const ctx = makeCtx({ flight: 0.5 });
     const rad = 1.2;
     const a = 0.5 * rad * 1; // flight·rad·w
@@ -418,10 +403,10 @@ describe("transforms", () => {
     // The vertex's meridian-plane offset off the hinge point rotates rigidly:
     // (dr, dy) → (dr·cos a + dy·sin a, dy·cos a − dr·sin a) — positive rad tips
     // the +Y side of the pivot OUTWARD.
-    const dr = V0.radius - F0.radius;
+    const dr = V0P.radius - F0P.radius;
     const dy = V0.axial - pivot;
-    expect(out.v.radius).toBeCloseTo(
-      F0.radius + dr * Math.cos(a) + dy * Math.sin(a),
+    expect(polarOf(out.v).radius).toBeCloseTo(
+      F0P.radius + dr * Math.cos(a) + dy * Math.sin(a),
       12,
     );
     expect(out.v.axial).toBeCloseTo(
@@ -430,39 +415,42 @@ describe("transforms", () => {
     );
     // The hinge-plane distance is preserved — the motion is rigid per meridian.
     expect(
-      Math.hypot(out.v.radius - F0.radius, out.v.axial - pivot),
+      Math.hypot(polarOf(out.v).radius - F0P.radius, out.v.axial - pivot),
     ).toBeCloseTo(Math.hypot(dr, dy), 12);
-    // theta never moves (the hinge is the tangent circle), and rot stays seated
-    // — a tilt turns normals about the local tangent axis, which the one
-    // optical-axis rot angle cannot express (see the op's note).
-    expect(out.v.theta).toBe(V0.theta);
+    // The meridian never moves (the hinge is the tangent circle) — the point
+    // only slides along it — and rot stays seated, because a tilt turns normals
+    // about the local tangent axis, which the one optical-axis rot angle cannot
+    // express (see the op's note). MID-MOTION the meridian holds to 12 places
+    // rather than to the bit, since the slide runs through a unit vector; the
+    // IDLE identity is the strict one, and case (a) still pins it.
+    expect(polarOf(out.v).theta).toBeCloseTo(V0P.theta, 12);
     expect(out.v.rot).toBe(V0.rot);
     // The frame rides the same rotation with dr = 0 (it sits ON the hinge
     // radius); its placement tracks the tilted piece, its facing does not turn.
     const dyF = F0.axial - pivot;
-    expect(out.f.radius).toBeCloseTo(F0.radius + dyF * Math.sin(a), 12);
+    expect(polarOf(out.f).radius).toBeCloseTo(F0P.radius + dyF * Math.sin(a), 12); // prettier-ignore
     expect(out.f.axial).toBeCloseTo(pivot + dyF * Math.cos(a), 12);
-    expect(out.f.theta).toBe(F0.theta);
+    expect(polarOf(out.f).theta).toBeCloseTo(F0P.theta, 12);
     expect(out.f.orient).toBe(F0.orient);
 
     // Default pivot = the frame centre: a vertex level with it and on the hinge
     // radius is the fixed point.
     const onHinge: VertexState<number> = {
       ...V0,
-      radius: F0.radius,
+      ...atPolar(V0P.theta, F0P.radius),
       axial: F0.axial,
     };
     const still = runT(tilt(rad), onHinge, F0, 1, ctx);
-    expect(still.v.radius).toBeCloseTo(F0.radius, 12);
+    expect(polarOf(still.v).radius).toBeCloseTo(F0P.radius, 12);
     expect(still.v.axial).toBeCloseTo(F0.axial, 12);
-    expect(still.f.radius).toBeCloseTo(F0.radius, 12);
+    expect(polarOf(still.f).radius).toBeCloseTo(F0P.radius, 12);
     expect(still.f.axial).toBeCloseTo(F0.axial, 12);
 
     // w folds like every transform: w = 0.5 halves the ANGLE.
     const half = runT(tilt(rad, { pivot }), V0, F0, 0.5, ctx);
     const aH = a * 0.5;
-    expect(half.v.radius).toBeCloseTo(
-      F0.radius + dr * Math.cos(aH) + dy * Math.sin(aH),
+    expect(polarOf(half.v).radius).toBeCloseTo(
+      F0P.radius + dr * Math.cos(aH) + dy * Math.sin(aH),
       12,
     );
   });

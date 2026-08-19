@@ -8,9 +8,10 @@ import {
   WRAP_EASE_P0,
   WRAP_SPENT,
   CARDS_APART,
+  RETURN,
   ROSE_PULSE,
 } from "../envelopes";
-import { peelBodyFadeAt, peelValueAt } from "../peelcards";
+import { peelValueAt } from "../peelcards";
 import {
   atFrac,
   holdCentreOf,
@@ -35,12 +36,18 @@ import {
 // frames later — for as long as the scroll keeps moving, at any speed a hand
 // can produce. Two laws stated in p were therefore false of every real frame:
 //
-//   · PEEL × ASSEMBLE. The peel scene's unroll and the cards scene's wrap are
-//     two unwrap laws on one wedge (ops/host.ts sums each recipe's delta off
-//     the same seated vertex), legal only inside the body fade's valley, where
-//     nothing is drawn. On the eased channel an ordinary upward flick out of
-//     the cards scene carried a live wrap into the peel — both recipes folded,
-//     summed, on visible geometry.
+//   · PEEL + ASSEMBLE. The peel scene's unroll and the cards scene's departure
+//     are two unwrap chains on one wedge, and the cards scene now CROSSFADES
+//     them on purpose — the curl is the departure's first moment. What this
+//     file pins is the HAND-OFF'S SMOOTHNESS: the two channels' sum stays near
+//     1 through it, so no frame sags toward rest (which is what reads as one
+//     animation ending before the next begins) and none drives the pair past
+//     its own saturation. It holds exactly because both are written raw below
+//     WRAP_EASE_P0 — on the eased channel the wrap lags and the sum dips.
+//     WHAT IT DOES NOT ESTABLISH is what the two chains do to a PIECE: the host
+//     sums their DISPLACEMENTS, not their channels. That bound is measured
+//     per-piece through the CPU mirror in
+//     story/__tests__/piece-flow.test.ts ("never double-folds a wedge").
 //   · ASSEMBLE × ROSE. The bloom folds the same material the wrap is still
 //     unfolding. A fling through the ending's seam drew 0.125 of wrap under a
 //     rose at 0.145; the `?story` scrubber's own scene jumps were worse.
@@ -77,9 +84,6 @@ class Rig {
   assembleTarget = 0;
   rose = 0;
   roseTarget = 0;
-  /** the body fade the frame is drawn with — hero-driver writes it raw, and
-   *  applyBodyFade holds the last level written when no scroll event lands */
-  bodyFade = 1;
   lastP = 0;
 
   constructor(private readonly opts: RigOpts) {}
@@ -90,7 +94,6 @@ class Rig {
     // peelcards owns the unroll, value AND target (its own raw clock)
     this.peel = peelValueAt(p);
     this.peelTarget = this.peel;
-    this.bodyFade = peelBodyFadeAt(p);
     this.writeWrapBloom(p);
   }
 
@@ -122,13 +125,11 @@ class Rig {
   }
 }
 
-/** what one drawn frame shows of the two pairs. NEITHER is weighted by the body
- *  fade any more: the unroll and the departure are SEQUENCED in p now (the
- *  release lands on the rise's foot), so the pair is a hard zero everywhere
- *  rather than merely wherever the valley hides it. Keeping the fade in the
- *  reading would be the weaker law. */
+/** what one drawn frame shows: the TOTAL unwrap on a wedge (the two chains'
+ *  channels, which the host sums) and the wrap × bloom product, which must
+ *  still be an exact zero. */
 const readings = (r: Rig) => ({
-  peelWrap: Math.min(r.peel, r.assemble),
+  unwrap: r.peel + r.assemble,
   wrapRose: Math.min(r.assemble, r.rose),
 });
 
@@ -147,20 +148,25 @@ function walk(gesture: Gesture, opts: RigOpts, from?: number) {
     rig.ease();
     rig.afterRender();
   }
-  let peelWrap = 0;
   let wrapRose = 0;
   let liveWrapFrames = 0;
+  let unwrapLo = Infinity;
+  let unwrapHi = 0;
   for (const p of gesture) {
     if (p !== null) rig.scroll(p);
     rig.ease();
     // ── the render: what this frame draws ──
     const now = readings(rig);
-    peelWrap = Math.max(peelWrap, now.peelWrap);
     wrapRose = Math.max(wrapRose, now.wrapRose);
+    // the hand-off's own reading, taken only where one of the two is live
+    if (rig.lastP >= HANDOFF[0] && rig.lastP <= HANDOFF[1]) {
+      unwrapLo = Math.min(unwrapLo, now.unwrap);
+      unwrapHi = Math.max(unwrapHi, now.unwrap);
+    }
     if (rig.assemble >= WRAP_SPENT) liveWrapFrames++;
     rig.afterRender();
   }
-  return { peelWrap, wrapRose, liveWrapFrames, rig };
+  return { wrapRose, liveWrapFrames, unwrapLo, unwrapHi, rig };
 }
 
 // --- the scroll model -------------------------------------------------------
@@ -198,7 +204,7 @@ function sweep(a: number, b: number, dp: number, hold = 0): Gesture {
  *  open and the first drawn frame whose CHANNEL is, plus what the flower has
  *  reached on the frame the track runs out and where it settles. */
 function bloomWait(pxPerSec: number) {
-  const START = 0.86;
+  const START = windowEdges(RETURN)[0];
   const rig = new Rig(FIXED);
   rig.scroll(START);
   for (let i = 0; i < 400; i++) {
@@ -233,39 +239,49 @@ function bloomWait(pxPerSec: number) {
 const cdR = rangeOf("cards");
 const peR = rangeOf("peel");
 
-describe("the illegal pairs, on the EASED channels", () => {
-  it("keeps peel × assemble off every drawn frame of a full read-through", () => {
+/** THE HAND-OFF: from the frame the unroll is fully out to the frame the
+ *  departure saturates. The sum law is read inside it — either side, one chain
+ *  owns the wedge alone and is ramping from or to its own 0. */
+const HANDOFF: [number, number] = [
+  atFrac(peR, 0.5),
+  windowEdges(CARDS_APART.rise)[1],
+];
+
+describe("the two unwrap chains, on the EASED channels", () => {
+  it("hands the wedge over WITHOUT A LULL, at every scroll speed", () => {
+    // ONE MOTION, on the channels: the curl's release and the departure's rise
+    // cross, so the total never sags toward a rest frame. (The per-PIECE fold
+    // bound is piece-flow's, for the reason in this file's header.)
     for (const [name, dp] of [
       ["reading", READING],
       ["fling", FLING],
     ] as const) {
       const w = walk(sweep(0, 1, dp, 240), FIXED);
-      expect(w.peelWrap, `${name}, down the page`).toBe(0);
+      expect(w.unwrapLo, `${name}, down the page`).toBeGreaterThan(0.85);
+      expect(w.unwrapHi, `${name}, down the page`).toBeLessThanOrEqual(1.001);
       const back = walk(sweep(1, 0, dp, 240), FIXED, 1);
-      expect(back.peelWrap, `${name}, back up it`).toBe(0);
+      expect(back.unwrapLo, `${name}, back up it`).toBeGreaterThan(0.85);
+      expect(back.unwrapHi, `${name}, back up it`).toBeLessThanOrEqual(1.001);
     }
   });
 
-  it("keeps peel × assemble off the flick THE REVIEW CAUGHT", () => {
-    // a reader parked mid-cards flicks back up into the peel: the wrap is live
-    // at 1.0 where they start and the unroll is live where they land, and the
-    // valley that separates them is 0.035 of the track wide
+  it("holds that hand-off through the flick THE REVIEW CAUGHT", () => {
+    // a reader parked mid-departure flicks back up into the peel — the gesture
+    // that used to draw both chains summed at full strength
     const gesture = sweep(atFrac(cdR, 0.34), atFrac(peR, 0.8), FLING, 180);
-    expect(walk(gesture, FIXED).peelWrap).toBe(0);
-    // …and it is a REAL fault the rig can see, not a vacuous assertion: the
-    // same gesture against the pre-fix writes draws both recipes summed on the
-    // same visible wedges. The floor is a witness, not a target — its size
-    // moves with CHANNEL_EASE, the fixed reading (0) does not.
-    expect(walk(gesture, LEGACY).peelWrap).toBeGreaterThan(0.15);
+    const w = walk(gesture, FIXED);
+    expect(w.unwrapLo).toBeGreaterThan(0.85);
+    expect(w.unwrapHi).toBeLessThanOrEqual(1.001);
+    // …and it is the RAW CLOCK that buys it: left on the ease, the wrap decays
+    // over a curl the scroll has already put back, and the same flick folds the
+    // wedge under both chains at once.
+    expect(walk(gesture, LEGACY).unwrapHi).toBeGreaterThan(1.2);
   });
 
-  it("keeps peel × assemble off a reading-speed scroll out of the cards scene", () => {
-    // the slower half of the same fault: an order of magnitude down and just as
-    // illegal, since the pair is a hard zero or it is a second unwrap law on a
-    // drawn wedge
-    const gesture = sweep(atFrac(cdR, 0.34), atFrac(peR, 0.8), READING, 120);
-    expect(walk(gesture, FIXED).peelWrap).toBe(0);
-    expect(walk(gesture, LEGACY).peelWrap).toBeGreaterThan(0.005);
+  it("holds it on the way DOWN, where the ease would sag instead", () => {
+    const gesture = sweep(atFrac(peR, 0.8), atFrac(cdR, 0.34), FLING, 120);
+    expect(walk(gesture, FIXED).unwrapLo).toBeGreaterThan(0.85);
+    expect(walk(gesture, LEGACY).unwrapLo).toBeLessThan(0.7);
   });
 
   it("keeps the wrap and the bloom off the same wedge through the ending", () => {
@@ -279,27 +295,30 @@ describe("the illegal pairs, on the EASED channels", () => {
       const out = walk(sweep(1, seam - 0.09, dp, 300), FIXED, 1);
       expect(out.wrapRose, `${name}, back out of it`).toBe(0);
     }
-    // a fling across the ending's seam: p 0.86 → 0.99 in 0.2 s. Without the
-    // gate it draws wrap under a live rose; the floor is a witness that the rig
-    // reproduces the fault, and it shrinks as CHANNEL_EASE gets faster.
-    const fling = sweep(0.86, 0.99, (0.99 - 0.86) / (0.2 * FPS), 300);
-    expect(walk(fling, FIXED).wrapRose).toBe(0);
-    expect(walk(fling, LEGACY).wrapRose).toBeGreaterThan(0.05);
+    // THE HARSHEST INPUT the ending has, now that the wrap is spent a third of
+    // a scene before the bloom opens: a `?story` jump from inside the wrap's
+    // own fall straight to the end of the track. Ungated it draws the two on
+    // one wedge; the floor is a witness the rig reproduces the fault.
+    const jump: Gesture = [1, ...Array(300).fill(null)];
+    const wrapLive = atFrac(rangeOf("rewrap"), 0.5);
+    expect(walk(jump, FIXED, wrapLive).wrapRose).toBe(0);
+    expect(walk(jump, LEGACY, wrapLive).wrapRose).toBeGreaterThan(0.05);
   });
 
   it("keeps both pairs off EVERY `?story` scene jump", () => {
     // The dev scrubber parks the story at a scene's hold centre in one frame —
     // no intermediate p at all, so the eased channels walk the whole distance
-    // on their own. It is the harshest input the page has, and the review found
-    // it the worst offender (0.161 of overlap on the second frame of
-    // cards → capsOn).
+    // on their own. It is the harshest input the page has, and the worst
+    // offender (0.161 of overlap on the second frame of cards → capsOn).
     const holds = RANGES.map((r) => holdCentreOf(r));
     for (const from of holds)
       for (const to of holds) {
         const jump: Gesture = [to, ...Array(300).fill(null)];
         const w = walk(jump, FIXED, from);
-        expect(w.peelWrap, `peel × wrap on ${from} → ${to}`).toBe(0);
         expect(w.wrapRose, `wrap × rose on ${from} → ${to}`).toBe(0);
+        expect(w.unwrapHi, `unwrap sum on ${from} → ${to}`).toBeLessThanOrEqual(
+          1.001,
+        );
       }
   });
 
@@ -309,8 +328,9 @@ describe("the illegal pairs, on the EASED channels", () => {
     for (let i = 0; i <= 100; i++) drag.push(i / 100, null, null);
     for (let i = 100; i >= 0; i--) drag.push(i / 100, null, null);
     const w = walk(drag, FIXED);
-    expect(w.peelWrap).toBe(0);
     expect(w.wrapRose).toBe(0);
+    expect(w.unwrapHi).toBeLessThanOrEqual(1.001);
+    expect(w.unwrapLo).toBeGreaterThan(0.85);
   });
 });
 
@@ -341,9 +361,13 @@ describe("what the two clocks each keep", () => {
     // cannot quietly take the ending's smear with it: after a fling that lands
     // past the wrap's own last frame, the pieces are still visibly flying home
     // for a good fraction of a second with no scroll left to drive them.
-    const seam = windowEdges(ROSE_PULSE.rise)[0];
-    const fling = sweep(seam - 0.06, seam + 0.02, FLING);
-    const w = walk([...fling, ...Array(300).fill(null)], FIXED, seam - 0.06);
+    const [r0, r1] = windowEdges(RETURN);
+    const fling = sweep(r0 + (r1 - r0) * 0.4, r1 + 0.02, FLING);
+    const w = walk(
+      [...fling, ...Array(300).fill(null)],
+      FIXED,
+      r0 + (r1 - r0) * 0.4,
+    );
     // frames drawn with the wrap still folding, all of them after the authored
     // envelope had already handed over
     expect(w.liveWrapFrames).toBeGreaterThan(20);
@@ -354,7 +378,7 @@ describe("what the two clocks each keep", () => {
   it("opens the bloom once the wrap is spent, not before and not never", () => {
     const seam = windowEdges(ROSE_PULSE.rise)[0];
     const w = walk(
-      [...sweep(seam - 0.06, 0.98, FLING), ...Array(600).fill(null)],
+      [...sweep(seam - 0.06, 1, FLING), ...Array(600).fill(null)],
       FIXED,
       seam - 0.06,
     );
@@ -398,14 +422,14 @@ describe("what the two clocks each keep", () => {
     // the mirror case, and the one a target-only gate cannot buy: the rose's
     // own decay would otherwise sit under a rising wrap for half a second
     const rig = new Rig(FIXED);
-    rig.scroll(0.98);
+    rig.scroll(1);
     for (let i = 0; i < 400; i++) {
       rig.ease();
       rig.afterRender();
     }
     expect(rig.rose).toBeGreaterThan(0.9);
     const back = windowEdges(CARDS_APART.rise)[1];
-    for (const p of sweep(0.98, back, FLING)) {
+    for (const p of sweep(1, back, FLING)) {
       if (p !== null) rig.scroll(p);
       rig.ease();
       expect(Math.min(rig.assemble, rig.rose), `at ${p}`).toBe(0);

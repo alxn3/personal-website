@@ -7,20 +7,15 @@ import {
 } from "../ops/cpu";
 import { recipeChannels, recipeKnobs, RECIPE_NAMES } from "../ops/host";
 
-// ============================================================================
-// THE WHOLE-GEOMETRY CPU DEFORM — dev only (dev/inspect.ts).
-//
-// The evaluation itself lives in ops/cpu.ts (the mirror of host.ts's `fold()`
-// preamble, and the argument for having a mirror at all). What is left here is
-// the INSPECTOR's half: the per-vertex sweep that fills a picking proxy, the
-// decal shrink-wrap binding that sweep has to reproduce, and the state key its
-// rebuild policy settles on.
-// ============================================================================
+// DEV ONLY — dynamically imported, so none of it reaches a visitor's bundle.
+// The whole-geometry CPU deform, for dev/inspect.ts. The evaluation itself
+// lives in ops/cpu.ts; what is here is the INSPECTOR's half — the per-vertex
+// sweep that fills a picking proxy, the decal shrink-wrap binding that sweep
+// reproduces, and the state key its rebuild policy settles on.
 
 /** The live op state as one comparable string — every recipe channel and knob.
- *  The MECHANISM channels (zoom/focus/aperture) are deliberately ABSENT: they
- *  drive real object transforms, which every consumer already gets through the
- *  matrixWorld chain, and no vertex moves in local space because of them. */
+ *  The MECHANISM channels are deliberately ABSENT: they drive real object
+ *  transforms, so no vertex moves in local space because of them. */
 export function opsStateKey(): string {
   const ch = recipeChannels();
   const kn = recipeKnobs();

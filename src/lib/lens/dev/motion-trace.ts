@@ -1,26 +1,19 @@
 import * as THREE from "three/webgpu";
 
-// ============================================================================
-// `?mtrace` — the motion trace (DEV only, the `?diag` param mould).
+// DEV ONLY — dynamically imported, so none of it reaches a visitor's bundle.
+// `?mtrace`: one row per rendered frame, so the story's movement can be
+// reviewed as CURVES rather than stills and a hitch no screenshot would catch
+// shows up as a spike.
 //
-// It exists so the story's MOVEMENT can be reviewed as CURVES instead of
-// stills: one row per rendered frame, so a hitch that no screenshot would ever
-// catch (a velocity snap at a scene boundary, a roll twitch, a dropped frame
-// under a material swap) shows up as a spike in the numbers.
-//
-// It reads the CAMERA and nothing else, because that is sufficient: the lens
-// never rotates in world space — the camera orbits it, and the optical axis is
-// world +X — so aim, roll, screen position and apparent size of the subject are
-// all derivable from this frame's camera pose alone.
+// It reads the CAMERA and nothing else, which is sufficient: the lens never
+// rotates in world space (the camera orbits it, optical axis world +X), so aim,
+// roll, screen position and apparent size all follow from the camera pose.
 //
 // ONE SPAN IS EXEMPT: through the fly-through the camera is PARKED and the lens
-// translates past it (story/fly.ts, SceneHandle.setLensDolly). The rows there
-// are therefore flat by design — that is the dive working, not a dropped
-// instrument — and `ndc`/`rad` project the world origin, which is the lens'
-// HOME rather than where it is. Read the dive off story/fly.ts's `flyDollyAt`.
+// translates past it, so the rows there are flat by design and `ndc`/`rad`
+// project the lens' HOME rather than where it is.
 //
-// Harvest from the console (or a driver script): `window.__lensMotionTrace`.
-// ============================================================================
+// Harvest from the console as `window.__lensMotionTrace`.
 
 /** Ring capacity — ~5.5 min at 60fps, far past any scripted sweep. */
 const CAP = 20000;

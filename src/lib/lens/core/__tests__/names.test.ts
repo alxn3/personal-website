@@ -56,8 +56,8 @@ describe("the cell family", () => {
 describe("the baffle family", () => {
   it("keeps the rear plate OUT of the pair that leaves", () => {
     // The whole reason the pair is named rather than matched on `Baffle_`: a
-    // prefix test would drag the rear plate out of the keep-set and undo the
-    // owner's "a bit too much is coming off of the back part" ruling.
+    // prefix test would drag the rear plate out of the keep-set, and too much
+    // would then come off the back part.
     expect(PEEL_BAFFLES).not.toContain(BAFFLE_KEEP);
     expect(prefixRe(PEEL_BAFFLES).test(BAFFLE_KEEP)).toBe(false);
   });

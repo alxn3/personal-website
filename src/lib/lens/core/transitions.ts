@@ -3,25 +3,20 @@ import { band, lerp, smoothstep } from "./math";
 // Type-only — erased at build, so no runtime cycle with the orchestrator.
 import type { SceneState } from "./scene";
 
-// ============================================================================
 // Look-swap transitions: short rAF choreographies that make a shading change
-// feel like ONE sharp gesture. Each entry drives EXISTING objects/channels
-// (model roll, iris, a recipe channel, camera fov — never new shader graphs) toward a
-// hidden/peak moment, where the runner (scene.swapShading) fires the instant
-// wholesale material rebuild, then eases home. The cut lands inside the
-// fastest/most-occluded beat, so it reads as part of the motion.
+// read as one gesture. Each drives EXISTING objects/channels (never a new
+// shader graph) toward a hidden/peak moment, where scene.swapShading fires the
+// material rebuild, then eases home.
 //
-// Contract per run: snapshot everything you drive at creation, restore it
-// BIT-EXACTLY in finish() — but only where your write is still the last one
-// (compare against the value you last wrote), so a slider/demo that grabbed
-// the channel mid-burst is never clobbered. While running, last-writer-wins
-// per frame is acceptable for these ~300-450ms bursts.
-// ============================================================================
+// CONTRACT PER RUN: snapshot what you drive at creation and restore it
+// bit-exactly in finish(), but ONLY where your write is still the last one
+// (compare against the value you last wrote), so a slider that grabbed the
+// channel mid-burst is never clobbered.
 
 export type TransitionName = "twist" | "blink" | "molt" | "punch";
 
 /** What a transition may touch. `model` is the gltf root — its local +Y is the
- *  optical axis, and rolling about it is rig-safe (see scene.ts). */
+ *  optical axis, and rolling about it is rig-safe. */
 export interface TransitionContext {
   state: SceneState;
   camera: THREE.PerspectiveCamera;
@@ -66,19 +61,17 @@ const holdPulse = (t: number) => band(t, 0, 1, 0.4);
 // a brief dwell at the extreme that the swap lands in.
 const peakPulse = (t: number) => smoothstep(0, 1, 1 - Math.abs(2 * t - 1));
 
-// Drive a channel by writing value AND target together: tick()'s per-frame
-// ease (lerp toward target) then becomes a no-op on that channel regardless of
-// callback order, so the burst is exactly the curve authored here.
+// Write value AND target together so tick()'s per-frame ease is a no-op on the
+// channel and the burst is exactly the curve authored here.
 const drive = (s: SceneState, c: "aperture" | "peel", v: number) => {
   s[c] = v;
   s[`${c}Target`] = v;
 };
 
 export const TRANSITIONS: Record<TransitionName, TransitionFactory> = {
-  // Whip-spin about the optical axis: an integer number of turns, so the model
-  // lands back on its EXACT starting orientation (the markings are not
-  // rotationally symmetric — finish() restores the saved rotation rather than
-  // trusting float accumulation).
+  // Whip-spin about the optical axis, whole turns only — the markings are not
+  // rotationally symmetric, so finish() restores the saved rotation rather
+  // than trusting float accumulation.
   twist(ctx, opts) {
     const model = ctx.model;
     const base = model.rotation.y;
@@ -120,18 +113,11 @@ export const TRANSITIONS: Record<TransitionName, TransitionFactory> = {
     };
   },
 
-  // The lens sheds its skin into the new look: a fast pulse into the `peel`
-  // channel's staggered unroll wave — the shell strips lift around the barrel,
-  // in place — with the swap at the apex (the peel IS the reveal), then
-  // everything re-rolls. Amplitude 0.4 is a judgment call. `assemble` was tried
-  // and rejected: its unscoped ladder TRANSLATES the whole model, which moves
-  // the framing under the swap.
-  //
-  // ON `peel` SINCE THE BENCH-RECIPE CLEANUP (this used to drive the global
-  // `rollout` recipe, which is gone): peel is the same travelling-front unroll
-  // scoped to the shell cast, so the gesture is if anything closer to a molt —
-  // the skin lifts and the mechanism under it stays put. The story drives this
-  // channel too, but never on /lens, where storyMode is off.
+  // The lens sheds its skin into the new look: a pulse into the `peel`
+  // channel's staggered unroll, swap at the apex, then it re-rolls. Must stay
+  // on `peel`, whose unroll is scoped to the shell cast — `assemble`'s
+  // unscoped ladder translates the whole model and moves the framing under
+  // the swap.
   molt(ctx, opts) {
     const s = ctx.state;
     const prior = s.peel;
@@ -153,9 +139,9 @@ export const TRANSITIONS: Record<TransitionName, TransitionFactory> = {
     };
   },
 
-  // FOV zoom-punch: the camera lurches wide (+12°) with a sharp in/out, swap
-  // at the extreme. Free-orbit only — the story/hero framing writes fov every
-  // frame and owns the camera, so under storyMode this declines (instant swap).
+  // FOV zoom-punch: the camera lurches wide with a sharp in/out, swap at the
+  // extreme. Free-orbit only — the story framing writes fov every frame, so
+  // under storyMode this declines and the runner cuts instantly.
   punch(ctx, opts) {
     if (ctx.storyMode) return null;
     const cam = ctx.camera;

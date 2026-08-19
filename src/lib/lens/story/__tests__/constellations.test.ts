@@ -139,7 +139,7 @@ describe("a stroke's life", () => {
 
 describe("pair picking", () => {
   it("pools every star in the cone that is not backdrop", () => {
-    // the owner's rule: lines may join ANY star, not only the authored ones —
+    // lines may join ANY star, not only the authored ones —
     // so the pool is the whole catalog inside the cone MINUS the dim tier
     expect(CANDIDATE_DIRS.length).toBeGreaterThanOrEqual(60);
     const cos = Math.cos((55 * Math.PI) / 180);
@@ -173,7 +173,7 @@ describe("pair picking", () => {
     // 0.85 is a LAW bound, not a measurement: the shipped CENTRE_SIGMA_RAD lands
     // at 0.63, widening it to 0.35 gives 0.71 and to 0.5 gives 0.81. Anything
     // tighter would be a de-facto pin on that sigma and would fail on a routine
-    // bias tune, which is the owner's to make. What has to hold is only that the
+    // bias tune, which is a look call. What has to hold is only that the
     // weighted draw sits nearer the axis than a uniform one over the same pool.
     expect(weighted / n).toBeLessThan((uniform / n) * 0.85);
     // the edge is rare, not barred: a pool this size still reaches its far half
@@ -340,10 +340,10 @@ describe("pair picking", () => {
   });
 
   it("grows what is already on the sky far more often than it starts afresh", () => {
-    // THE OWNER'S RULE: "prioritize stars that already have a connection", so
-    // that what is on screen reads as a few connected figures rather than as
-    // scattered singles. Measured over the driver's own loop: how many picks
-    // share a star with a stroke that is still up.
+    // THE RULE: prioritize stars that already have a connection, so that what
+    // is on screen reads as a few connected figures rather than as scattered
+    // singles. Counted over the driver's own loop: how many picks share a star
+    // with a stroke that is still up.
     let joined = 0;
     const picked = soak(11, 300, (pair, live) => {
       if (live.some(([a, b]) => new Set([a, b, ...pair]).size < 4)) joined++;
@@ -441,7 +441,7 @@ describe("no two strokes may cross", () => {
   });
 
   it("lets two strokes MEET at a shared star", () => {
-    // the owner banned lines drawn ACROSS lines, not a chart's own junctions
+    // what is banned is lines drawn ACROSS lines, not a chart's own junctions
     const hub = at(0, 0);
     expect(arcsCross(hub, at(0.1, 0.1), hub, at(-0.1, 0.12))).toBe(false);
     expect(arcsCross(at(0.1, 0.1), hub, at(-0.1, 0.12), hub)).toBe(false);
@@ -516,8 +516,8 @@ describe("no two strokes may cross", () => {
 describe("the endpoint gap", () => {
   it("is the same angle whatever the stroke's length", () => {
     // THE BUG THIS LAW FIXES: the gap used to be a FRACTION of the segment, so
-    // a long stroke stood off its stars further than a short one — which is
-    // what the owner read off the page.
+    // a long stroke stood off its stars further than a short one, which read
+    // wrong on the page.
     for (const sep of [MIN_SEP, 0.12, 0.2, MAX_SEP])
       expect(lineInsetAt(sep) * sep, `sep ${sep}`).toBeCloseTo(GAP_RAD, 12);
   });
@@ -674,9 +674,9 @@ describe("the type's ink", () => {
 
   it("is written stronger on paper than on the night sky", () => {
     // The renderer composites in LINEAR space: cream ink over a near-black sky
-    // lands above its nominal alpha, dark ink over paper far below it (measured
-    // ~0.63 against ~0.26 of full contrast at one and the same 0.55). Parity is
-    // bought with a higher alpha on the light stage — never a lower one.
+    // lands above its nominal alpha, dark ink over paper far below it
+    // (~0.63 against ~0.26 of full contrast at one and the same 0.55). Parity
+    // is bought with a higher alpha on the light stage — never a lower one.
     expect(label.ink.light).toBeGreaterThan(label.ink.dark);
     expect(quote.ink.light).toBeGreaterThan(quote.ink.dark);
   });

@@ -1,29 +1,20 @@
-// ============================================================================
-// The internals scene's AMBIENT CHOREOGRAPHY — the first motion in the story
-// that runs on TIME instead of on scroll. The shell is off over this span (the
-// shell gate, mounted in hero-driver), so the mechanism itself is the subject:
-// the focus group racks in a slow loop and the iris breathes, both parked at
-// zero outside the scene so nothing moves where nobody is looking.
+// The internals scene's AMBIENT CHOREOGRAPHY — the story's only motion that
+// runs on TIME instead of scroll: the focus group racks and the iris breathes
+// while the shell is off, both parked at zero outside the scene.
 //
-// PHASE-CONTINUOUS, NOT WALL-CLOCK. The loops read an ACCUMULATED dt clamped to
-// 100ms a frame, never performance.now() itself: the hero stops its render loop
-// whenever the canvas leaves the viewport (SceneHandle.setPaused) and a law
-// keyed to absolute time would skip most of a cycle across the gap — the iris
-// would be found mid-close on return.
+// PHASE-CONTINUOUS, NOT WALL-CLOCK: the loops read an ACCUMULATED dt clamped
+// per frame, never performance.now() itself, because the hero stops its render
+// loop when the canvas leaves the viewport and an absolute-time law would skip
+// most of a cycle across the gap.
 //
-// ONE OWNER INSIDE THE SPAN. This module writes from scene.onFrame (after the
-// render) while hero-driver writes from the scroll rAF; those two have NO
-// ordering guarantee against each other, so the writers are separated by RANGE
-// rather than by order — hero-driver gates its own focus reset and aperture
-// ramp OUT of the internals span (see its frame()), leaving this file the only
-// writer inside it. Both channels are written value AND target, so tick()'s
-// ease can never chase a stale target left by the other writer.
+// ONE OWNER INSIDE THE SPAN. This module writes from scene.onFrame while
+// hero-driver writes from the scroll rAF, with no ordering guarantee between
+// them — so the two are separated by RANGE, not order: hero-driver gates its
+// focus reset and aperture ramp OUT of this span. Both channels are written
+// value AND target, so the ease can never chase the other's stale target.
 //
-// THE HANDOFF. The aperture has to reach the fly-through's parked f/22 with no
-// jump, so the breathing amplitude is dead by internals-local 0.6 and the
-// pre-shut ramp (local 0.6 → 0.95 — the same expression hero-driver runs
-// outside the span) closes the iris from a clean zero baseline.
-// ============================================================================
+// THE HANDOFF: the aperture must reach the fly-through's parked f/22 with no
+// jump, so the breath is dead before the pre-shut ramp starts.
 
 import type { SceneHandle } from "../core/scene";
 import { clamp01, smoothstep } from "../core/math";
@@ -52,19 +43,14 @@ export interface InternalsEnv {
   rack: number;
 }
 
-/** Both ambient envelopes at story position `p`. They share a rise — the scene
- *  settles first, then the mechanism wakes — and fall at different times: the
- *  breath must be gone before the pre-shut ramp starts at local 0.6, while the
- *  rack is free to run on to 0.95 because focus hands nothing to the fly
- *  (story/fly.ts owns focus only past flythrough.p0, and its own rack does not
- *  start until 0.72 of the dive). Zero everywhere outside the scene. */
+/** Both ambient envelopes at story position `p`, zero outside the scene. They
+ *  share a rise and fall at different times: the breath must be gone before
+ *  the pre-shut ramp starts, while the rack may run on because focus hands
+ *  nothing to the fly until well inside the dive. */
 export const internalsEnvAt = (p: number): InternalsEnv => {
-  // The ambient WAKES IN THE CARDS SCENE, not at the internals boundary: the
-  // peel bares the whole mechanism one scene early, and a glass column that
-  // sits dead while the cards orbit reads as a prop (owner: "there isn't
-  // enough movement there"). The rack and the breath both run from a fifth of
-  // the way into cards; everything still winds down on the internals-side
-  // windows unchanged.
+  // The ambient wakes in the CARDS scene, not at the internals boundary: the
+  // peel bares the mechanism a scene early and a glass column sitting dead
+  // under the orbiting cards reads as a prop.
   const wake = smoothstep(atFrac(caR, 0.15), atFrac(caR, 0.35), p);
   return {
     breath: wake * (1 - smoothstep(atFrac(inR, 0.5), atFrac(inR, 0.6), p)),
@@ -91,22 +77,17 @@ export const internalsBreathAt = (t: number, p: number): number =>
  *  local 0.6, which is exactly where the ramp starts — so the sum never exceeds
  *  either law's own intent, and the clamp is belt-and-braces. */
 export const internalsApertureAt = (t: number, p: number): number =>
-  // ONE ramp, not two. story/envelopes.ts's `preShutAt` is what hero-driver
-  // writes OUTSIDE this span; calling it here is what makes "one continuous law
-  // across both edges of the scene" a fact rather than a pair of expressions
-  // kept textually identical by a comment.
+  // ONE ramp, not two: `preShutAt` is the same function hero-driver writes
+  // OUTSIDE this span, so the law is continuous across both scene edges.
   clamp01(preShutAt(p) + internalsBreathAt(t, p));
 
 /** Start the ambient. Registers a scene.onFrame callback for the life of the
  *  page — there is no teardown because the hero's scene is never disposed. */
 export function createInternalsAmbient(scene: SceneHandle): void {
   /** the PHASE clock: accumulates only while the span is active and RESETS on
-   *  every re-entry, so both loops always start from their zero (focus home,
-   *  iris open). A free-running clock let a fast fling land mid-stroke — the
-   *  focus group teleported to wherever the 7s loop happened to be (the
-   *  owner's "gearbox moves then snaps back"). The p-envelopes can't help
-   *  there: they are functions of scroll, and a fling crosses their whole
-   *  rise in one frame. */
+   *  every re-entry, so both loops start from their zero (focus home, iris
+   *  open). A free-running clock lets a fling land mid-stroke, and the
+   *  p-envelopes cannot help: a fling crosses their rise in one frame. */
   let tAcc = 0;
   let inside = false;
   let last = performance.now();
@@ -114,14 +95,11 @@ export function createInternalsAmbient(scene: SceneHandle): void {
     const now = performance.now();
     const dt = Math.min(100, now - last);
     last = now;
-    // THE SCROLL p, NOT THE EASED CHANNEL. `storyTarget` is exactly what
-    // hero-driver's frame() was handed, so all three writers of these channels
-    // — that frame(), story/fly.ts and this callback — gate on ONE p and their
-    // spans tile it without a gap. The eased `state.story` lags it by several
-    // frames, and hero-driver only runs on scroll EVENTS: a fling that ends
-    // just past this scene would leave the eased value still crawling through
-    // the span with no scroll left to correct it, and the last write before it
-    // converged on inR.p1 would strand the iris shut into the dive approach.
+    // THE SCROLL p, NOT THE EASED CHANNEL: `storyTarget` is what hero-driver's
+    // frame() was handed, so all three writers of these channels gate on ONE p
+    // and their spans tile it without a gap. The eased `state.story` lags, and
+    // a fling ending past this scene would strand the iris shut with no scroll
+    // left to correct it.
     const p = scene.state.storyTarget;
     if (p < caR.p0 - LEAD_IN || p > inR.p1) {
       inside = false;

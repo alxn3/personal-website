@@ -3,33 +3,24 @@ import { vec4 } from "three/tsl";
 import { displaceInto, opsStateKey } from "./ops-cpu";
 import { isGraphGroup } from "../core/parts";
 
-// ============================================================================
-// PIECE INSPECTOR — the /lens "Inspect" toggle. Hover a piece to read the GLB
-// node name under the pointer, click to copy it. Object names are the API with
-// the lens_work/ Blender pipeline, so being able to point at a piece and read
-// its name is how a change request gets phrased in the names the code uses.
+// DEV ONLY — dynamically imported, so none of it reaches a visitor's bundle.
+// The /lens "Inspect" toggle: hover a piece to read the GLB node name under the
+// pointer, click to copy it. Read-only where the MODEL is concerned — a CPU
+// raycast, one DOM tooltip, one overlay mesh. Listeners exist only while the
+// toggle is on.
 //
-// Read-only where the MODEL is concerned: no channels, no uniforms, no material
-// touched — a CPU raycast, one DOM tooltip, and one overlay mesh washed over the
-// hovered piece. Listeners exist ONLY while the toggle is on.
-//
-// WHAT IT RAYCASTS: not the model. The shell deform runs IN-SHADER, so every
+// IT DOES NOT RAYCAST THE MODEL. The shell deform runs IN-SHADER, so every
 // mesh's CPU geometry stays SEATED and picking an exploded lens off it would
-// name whatever happens to sit at the piece's parking spot. Instead each mesh
-// gets a PICKING PROXY — same indices, same triangle order, but positions
-// re-evaluated on the CPU (dev/ops-cpu.ts) at the live channel/knob values. The
-// proxy is left in MESH-LOCAL space and driven by the source's own matrixWorld,
-// so the mechanism's real object motion (ring throws, zoom slides, the screw
-// pivot) is applied exactly once, by the matrix chain, not twice.
+// name whatever sits at the piece's parking spot. Each mesh instead gets a
+// PICKING PROXY — same indices and triangle order, positions re-evaluated on
+// the CPU (dev/ops-cpu.ts) at the live channel values — so a piece is picked
+// where it is DRAWN. The proxy stays in MESH-LOCAL space and is driven by the
+// source's own matrixWorld, so the mechanism's object motion is applied once,
+// by the matrix chain, not twice. Rebuilds are lazy — see `maybeRebuild`.
 //
-// Rebuilds are lazy — see `maybeRebuild`.
-//
-// THE HOVER HIGHLIGHT reuses exactly that pair: the hovered piece's proxy
-// geometry, drawn through the source's matrixWorld. It is a separate overlay
-// mesh on purpose — the shading caches SHARE one material across dozens of
-// meshes per look, so tinting (or swapping) the hovered mesh's material would
-// tint every mesh that look assigned it and fight the look system's ownership.
-// ============================================================================
+// The hover highlight reuses that same pair. It is a separate overlay mesh
+// because the shading caches SHARE one material across dozens of meshes, so
+// tinting the hovered mesh's would tint every mesh wearing it.
 
 /** Tooltip chrome, in the same tokens the floating controls card uses, so it
  *  reads correctly in both themes without a colour of its own. */
@@ -42,16 +33,13 @@ const DRAG_PX = 5;
 const CURSOR_GAP = 14;
 const COPIED_MS = 1200;
 /** How long the op state must hold still before the proxies are re-evaluated.
- *  Channels GLIDE toward their target, so a slider drag leaves the state moving
- *  for a while after the pointer stops; rebuilding per frame would burn ~100ms
- *  of main thread each time. Hovering against slightly stale proxies mid-glide
- *  is fine — a name lookup during a move does not need to be frame-accurate. */
+ *  Channels GLIDE toward their target, so rebuilding per frame would burn the
+ *  main thread; a name lookup mid-move need not be frame-accurate. */
 const SETTLE_MS = 200;
 
-/** The site's `--highlight` terracotta (global.css: #d18a5d light / #d99a63
- *  dark). ONE value for both themes — the terracotta reads on the cream and on
- *  the dark backdrop alike, and CSS custom properties are not visible to the
- *  scene without plumbing a reader in for a dev tool that doesn't need one. */
+/** The site's `--highlight` terracotta. ONE value for both themes — it reads
+ *  on either backdrop, and a CSS custom property is not visible to the scene
+ *  without plumbing a reader in. */
 const HIGHLIGHT_HEX = 0xd18a5d;
 const HIGHLIGHT_OPACITY = 0.35;
 
@@ -62,9 +50,8 @@ export interface InspectContext {
   camera: THREE.Camera;
   /** Pointer target, and (through its offset parent) the tooltip's frame. */
   canvas: HTMLCanvasElement;
-  /** Where the hover-highlight overlay is parented while shown. Deliberately
-   *  the SCENE, not the model: every pass that traverses the GLB (shading
-   *  swaps, disposal, this file's own proxy build) would otherwise pick the
+  /** Where the hover-highlight overlay is parented while shown. The SCENE, not
+   *  the model — every pass that traverses the GLB would otherwise pick the
    *  overlay up as if it were a piece of the lens. */
   scene: THREE.Object3D;
   /** The scene renders on demand, so a highlight appearing/moving/clearing
@@ -77,17 +64,12 @@ export interface Inspector {
   dispose(): void;
 }
 
-/** `[hit name, part name]` for a picked node: the nearest named node at or above
- *  the hit, and the TOPMOST named ancestor below the model root. Topmost is the
- *  same grouping `ops/frames.ts` `groupOf` derives the explode ladder from, so
- *  the second name is the sub-assembly a request would talk about
- *  (`Mount_BrassRing_Seg2` → `Mount_BrassRing`; a generic `Cylinder012` under
- *  `Focus_LeadScrew` reports both). Empty part name when the hit IS the root.
- *
- *  The `Grp_*` graph empties are skipped for the SAME reason `groupOf` skips
- *  them (core/parts isGraphGroup): they own no rung and name no sub-assembly, so
- *  reporting `Focus_Motor` as part of "Grp_FocusDrive" would name a node the
- *  ladder does not have. */
+/** `[hit name, part name]` for a picked node: the nearest named node at or
+ *  above the hit, and the TOPMOST named ancestor below the model root. Topmost
+ *  is the same grouping `ops/frames.ts` derives the explode ladder from, so the
+ *  second name is the sub-assembly a request would talk about. Empty when the
+ *  hit IS the root. `Grp_*` graph empties are skipped for the same reason
+ *  `groupOf` skips them: they own no rung and name no sub-assembly. */
 function namesOf(obj: THREE.Object3D, root: THREE.Object3D): [string, string] {
   const chain: string[] = [];
   for (let o: THREE.Object3D | null = obj; o && o !== root; o = o.parent)
@@ -144,37 +126,30 @@ export function createInspector(ctx: InspectContext): Inspector {
   let enabled = false;
 
   // --- hover highlight -------------------------------------------------------
-  // ONE mesh, reused across hovers: its geometry is BORROWED from the hovered
-  // piece's proxy (already the CPU-displaced surface) and its matrixWorld copied
-  // from the source mesh — the very pair the raycast used, so the wash lands
-  // exactly where the hit was computed.
+  // ONE mesh, reused across hovers: geometry BORROWED from the hovered piece's
+  // proxy and matrixWorld copied from the source mesh — the pair the raycast
+  // used, so the wash lands exactly where the hit was computed.
   const highlightMat = new THREE.MeshBasicNodeMaterial({
     transparent: true,
     // DoubleSide for the same reason the proxies use it: a piece looked into
     // from the inside presents only back faces.
     side: THREE.DoubleSide,
-    // The wash is COINCIDENT with the drawn surface, so: depthTest stays ON (a
-    // piece behind another must not shine through) and equal depths must pass,
-    // which three's default LessEqualDepth already does; the polygon offset
-    // pulls the overlay a hair toward the camera to absorb the last-bit
-    // disagreement between the CPU mirror's positions and the shader's, which
+    // The wash is COINCIDENT with the drawn surface: depthTest stays ON so a
+    // piece behind another cannot shine through, and the polygon offset absorbs
+    // the last-bit disagreement between the CPU mirror and the shader, which
     // would otherwise speckle. depthWrite OFF so the overlay never occludes
-    // anything drawn after it — and, with the real surface's depth already in
-    // the buffer, the far side of a closed shell fails the test and only the
-    // near face tints, instead of double-blending.
+    // what follows, and the far side of a closed shell fails the test rather
+    // than double-blending.
     depthWrite: false,
     polygonOffset: true,
     polygonOffsetFactor: -4,
     polygonOffsetUnits: -4,
     toneMapped: false, // a dev marker should be the token colour, not graded
   });
-  // A CONSTANT fragment, not `color`/`opacity`: those go through the lit path,
-  // which — the scene having an `environment` — folds in a BasicEnvironmentNode
-  // and so demands a `normal` attribute the picking proxies deliberately don't
-  // carry (positions only, half the memory, nothing to recompute per rebuild).
-  // `fragmentNode` short-circuits lighting entirely, which is also what a flat
-  // marker wants: no env sheen riding on the terracotta. THREE.Color does the
-  // sRGB→working-space conversion the `color` parameter would have done.
+  // A CONSTANT fragment, not `color`/`opacity`: those take the lit path, which
+  // folds in a BasicEnvironmentNode and demands a `normal` attribute the
+  // picking proxies deliberately don't carry. `fragmentNode` short-circuits
+  // lighting, which is what a flat marker wants anyway.
   {
     const c = new THREE.Color(HIGHLIGHT_HEX);
     highlightMat.fragmentNode = vec4(c.r, c.g, c.b, HIGHLIGHT_OPACITY);
@@ -190,12 +165,10 @@ export function createInspector(ctx: InspectContext): Inspector {
   highlight.matrixWorldAutoUpdate = false;
   let highlighted: PickProxy | null = null;
 
-  /** Wash the hovered piece. Both inputs are as fresh as the pick that produced
-   *  them: the geometry is only re-evaluated once the op state SETTLES, and the
-   *  matrix is sampled on pointer events — so a hover held still while an
-   *  animation runs shows a slightly stale outline. Hovering mid-glide is
-   *  already approximate (see SETTLE_MS); a name lookup during a move does not
-   *  need to be frame-accurate. */
+  /** Wash the hovered piece. Both inputs are as fresh as the pick that made
+   *  them — geometry re-evaluated only once the op state SETTLES, matrix
+   *  sampled on pointer events — so a hover held still during an animation
+   *  shows a slightly stale outline. */
   const showHighlight = (p: PickProxy) => {
     highlight.geometry = p.proxy.geometry;
     highlight.matrixWorld.copy(p.src.matrixWorld);
@@ -222,9 +195,8 @@ export function createInspector(ctx: InspectContext): Inspector {
   };
 
   /** One proxy per mesh under the model root, keeping the source's index and
-   *  draw range so triangle order — and therefore which mesh a hit belongs to —
-   *  is unchanged; only the positions differ. Hidden meshes are included:
-   *  visibility is filtered at hit time, so an isolate flip needs no rebuild. */
+   *  draw range so triangle order is unchanged; only positions differ. Hidden
+   *  meshes are included — visibility is filtered at hit time. */
   const buildProxies = () => {
     disposeProxies();
     model.traverse((o) => {

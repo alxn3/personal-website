@@ -14,9 +14,8 @@ import {
   recipeChannels,
   recipeKnobs,
   reportOpsFrames,
-  setActiveRecipes,
+  setDeformBackend,
   RECIPE_NAMES,
-  type RecipeName,
 } from "../ops/host";
 import {
   uFadeNear0,
@@ -42,7 +41,7 @@ import {
   type TransitionRun,
 } from "./transitions";
 // Type-only: erased at build, so the dev instruments stay out of every bundle
-// until enablePathViz() / enableInspect() dynamically import them.
+// until their dynamic imports run.
 import type { PathViz } from "../dev/paths";
 import type { Inspector } from "../dev/inspect";
 
@@ -54,59 +53,47 @@ export type { TransitionName } from "./transitions";
 export interface SwapShadingOptions {
   /** which choreography carries the cut (default "blink") */
   transition?: TransitionName;
-  /** total transition length; each transition has its own default (~300-450ms) */
+  /** total transition length; each transition has its own default */
   durationMs?: number;
   /** "twist" only: full integer turns per swap (default 1) */
   turns?: number;
-  /** Per-frame raw progress (0..1) of the running transition, for page-side
-   *  cooperation (e.g. a page flash synced to the swap beat). Not called when
-   *  the swap collapses to instant (reduced motion / declined transition). */
+  /** Per-frame raw progress (0..1), for page-side cooperation such as a flash
+   *  synced to the swap beat. Not called when the swap collapses to instant. */
   onProgress?: (t: number) => void;
 }
 
-// ============================================================================
 // Scene orchestration: renderer, camera, lights, model load, state easing and
 // the per-frame tick. The parts that DO things live in focused modules — see
-// README.md's file index. Deliberate: this orchestrator owns the story camera
-// and cinematics wiring even for the free-orbit /lens viewer (which bundles
-// them unused) — ONE assembly path beats injecting story pieces per caller.
-// ============================================================================
+// README.md's file index. This orchestrator wires the story camera and
+// cinematics even for the free-orbit /lens viewer: ONE assembly path.
 
 /** One channel's registry entry: its rest/default value plus the per-channel
  *  flags every derived list keys off. Add a channel = ONE row in
- *  CHANNEL_REGISTRY; the lists below (and the sites that import them) follow. */
+ *  CHANNEL_REGISTRY; the lists below, and their importers, follow. */
 interface ChannelSpec {
   /** rest value AND markup default (also the ease target at boot) */
   default: number;
-  /** ANIMATION-owned: /lens hand-rests this channel's target on animation
-   *  switch/None (lens.astro resetAnimChannels, via ANIM_RESET_CHANNELS) so no
-   *  stale pose survives. Slider channels (lens.astro sliderChannels) are
-   *  restored by applyManualSliders instead and are NOT flagged — EXCEPT
-   *  explode, which is both (the slider default re-wins right after the reset). */
+  /** ANIMATION-owned: /lens rests this channel's target on animation
+   *  switch/None so no stale pose survives. Slider channels are restored
+   *  separately and are NOT flagged — except explode, which is both. */
   animReset?: boolean;
-  /** recipe channel that must read 0 for the instrument's idle-identity
-   *  contract (dev/paths.ts idle check, via IDLE_ZERO_CHANNELS): at 0 the
-   *  deform graph is an exact identity (ops/host's hard idle gate). A missing
-   *  entry false-alarms (historically 43mm on a mid-scrub bend). */
+  /** Recipe channel the instrument's idle-identity check must zero before
+   *  probing seated geometry: at 0 the deform graph is an exact identity. A
+   *  missing entry false-alarms. */
   idleZero?: boolean;
 }
 
 /**
- * The scene channel REGISTRY — the ONE list every per-channel site derives
- * from. `default` is also each channel's rest value (0 everywhere: a recipe
- * channel at 0 is a bit-exact identity by construction, ops/host's hard idle
- * gate). SceneState typing, the state initializer, and tick()'s ease loop all
- * read the derived CHANNEL_DEFAULTS; the two boolean flags derive
- * ANIM_RESET_CHANNELS (page) and IDLE_ZERO_CHANNELS (instrument idle check).
- * Adding a channel is one row here plus, where the flags apply, nothing else —
- * the old four-list trap (defaults + rig + resetAnimChannels + idle-zero, each
- * hand-kept) is gone except for the mechanism, which stays bespoke mechanical
- * code (zoom/focus/iris curves are not a per-channel copy). See README.md's
- * "change X → touch Y" map.
+ * THE CHANNEL REGISTRY — one row per channel, and the ONE list every
+ * per-channel site derives from. `default` is also the rest value (0
+ * everywhere: a recipe channel at 0 is a bit-exact identity). CHANNEL_DEFAULTS
+ * feeds SceneState typing, the state initializer and tick()'s ease loop; the
+ * two flags derive ANIM_RESET_CHANNELS and IDLE_ZERO_CHANNELS. So adding a
+ * channel is ONE row here and no edit anywhere else — except the mechanism
+ * trio, which stays bespoke mechanical code.
  *
- * Every motion channel below the mechanism trio is an OP RECIPE channel
- * (ops/recipes.ts) driven straight through ops/host's `recipeChannel` — one
- * row here, one recipe there, nothing in between.
+ * Every motion channel below that trio is an OP RECIPE channel driven straight
+ * through ops/host's `recipeChannel` — one row here, one recipe there.
  */
 const CHANNEL_REGISTRY = {
   /** 0 (18mm, retracted) .. 1 (50mm, extended) */
@@ -115,62 +102,50 @@ const CHANNEL_REGISTRY = {
   focus: { default: 0 },
   /** 0 (f/2.8, wide open) .. 1 (f/22, closed down) */
   aperture: { default: 0 },
-  /** explode ladder recipe: 0 (assembled) .. 1 (parts spread along the axis).
-   *  Both a slider AND animReset — see ChannelSpec.animReset. */
+  /** explode ladder recipe: 0 (assembled) .. 1 (parts spread along the axis) */
   explode: { default: 0, animReset: true, idleZero: true },
-  /** reassembly recipe spread: 0 (seated, bit-exact default) .. 1 (fully
-   *  disassembled — sheets unwrapped and flown off the ladder). */
+  /** reassembly spread: 0 (seated) .. 1 (sheets unwrapped, off the ladder) */
   assemble: { default: 0, animReset: true, idleZero: true },
-  /** the STORY's scoped unroll recipe (the sticker chain, admitted only to the
-   *  shell cast): 0 (seated, bit-exact default) .. 1 (the shells rolled out
-   *  flat). Driven by the peel scene, not by any /lens slider. */
+  /** the STORY's unroll recipe, scoped to the shell cast: 0 (seated) .. 1
+   *  (rolled out flat). Driven by the peel scene, not by a /lens slider. */
   peel: { default: 0, animReset: true, idleZero: true },
-  /** the origami-bloom recipe (ops/recipes.ts `rose`): 0 (seated, bit-exact
-   *  default) .. 1 (full bloom — petals hinged open in ranked whorl waves).
-   *  The story's ENDING drives it (story/envelopes.ts ROSE_PULSE); the /lens
-   *  Animations bench drives the same channel from its slider. */
+  /** the origami-bloom recipe: 0 (seated) .. 1 (petals hinged open in ranked
+   *  whorl waves). Driven by the story's ending and by the /lens bench. */
   rose: { default: 0, animReset: true, idleZero: true },
   /** 0..1 scroll-story progress; drives the scripted camera (hero) */
   story: { default: 0 },
 } satisfies Record<string, ChannelSpec>;
 type Channel = keyof typeof CHANNEL_REGISTRY;
 const CHANNELS = Object.keys(CHANNEL_REGISTRY) as Channel[];
-// `satisfies` above keeps each entry's LITERAL type (so the keys stay a precise
-// union for `Channel`), which means the optional flags aren't visible on
-// entries that omit them — read specs back through this widening view.
+/** `${c}Target` per channel, spelled once — tick()'s ease loop reads it. */
+const TARGET_KEYS = CHANNELS.map((c) => `${c}Target`) as `${Channel}Target`[];
+// `satisfies` keeps each entry's literal type, so the optional flags are not
+// visible on entries that omit them — read specs back through this view.
 const specOf = (c: Channel): ChannelSpec => CHANNEL_REGISTRY[c];
 
-/** Rest/default value per channel — the numeric view of the registry, kept for
- *  SceneState init, tick()'s ease targets, and the analysis-walk neutral base
- *  handed to dev/paths.ts. */
+/** Rest/default value per channel — the numeric view of the registry. */
 export const CHANNEL_DEFAULTS = Object.fromEntries(
   CHANNELS.map((c) => [c, CHANNEL_REGISTRY[c].default]),
 ) as Record<Channel, number>;
 
-/** Channels an animation may drive that /lens rests to their registry default
- *  on animation switch/None (see ChannelSpec.animReset). Derived, so a new
- *  animReset channel needs no edit in lens.astro. */
+/** Channels /lens rests to their default on animation switch/None. Derived,
+ *  so a new animReset channel needs no edit in the page. */
 export const ANIM_RESET_CHANNELS = CHANNELS.filter((c) => specOf(c).animReset);
 
-/** Every deform channel the instrument's idle-identity check zeroes
- *  before probing the seated geometry (see ChannelSpec.idleZero). Derived, so a
- *  new deform channel can't silently fall out of the idle contract. */
+/** Every deform channel the instrument's idle-identity check zeroes. Derived,
+ *  so a new deform channel can't silently fall out of the contract. */
 export const IDLE_ZERO_CHANNELS = CHANNELS.filter((c) => specOf(c).idleZero);
 
 export type { Channel };
 
 /** THE ONE EASE EVERY CHANNEL RUNS ON — tick()'s per-frame
- *  `value += EASE·(target − value)`, applied to the whole registry at once.
- *  Exported as a READING: a channel is drawn at this value, not the one its
- *  writer authored, so laws that hold on DRAWN values import it rather than
- *  respelling it (story/__tests__/channel-ease.test.ts). */
+ *  `value += EASE·(target − value)`. Exported so laws that must hold on DRAWN
+ *  values import it rather than respelling it. */
 export const CHANNEL_EASE = 0.22;
 
 /**
- * Scene state, driven by the sliders in lens.astro. Each *Target is set
- * instantly on input; tick() eases the live value toward it every frame so
- * dragging a slider feels smooth instead of snapping. Channel semantics are
- * documented on CHANNEL_REGISTRY above.
+ * Scene state. Each *Target is set instantly; tick() eases the live value
+ * toward it every frame. Channel semantics live on CHANNEL_REGISTRY above.
  */
 export type SceneState = { [K in Channel]: number } & {
   [K in Channel as `${K}Target`]: number;
@@ -178,16 +153,10 @@ export type SceneState = { [K in Channel]: number } & {
 
 export type AccessoryGroup = "hood" | "filter" | "caps";
 
-/** A spherical camera pose: the camera sits `distance` from
- *  (targetX ?? 0, targetY ?? 0, 0) at `azimuth`/`elevation` (radians — azimuth
- *  measured from +z toward +x) and looks at that target.
- *
- *  The TARGET is what travels. Holding az/el and sliding `targetX` flies the
- *  camera in a straight line along world X with a FIXED heading — which is the
- *  dive's whole pose path (`optics/fly-core.ts` `flyPose`). Nothing on the site
- *  writes one to the camera any more: the story parks its rig and dollies the
- *  LENS instead (`setLensDolly`), reading these poses only for the displacement
- *  and the fov. */
+/** A spherical camera pose: `distance` from (targetX ?? 0, targetY ?? 0, 0) at
+ *  `azimuth`/`elevation` (radians, azimuth from +z toward +x), looking at that
+ *  target. Nothing writes one to the camera — the story parks its rig and
+ *  dollies the LENS, reading these only for the displacement and the fov. */
 export interface CameraPose {
   azimuth: number;
   elevation: number;
@@ -203,87 +172,48 @@ export interface TrackedPoint {
   y: number;
 }
 
-/** Where a model node is actually DRAWN (SceneHandle.projectDrawn): the centre
- *  and radius of the disc it covers, in FRAME HEIGHTS from the frame's centre —
- *  +x right, +y DOWN, so it reads like the screen. Frame heights and not pixels
- *  because the only consumers are drawing INTO the canvas, where a fixed camera
- *  puts a fixed point at an offset proportional to the canvas height whatever
- *  the canvas size or DPR; multiply by the canvas height for CSS px. */
+/** Where a model node is DRAWN: the centre and radius of the disc it covers,
+ *  in FRAME HEIGHTS from the frame's centre — +x right, +y DOWN. Not pixels,
+ *  because the consumers draw INTO the canvas at any size or DPR. */
 export interface TrackedCircle {
   x: number;
   y: number;
   r: number;
 }
 
-/** An ADDITIVE per-part transform offset (SceneHandle.setPartOffset): position
- *  in the part's local frame (model mm — the gltf geometry units), rotation in
- *  radians (euler, added per component), scale a uniform multiplier. */
+/** An ADDITIVE per-part transform offset: position in the part's local frame
+ *  (model mm), rotation in radians per euler component, scale a multiplier. */
 export interface PartOffset {
   position?: [number, number, number];
   rotation?: [number, number, number];
   scale?: number;
 }
 
-/** One optical element's axial span in the GLTF frame, in millimetres — the
- *  front and rear surface vertices, i.e. exactly `front.yMm` / `rear.yMm` of an
- *  optics/prescription.ts entry, keyed by the element's node name.
- *
- *  The CALLER derives this table and passes it to setGlassTransmissive, which
- *  uses each span's LENGTH as that element's refraction thickness; this
- *  module deliberately does NOT import optics/prescription.js, which would drag
- *  the 13-entry table (and the optics tree it heads) into the shared homepage
- *  chunk for the sake of one /lens demo. */
+/** One optical element's axial span in the GLTF frame, in millimetres, keyed
+ *  by node name; its LENGTH is that element's refraction thickness. THE CALLER
+ *  derives the table — importing optics/prescription.ts here would drag the
+ *  whole optics tree into the shared homepage chunk. */
 export interface GlassSpanMm {
   frontYmm: number;
   rearYmm: number;
 }
 
-/** Roughness written onto the transmissive clones. three drives the refraction
- *  blur from roughness (a mip level over the viewport copy), so a touch of it
- *  softens the internals seen through the glass instead of resolving every
- *  barrel screw razor-sharp through a perfect window. */
+/** Roughness on the transmissive clones. three drives the refraction blur off
+ *  roughness, so a touch of it softens the internals seen through the glass. */
 const GLASS_TRANSMISSIVE_ROUGHNESS = 0.05;
 
-/** THE KNOB THAT MAKES THE FEATURE VISIBLE AT ALL, and it is the SHIPPED glass's
- *  own number (core/model.ts GLASS_SPECULAR) — the clones re-apply it because
- *  `setGlassGlint` scales it and a clone must start from the unscaled value, not
- *  because the two looks disagree. At three's default 1 and roughness ~0 each
- *  element is a MIRROR of `scene.environment` (core/model.ts's RoomEnvironment):
- *  the reflected room is so much brighter than the transmitted view that the
- *  glass reads as chrome and nothing behind it can be seen. MEASURED on the
- *  bench — with the specular at 1 the dome is invisibly indifferent to what is
- *  behind it (blanking the sky with `__lensOptics.set({skyMix:0})` does not
- *  change one pixel of it); at this value the barrel rings, the iris and the far
- *  elements come through. Low, not zero, so an element still catches a highlight
- *  and reads as GLASS rather than as a hole — the iridescent multicoat (which
- *  the clone inherits) carries the coloured coating sheen on top.
- *
- *  NOTE for anyone tempted by `envMapIntensity` instead: it is inert on a node
- *  material lit by a SCENE environment in three r185 — verified live at 0 and
- *  at 12, both indistinguishable from 1. */
+/** The clones' UNSCALED specular, restated from the shipped glass because
+ *  `setGlassGlint` scales it. At three's default 1 each element mirrors
+ *  `scene.environment` so brightly the glass reads as chrome; low but not
+ *  zero, so it still catches a highlight. `envMapIntensity` cannot substitute
+ *  — it is inert on a node material lit by a SCENE environment. */
 const GLASS_TRANSMISSIVE_SPECULAR = GLASS_SPECULAR;
 
 /** THE DETINT — every slot that can put a COLOUR on the transmissive clones,
- *  set to neutral. Optical glass is colourless; the shipped elements are not,
- *  and the tint comes from core/model.ts's `buildLensMaterial`, which is what
- *  these clones are cloned from ("realistic" restores exactly those materials):
- *
- *    • `color: 0xfafdfc`      — a cool near-white base, i.e. a faint cyan cast
- *    • `specularColor: 0xb9e0c6` — the "faint green specular tint" its own
- *      comment names; this is what greened the reflections
- *    • `iridescence: 0.55` (iridescenceIOR 1.3, thickness 140–400nm) — the
- *      thin-film multicoat, the strongest colour of the three: it paints the
- *      Fresnel reflection green/amber/purple across the angle of incidence
- *
- *  `attenuationColor` / `attenuationDistance` are never authored, so they sit at
- *  three's defaults (white, Infinity) — written anyway so the whole tint story
- *  is in ONE table and a future GLB material with a volume tint cannot leak in.
- *
- *  WHAT IS NOT TOUCHED: reflectivity. The Fresnel is IOR-driven (1.52) and has
- *  nothing to do with surface colour — zeroing it would make the elements read
- *  as holes rather than as glass. `GLASS_TRANSMISSIVE_SPECULAR` above stays the
- *  look knob for how strong those reflections are; this table only says they are
- *  WHITE. */
+ *  set to neutral. The attenuation pair is never authored but is written
+ *  anyway, so the whole tint story is in ONE table. Reflectivity is
+ *  deliberately untouched: the Fresnel is IOR-driven, and zeroing it would
+ *  make the elements read as holes. */
 const GLASS_DETINT = {
   color: 0xffffff,
   specularColor: 0xffffff,
@@ -300,502 +230,288 @@ export interface SceneHandle {
   setAccessory: (group: AccessoryGroup, visible: boolean) => void;
   /** Swap the render style (materials) for the whole model. */
   setShading: (mode: ShadingMode) => void;
-  /** /lens ONLY: load the shading BENCH — the seven technical looks
-   *  (materials/shading-bench.ts). Dynamically imported on first call, like the
-   *  path viz and the inspector, so the homepage hero never fetches the
-   *  palettes, the per-mesh build machinery or the procedural matcap for looks
-   *  the story cannot show.
-   *
-   *  AWAIT IT BEFORE OFFERING A BENCH LOOK. `setShading`/`swapShading` stay
-   *  SYNCHRONOUS (a transition cuts on its own apex frame — an awaited swap
-   *  there would land late), so a bench mode asked for before this resolves is
-   *  refused with a console warning rather than half applied. /lens awaits it
-   *  in boot(), exactly as it awaits `loadAnimations()`. Idempotent; resolves
-   *  false if the chunk couldn't be fetched, leaving realistic/ink working. */
+  /** /lens ONLY: load the shading BENCH, dynamically imported so the hero
+   *  never fetches it. AWAIT IT BEFORE OFFERING A BENCH LOOK — setShading and
+   *  swapShading stay SYNCHRONOUS, so a bench mode asked for before this
+   *  resolves is refused. Idempotent; false if the chunk failed. */
   enableShadingBench: () => Promise<boolean>;
-  /** BLEND the story's pair rather than swapping it: 0 = realistic, 1 = ink,
-   *  anything between is both at once (materials/unified.ts). The two looks
-   *  share one material, so this is a uniform write — story/fly.ts ramps it
-   *  across the dive's edges where a swap used to CUT. Writing 0 or 1 leaves
-   *  the scene in exactly the state `setShading("realistic"/"ink")` would; a
-   *  bench look wears its own materials and ignores the blend. */
+  /** BLEND the story's pair rather than swapping: 0 = realistic, 1 = ink,
+   *  between = both at once. The two share one material, so this is a uniform
+   *  write. 0 and 1 leave the scene exactly where setShading would; a bench
+   *  look wears its own materials and ignores the blend. */
   setInkMix: (v: number) => void;
-  /** The current shading mode — the PENDING one while a choreographed swap is
-   *  in flight (the mode the scene is heading to). Demos snapshot this on
-   *  enter() so exit() can restore the bench's look. */
+  /** The current shading mode — the PENDING one while a swap is in flight.
+   *  Demos snapshot it on enter() to restore the bench's look on exit(). */
   getShading: () => ShadingMode;
-  /** Swap the render style through a short choreographed transition (core/
-   *  transitions.ts): the model whips, blinks, molts or the fov punches, and
-   *  the instant material rebuild fires at the choreography's hidden peak —
-   *  the change reads as one sharp gesture. Everything driven is restored
-   *  bit-exactly afterward. A swap already in flight is RETARGETED to the new
-   *  mode (no stacked motion); `prefers-reduced-motion` (and a transition that
-   *  declines, e.g. "punch" in story mode) collapses to instant setShading. */
+  /** Swap the render style through a choreographed transition: the rebuild
+   *  fires at the choreography's hidden peak and everything driven is restored
+   *  bit-exactly. A swap in flight is RETARGETED, not stacked;
+   *  prefers-reduced-motion or a declining transition cuts instantly. */
   swapShading: (mode: ShadingMode, opts?: SwapShadingOptions) => void;
-  /** Follow the site theme (light = no `.dark` on <html>): re-palettes the current
-   *  shading mode and re-tints the cinematic extras (dust, rays). The initial
-   *  theme is self-detected at creation; the page calls this on toggle. */
+  /** Follow the site theme (light = no `.dark` on <html>): re-palettes the
+   *  shading mode and re-tints the cinematic extras. The initial theme is
+   *  self-detected at creation; the page calls this on toggle. */
   setTheme: (light: boolean) => void;
-  /** Stop/restart the render loop entirely — e.g. when the hero canvas scrolls
-   *  out of view. Story mode keeps drawing even when nothing is dirty (ambient
-   *  dust/rays), so an off-screen hero
-   *  would otherwise burn GPU frames forever. */
+  /** Stop/restart the render loop entirely, e.g. when the hero scrolls out of
+   *  view. Story mode draws even when nothing is dirty (ambient dust/rays), so
+   *  an off-screen hero would otherwise burn frames forever. */
   setPaused: (paused: boolean) => void;
   /** Force one repaint. /lens only redraws while a channel eases or dirty is
-   *  set, so a bare uniform tweak (animation param slider) needs this to show. */
+   *  set, so a bare uniform tweak needs this to show. */
   invalidate: () => void;
-  /** Register a callback run after every rendered frame with a projector that
-   *  maps a model NODE NAME to its current screen position (CSS px, or null if
-   *  the node doesn't exist / is behind the camera). This is how DOM annotations
-   *  point at and TRACK parts of the 3D model through every scene — the centre
-   *  follows the node's live object transform (zoom slides, ring turns, the
-   *  screw pivot…). The op deform runs purely IN-SHADER and leaves object
-   *  transforms alone, so an exploded piece's anchor is its SEATED position —
-   *  anchor labels to parts the mechanism moves for exact tracking. */
+  /** Run a callback after every rendered frame with a projector from node NAME
+   *  to screen position (CSS px, null if missing or behind the camera). The op
+   *  deform runs purely IN-SHADER, so an exploded piece's anchor is its SEATED
+   *  position — anchor labels to parts the MECHANISM moves to track exactly. */
   onFrame: (
-    cb: (project: (name: string) => TrackedPoint | null) => void,
+    cb: (
+      project: (name: string, out: TrackedPoint) => TrackedPoint | null,
+    ) => void,
   ) => void;
-  /** …and the OTHER question about a part: where is it actually DRAWN, and how
-   *  big. Same projection, but the op deform is folded in on the CPU
-   *  (`ops/cpu.ts` — story/cinematics.ts already threads its rays through the
-   *  same evaluator), so this follows a piece that the mechanism has thrown
-   *  metres from its seat. Returns the node's bounding disc in FRAME HEIGHTS
-   *  (see TrackedCircle), or null when the node does not exist or is behind the
-   *  camera. Ink drawn ONTO a part wants this; a DOM label wants `project`,
-   *  whose seated anchor is the point of it. */
+  /** …and where a part is actually DRAWN, in FRAME HEIGHTS. Same projection
+   *  with the op deform folded in on the CPU, so it follows a piece the deform
+   *  has thrown clear of its seat. Ink drawn ONTO a part wants this; a DOM
+   *  label wants `project` and its seated anchor. */
   projectDrawn: (name: string) => TrackedCircle | null;
-  /** DEV: motion-path overlay for the canned animations, behind the /lens
-   *  "Motion paths" toggle. Dynamically imported, so nothing of it reaches the
-   *  homepage bundle — the hero never calls this. Returns null if the
-   *  visualizer can't start. */
+  /** DEV: motion-path overlay for the canned animations. Dynamically
+   *  imported; returns null if the visualizer can't start. */
   enablePathViz: (
     onStatus: (text: string, ok: boolean) => void,
   ) => Promise<PathViz | null>;
-  /** DEV: piece-name inspector behind the /lens "Inspect" toggle — hover a mesh
-   *  to read its GLB node name (object names are the API), click to copy it.
-   *  Dynamically imported on the first tick like the path viz, so the homepage
-   *  never fetches it. Resolves false if it couldn't start. */
+  /** DEV: piece-name inspector — hover a mesh to read its node name, click to
+   *  copy. Dynamically imported; resolves false if it couldn't start. */
   enableInspect: (on: boolean) => Promise<boolean>;
-  /** THE DIVE'S SKY — the authored starfield drawn as real billboarded quads
-   *  (optics/starfield.ts). The stars are drawn into the OPAQUE pass on purpose so three's
-   *  transmission copy picks them up and the glass refracts them — see the glass
-   *  contract in optics/starfield.ts before touching those materials.
-   *
-   *  While mounted this also owns `scene.background`, holding the sky palette's
-   *  flat backdrop behind the stars (near-black on the dark stage) and putting
-   *  back whatever was there on `false`. Dynamically imported on first enable;
-   *  resolves false if it couldn't start. */
+  /** THE DIVE'S SKY — drawn into the OPAQUE pass on purpose, so three's
+   *  transmission copy picks it up and the glass refracts it (see the glass
+   *  contract in optics/starfield.ts). While mounted it also OWNS
+   *  `scene.background`. Resolves false if it couldn't start. */
   enableStarfield: (on: boolean) => Promise<boolean>;
-  /** DEV (/lens Demos): route the frame through the SCREEN-SPACE wormhole
-   *  (optics/wormhole-post.ts) instead of rendering it straight to the canvas.
-   *  While mounted, every rendered frame goes scene → render target → radial
-   *  pinch about the exit axis → canvas, so the barrel, the internals, the
-   *  glass and the sky all bend into the same funnel. `false` unmounts and
-   *  restores the direct `renderer.render` the whole site ships with; resolves
-   *  false if it couldn't start (the demo then runs undistorted, not broken).
-   *  Dynamically imported on first enable. */
+  /** Route the frame through the SCREEN-SPACE wormhole — scene → target →
+   *  radial pinch about the exit axis → canvas. `false` restores the direct
+   *  render; resolves false if it couldn't start (undistorted, not broken). */
   enableWormholePost: (on: boolean) => Promise<boolean>;
-  /** PAY THE FLY-THROUGH'S COMPILE EARLY. Builds the two optics modules above
-   *  and then draws ONE frame of the dive's look — realistic shading, the
-   *  transmissive glass clones for `spans`, the starfield, through the wormhole
-   *  pass — with the OUTPUT redirected into a 1×1 target, so nothing reaches
-   *  the canvas and no channel, latch or look is left changed. The realistic
-   *  look comes from the shading controller's ORIGINALS rather than from a mode
-   *  switch: a switch frees the mode it leaves and rebuilds it coming back,
-   *  which would cost more than the warm-up saves.
-   *
-   *  WHY A REAL FRAME AND NOT compileAsync: three keys a render pipeline on the
-   *  render context as well as the shader (WebGPUBackend.getRenderCacheKey —
-   *  colour format, depth format, sample count), and the dive draws into the
-   *  wormhole pass's own target rather than onto the canvas. So every material
-   *  in the model needs a SECOND pipeline the first time the pass renders it,
-   *  which is what made the first crossing cost ~180ms of one frame. Drawing
-   *  the real thing through the real pass is the only warm-up that compiles the
-   *  pipelines the dive will actually look up; the scene pass renders full-size
-   *  into its own target either way (PassNode saves and restores the render
-   *  target), so redirecting the final quad is enough to keep it off screen.
-   *
-   *  Call it when the page has a moment — the work is a full frame plus every
-   *  compile, ~200ms, and it is only worth doing off the crossing. Resolves
-   *  false if it declined (already warm, or an optics module failed to load).
-   *  Idempotent: the second call is a no-op. */
+  /** BUILD THE PASS WITHOUT MOUNTING IT: its render targets are the dive's
+   *  largest single allocation (full-res colour + depth, MSAA), and they cost
+   *  the same frame whenever they land. Paying them on their own frame keeps
+   *  them off the mount's. Idempotent. */
+  buildWormholePost: () => Promise<boolean>;
+  /** PAY THE FLY-THROUGH'S COMPILE EARLY: draw ONE frame of the dive's look
+   *  into a 1×1 target, leaving no channel, latch or look changed. Must be a
+   *  REAL frame through the REAL pass, not compileAsync — three keys a pipeline
+   *  on the render CONTEXT as well as the shader. Costs a full frame plus every
+   *  compile. Idempotent; resolves false if it declined. */
   warmFly: (spans: Record<string, GlassSpanMm>) => Promise<boolean>;
-  /** DEV (/lens "Hero camera" toggle): drive the camera from the hero's
-   *  scripted story path — `state.story` through the SAME sampleStory /
-   *  applyStoryFraming code path the hero runs — instead of OrbitControls, so
-   *  the canned animations can be previewed under the story choreography. OFF
-   *  restores the saved orbit pose.
-   *  No-op in story mode, where the hero already owns the camera. */
+  /** PAY AN OBJECT'S UPLOAD EARLY: draw it once into a 1×1 target, so its
+   *  vertex buffers, textures and pipeline are resident before the frame that
+   *  first shows it. Unparented objects are mounted for that draw only, and
+   *  frustum culling is off so the draw cannot be skipped. `viaPass` draws it
+   *  through the dive's post pass as well — that target's format and sample
+   *  count key a SECOND pipeline, which anything first worn over the dive's
+   *  span pays for on the frame it arrives. */
+  warmDraw: (objects: THREE.Object3D[], viaPass?: boolean) => void;
+  /** DEV: drive the camera from `state.story` through the SAME code path the
+   *  hero runs instead of OrbitControls. OFF restores the saved orbit pose;
+   *  no-op in story mode, where the hero already owns the camera. */
   setStoryCamera: (on: boolean) => void;
-  /** STORY MODE ONLY: per-frame FOV override
-   *  for the fly-through span — the dive's own 42°→70° ramp, laid over the pose
-   *  the story rig placed. `mix` blends it against the story's own fov (1 = the
-   *  dive's, 0 = the story's), which is how the dive hands the framing back
-   *  without a step; null releases it. The POSE is never overridden: the dive
-   *  translates the LENS past a parked camera (setLensDolly). No restore
-   *  bookkeeping — the story sample re-asserts itself the next frame it is off. */
+  /** STORY MODE ONLY: per-frame FOV override for the fly-through, laid over
+   *  the story's pose; `mix` blends against the story's own fov, null releases.
+   *  The POSE is never overridden — the dive translates the LENS past a parked
+   *  camera. No restore bookkeeping: the story sample re-asserts itself. */
   setStoryFov: (fov: number | null, mix?: number) => void;
-  /** STORY MODE ONLY: how much the DIVE owns the framing — 0 = the story's own
-   *  park/lift view offset, 1 = dead centre. The dive is shot down the optical
-   *  axis with the lens ON it, so it wants the axis at the middle of the frame
-   *  and nothing else; the story's offset carries the portrait LIFT
-   *  (story/camera.ts), which is 6% of the canvas height on a narrow viewport
-   *  and framed the whole dive that far high. story/fly.ts ramps this with the
-   *  ink hand-over, so the framing centres over the same beats the drawing
-   *  becomes the real lens. Landscape rows park at xs 0 with no lift, where
-   *  every value of this is the same projection. */
+  /** STORY MODE ONLY: how much the DIVE owns the framing — 0 = the story's
+   *  park/lift view offset, 1 = dead centre, which is what a bore shot down the
+   *  optical axis wants. Landscape rows park at 0, where every value is the
+   *  same projection. */
   setStoryCentre: (k: number) => void;
-  /** DEV (/lens Demos): show/hide the ambient cinematics dust. The fly-through
-   *  clears it so the starfield reads; everything else leaves it on. */
+  /** Show/hide the ambient cinematics dust. The fly-through clears it so the
+   *  starfield reads; everything else leaves it on. */
   setDust: (visible: boolean) => void;
-  /** DEV (/lens Demos): the fly-through's alternative to hiding the glass
-   *  outright — leave every element DRAWN and TRANSMISSIVE so three's
-   *  transmission path refracts the blades, the barrel internals and the warped
-   *  starfield through it.
-   *
-   *  `spans` is the per-element axial table the per-element THICKNESS is derived
-   *  from — see GlassSpanMm for why the caller owns it. Keyed by node name; ids
-   *  the model doesn't have are skipped. Only read on the enabling call (a
-   *  re-enable with a different table is a no-op). `false` restores the
-   *  materials captured at enable and resets the fade.
-   *
-   *  THE CAMERA FLIES THROUGH THIS GLASS, and getting it out of the way is the
-   *  two fades' job, not this one's — setGlassFade for the whole stack at once,
-   *  setGlassElementFade for the passage. */
+  /** Leave every element DRAWN and TRANSMISSIVE, so three's transmission path
+   *  refracts the internals and the starfield through it. `spans` supplies each
+   *  element's THICKNESS and is read only on the ENABLING call; `false`
+   *  restores the materials captured at enable. Getting the glass out of the
+   *  flying camera's way is the two fades' job, not this one's. */
   setGlassTransmissive: (
     on: boolean,
     spans?: Record<string, GlassSpanMm>,
   ) => void;
-  /** DEV (/lens Demos): the WORLD-X extent of each named node, from the meshes
-   *  it actually carries — `{ x0, x1 }` with x0 ≤ x1, and ids the model does not
-   *  have (or that carry no mesh) simply absent from the result.
-   *
-   *  THE FLY-THROUGH'S RULER. The dive needs to know where each element sits on
-   *  the axis it is flying down, and the prescription's millimetres are in the
-   *  GLTF frame: turning them into world X means knowing MODEL_SCALE *and* the
-   *  recentring offset, both of which are this module's private business. So the
-   *  measurement is taken here, where the matrices are, rather than reproduced
-   *  from a constant on the far side of the barrel.
-   *
-   *  REST POSE, and a snapshot: the bounds come off the CPU-side geometry, so
-   *  ops/host's vertex-shader deform is not in them, and nothing re-measures
-   *  when a channel moves. Call it once with every channel at rest (which is
-   *  what a demo's enter() is) and keep the numbers. */
+  /** THE FLY-THROUGH'S RULER: the WORLD-X extent of each named node. Measured
+   *  HERE because world X needs MODEL_SCALE and the recentring offset, both
+   *  private to this module. REST POSE and a snapshot — the in-shader deform is
+   *  not in it and nothing re-measures, so call it with channels at rest. */
   worldAxialSpans: (
     ids: string[],
   ) => Record<string, { x0: number; x1: number }>;
-  /** DEV (/lens Demos): fade the transmissive clones out together — 1 = the
-   *  glass as setGlassTransmissive left it, 0 = gone. Drives `opacity` on every
-   *  clone (they are cloned from the shipped physical glass and are marked
-   *  `transparent` at enable, so alpha reaches the framebuffer), and at exactly
-   *  0 also drops the meshes out of the one-owner applyVisibility pass so no
-   *  highlight or transmission ghost survives.
-   *
-   *  A no-op unless setGlassTransmissive is on, and reset to 1 when it goes off.
-   *  Cheap to call every frame: an unchanged value returns immediately. */
+  /** Fade the transmissive clones out together. At exactly 0 the meshes also
+   *  drop out of applyVisibility, so no depth write or transmission ghost
+   *  survives. A no-op unless the swap is on; cheap per frame. */
   setGlassFade: (opacity: number) => void;
-  /** DEV (/lens Demos): THE PASSAGE FADE — one opacity PER ELEMENT, keyed by
-   *  node name, MULTIPLIED by setGlassFade's stack-wide one. Ids the table omits
-   *  hold whatever they were last given (1 until told otherwise), so a caller
-   *  may drive the whole stack every frame or a single element once.
-   *
-   *  WHY IT EXISTS. three's transmission is a SCREEN-SPACE effect: the fragment
-   *  reads a copy of the framebuffer, offset by the refraction ray. From INSIDE
-   *  an element that offset is enormous and the separable dual blur behind it
-   *  smears the frame into an axis-aligned cross — the shot breaks down exactly
-   *  when the camera is in the glass. So the fly-through takes each element down
-   *  as it arrives: fully gone a short distance BEFORE the near plane reaches
-   *  its rearmost surface, over a ramp short enough that the element is already
-   *  filling the whole frame while it dissolves.
-   *
-   *  NOT the old per-element dissolve this file used to carry, which hid an
-   *  element outright for the frames the camera was inside it — thirteen
-   *  single-frame visibility jumps, and the reason it was pulled. This is an
-   *  OPACITY ramp, and it fires at passage rather than while the element is
-   *  still a distant object ahead.
-   *
-   *  A no-op unless setGlassTransmissive is on, and cleared when it goes off.
-   *  Cheap to call every frame: values equal to what is already there return
-   *  without a write, and the visibility pass only re-runs when an element
-   *  crosses 0. */
+  /** THE PASSAGE FADE — one opacity PER ELEMENT, MULTIPLIED by setGlassFade's
+   *  stack-wide one; omitted ids hold their last value. It exists because
+   *  three's transmission is SCREEN-SPACE, and from INSIDE an element the
+   *  refraction offset smears the frame into an axis-aligned cross — so each
+   *  element must be gone shortly BEFORE the near plane reaches it. A no-op
+   *  unless the swap is on; cheap per frame. */
   setGlassElementFade: (fades: Record<string, number>) => void;
-  /** DEV (/lens Demos): scale the GLINTS on the transmissive clones —
-   *  setRoomLight's opposite number for the glass. 1 = the reflections
-   *  setGlassTransmissive shipped (GLASS_TRANSMISSIVE_SPECULAR), 0 = no reflected
-   *  light on the elements at all, so nothing but what shines THROUGH them is
-   *  left. Multiplies `specularIntensity`, which is the only live knob for this:
-   *  it scales the dielectric Fresnel at BOTH ends (three r185
-   *  MeshPhysicalNodeMaterial.setupSpecular — specularColor is F0 × it and
-   *  specularF90 IS it at metalness 0), so the IBL reflection and the studio
-   *  lights' highlights go out together. `envMapIntensity` cannot do it: three
-   *  reads it only when the MATERIAL carries an envMap, and these are lit by the
-   *  SCENE environment (MaterialProperties.js:23).
-   *
-   *  WHY, SEPARATELY FROM setRoomLight: the room ramp leaves a floor so the
-   *  barrel interior keeps a rim, and at that floor the studio lights were still
-   *  painting white smudges across glass that is supposed to be inside a dark
-   *  tube under starlight. The dive drives this to 0 on the same window.
-   *
-   *  Survives a theme flip: the level is re-applied wherever a clone is made
-   *  (enableGlassTransmissive), exactly as GLASS_DETINT is. Reset to 1 when
-   *  setGlassTransmissive goes off. Cheap to call every frame: an unchanged
-   *  level returns immediately. */
+  /** Scale the GLINTS on the transmissive clones — setRoomLight's opposite
+   *  number for the glass, and separate from it because the room ramp leaves a
+   *  floor bright enough to smudge glass meant to sit in a dark tube.
+   *  Multiplies `specularIntensity`, the only live knob for this. Survives a
+   *  theme flip; resets to 1 when the swap goes off. */
   setGlassGlint: (level: number) => void;
-  /** DEV (/lens Demos): fade the WHOLE BODY — everything applyVisibility governs
-   *  that is NOT optical glass: the mount, the barrel, the rings, the blades,
-   *  the greeble. 1 = the lens as shipped, 0 = gone. setGlassFade's opposite
-   *  number, and the two together dissolve the entire model.
+  /** Fade the WHOLE BODY — everything applyVisibility governs that is NOT
+   *  optical glass. setGlassFade's opposite number.
    *
-   *  NO CLONES. The glass fade has to clone because thickness is per-element;
-   *  a body fade is ONE opacity for every mesh, and core/model.ts's signature
-   *  cache already collapses ~180 body meshes onto ~10 shared material
-   *  instances (plus ops/host's per-source deform variants). So this writes
-   *  `transparent`/`opacity` straight onto those shared instances and remembers
-   *  what each wore, which is a dozen property writes instead of 180 clones and
-   *  180 pipeline compiles.
-   *
-   *  WHY NOT a shader-side fade uniform: only the TECHNICAL palettes
-   *  (ink/blueprint/flat) build an `opacityNode` at all. The fly-through runs
-   *  "realistic" (demos.ts FLY.shading — the technical looks fold in a depth
-   *  fade an interior camera would dissolve), whose materials are the shipped
-   *  MeshStandardMaterials with no opacity graph. A uniform would mean giving
-   *  every mesh on the whole site a transparent material and an opacity graph to
-   *  serve one demo.
-   *
-   *  ONE HITCH, AT THE START: `transparent` flips on the first sub-1 call, which
-   *  re-sorts and re-compiles those ~10 pipelines (the same cost the glass swap
-   *  pays at enable, and for the same reason it is taken once). It is restored —
-   *  with the original opacity — the moment the fade returns to exactly 1.
-   *
-   *  At exactly 0 the meshes also leave applyVisibility, so nothing survives as
-   *  a depth write or a transmission ghost. Cheap to call every frame: an
-   *  unchanged value returns immediately. */
+   *  NO CLONES, unlike the glass fade: this is ONE opacity for every mesh and
+   *  model.ts's cache already collapses the body onto a handful of shared
+   *  instances, so it writes `transparent`/`opacity` onto those and remembers
+   *  what each wore. `transparent` flips on the first sub-1 call, recompiling
+   *  those pipelines once; both are restored at exactly 1, and at 0 the meshes
+   *  also leave applyVisibility. */
   setBodyFade: (opacity: number) => void;
-  /** STORY: take the SHELL off the lens — the peel's cast (core/parts
-   *  `isShellPart`: the barrel sections, the name band, the two control grips
-   *  and the printed markings), then its third cast (`isPeelTube`: the two
-   *  closed inner tubes the skin was wrapped around) and finally its second
-   *  (`isPeelExtra`: the three internal baffle rings, which leave LAST so the
-   *  bore is open behind everything). 1 = the lens as shipped (the default),
-   *  0 = the shell gone, the tubes gone, the bore open and the light path and
-   *  the mechanism bare from the side. The hero drives it as one scroll
-   *  envelope: out over the peel, absent while the cards orbit and the internals
-   *  work and the sky runs, back at the rewrap so the reassembly flies the shell
-   *  home as before. Input is CLAMPED to [0,1] — the envelope is a sum of two
-   *  overlapping ramps and may transiently exceed 1.
+  /** STORY: take the SHELL off the lens — the peel's cast, then the closed
+   *  inner tubes, then the baffles LAST so the bore opens behind everything.
+   *  Input is CLAMPED: the story envelope may transiently leave [0,1].
    *
-   *  VISIBILITY, NOT OPACITY — the one place this parts company with
-   *  setBodyFade, which writes `opacity` on shared materials. Neither half of
-   *  that works here: model.ts's signature cache collapses the body onto ~10
-   *  material instances, so `Barrel_Base` wears the same near-black instance as
-   *  the baffles and the chassis (fading it would fade the internals with it),
-   *  and the story runs "ink", whose fills carry an `opacityNode` — which
-   *  REPLACES `material.opacity` in a NodeMaterial, so the write would not even
-   *  reach the frame. Per-mesh clones would buy a real cross-fade at ~100
-   *  pipeline compiles, and story/fly.ts re-materials every mesh twice inside
-   *  this very span (setShading on enter and on exit), which would stomp them.
-   *
-   *  So each shell mesh hides HARD, at its own point in the fade — the
-   *  cinematics sketch-in's feather, run in reverse: the level is a threshold
-   *  and the pieces wink out scattered across it instead of as one block. Being
-   *  a `.visible` gate it composes in applyVisibility with every other gate and
-   *  survives shading swaps and theme flips untouched. */
+   *  VISIBILITY, NOT OPACITY, unlike setBodyFade: the signature cache means a
+   *  shell mesh shares its material with the internals, and the story's ink
+   *  fills carry an `opacityNode`, which REPLACES `material.opacity`. So each
+   *  mesh hides HARD at its own THRESHOLD in the level; being a `.visible` gate
+   *  it composes with every other gate and survives shading swaps. */
   setShellFade: (opacity: number) => void;
-  /** The INTERIOR's own level, same mechanism as setShellFade on a second
-   *  threshold set: the cladding (isPeelTube) and the rest-cast (isPeelRest)
-   *  leave during the peel with everything else, but this channel brings them
-   *  BACK over the internals tail — the dive flies through the full interior
-   *  while the shell and baffles stay off until the rewrap. */
+  /** The INTERIOR's own level, same mechanism on a second threshold set: the
+   *  cladding and the rest-cast leave with the peel but come BACK over the
+   *  internals tail, so the dive flies through the full interior while the
+   *  shell and baffles stay off until the rewrap. */
   setInteriorFade: (opacity: number) => void;
-  /** DEV (/lens Demos): scale the ROOM — the PMREM'd scene environment and the
-   *  three studio lights together. 1 = the lighting the site ships with, 0 =
-   *  nothing but what the scene emits for itself. The fly-through ramps it down
-   *  as the camera enters the barrel: a lens barrel is a dark tube, and from the
-   *  mount inward the starfield is supposed to be the only light in the frame.
-   *
-   *  The traced sky is NOT room light and does not dim with this — it reaches
-   *  the frame through `scene.backgroundNode`, which three multiplies by
-   *  `backgroundIntensity`, not by `environmentIntensity`.
-   *
-   *  NOT a recorded kit verb, so a demo restores it in exit() (as it does
-   *  setBodyFade). Cheap to call every frame: an unchanged level returns. */
+  /** Scale the ROOM — the PMREM'd environment and the three studio lights
+   *  together. The traced sky is NOT room light and does not dim with this. Not
+   *  a recorded kit verb, so a demo restores it in exit(). */
   setRoomLight: (level: number) => void;
-  /** DEV (/lens Demos): snap the model GROUP to an absolute orientation
-   *  (radians; omitted axes keep their boot values), keeping the recentred
-   *  visual centre pinned at the origin. null restores the exact boot
-   *  orientation. Composes with the twist transition — twist rolls the INNER
-   *  gltf root about the optical axis, so both can run at once. Snap per call;
-   *  demos ease their own numbers per frame. */
+  /** Snap the model GROUP to an absolute orientation (omitted axes keep their
+   *  boot values), keeping the recentred visual centre on the origin. null
+   *  restores the boot orientation. Composes with the twist transition, which
+   *  rolls the INNER gltf root. */
   setModelOrientation: (
     euler: { x?: number; y?: number; z?: number } | null,
   ) => void;
-  /** STORY: slide the model GROUP along world X, world units. This is how the
-   *  fly-through dives — the camera parks on the optical axis and the LENS
-   *  travels past it, which is exactly equivalent to flying a second camera
-   *  through a parked lens (x_model = x_park − x_camera) and needs no rig
-   *  hand-off at either end. 0 is home. Composes with setModelOrientation
-   *  (both write through one placement). */
+  /** STORY: slide the model GROUP along world X — how the fly-through dives.
+   *  The camera parks and the LENS travels past it, which is equivalent to
+   *  flying a camera through a parked lens and needs no rig hand-off. */
   setLensDolly: (x: number) => void;
-  /** DEV (/lens Demos): ADDITIVE transform offset on one named part — any
-   *  entry of partNames(): the mechanism's group empties (Ring_Zoom, Optics_G2…,
-   *  Barrel_Inner, Iris_Housing…) or individual meshes (Element_01, screws,
-   *  wedge sub-meshes). The offset composes ON TOP of whatever the mechanism
-   *  wrote this frame: each rendered frame the part's post-mechanism transform
-   *  is snapshotted as the base, base⊕offset is written for the render, and the
-   *  base is restored afterwards — so repeated calls never accumulate, mechanism
-   *  motion (zoom slide, ring turns) stays underneath, and parts the mechanism
-   *  doesn't touch offset from their rest transform. Shell pieces deform
-   *  in-shader (ops/host) but their mesh transforms are real, so an offset still
-   *  moves them as rigid bodies — the shader deformation composes on top. null
-   *  clears the one part. */
+  /** ADDITIVE transform offset on one named part (any entry of partNames()),
+   *  composed ON TOP of whatever the mechanism wrote each frame — the base is
+   *  snapshotted and restored around the render, so repeated calls never
+   *  accumulate. Shell pieces deform in-shader but their transforms are real,
+   *  so this still moves them as rigid bodies. null clears the part. */
   setPartOffset: (name: string, offset: PartOffset | null) => void;
   /** The addressable part registry for setPartOffset: every NAMED node of the
-   *  model — the mechanism's driven group empties AND every mesh (including
-   *  `_SegN` wedges and the Focus_LeadScrew_Pivot it creates). Sorted, deduped. */
+   *  model, group empties and meshes alike. Sorted, deduped. */
   partNames: () => string[];
-  /** DEV (/lens Demos): attach/detach a world-space presentation object at the
-   *  scene root. The caller owns disposal. */
+  /** Attach/detach a world-space presentation object at the scene root. The
+   *  caller owns disposal. */
   addOverlay: (obj: THREE.Object3D) => void;
   removeOverlay: (obj: THREE.Object3D) => void;
-  /** Attach an object as a CHILD OF THE MOUNTED STARFIELD (enableStarfield),
-   *  which is how the sky chapter's ink — the constellation lines, the star
-   *  labels, the quote — rides that group's per-frame camera-centring for free
-   *  instead of re-deriving it. Returns false when the starfield has not been
-   *  built yet or is not mounted; the caller is expected to ask again on a later
-   *  frame (the mount is asynchronous, and it goes away again when the fly span
-   *  exits, taking any attached child with it). Idempotent: re-attaching an
-   *  object that is already there does nothing. The caller owns disposal, and
-   *  must only attach for spans where the starfield is mounted. */
+  /** Attach an object as a CHILD OF THE MOUNTED STARFIELD, so it rides that
+   *  group's per-frame camera-centring. False while the starfield is unbuilt or
+   *  unmounted — the mount is async, so ask again later. Idempotent. */
   starfieldAttach: (obj: THREE.Object3D) => boolean;
   /** Take an object back off the starfield (see starfieldAttach). */
   starfieldDetach: (obj: THREE.Object3D) => void;
-  /** THE REVEAL'S COLOR-MATCHED CUT: blend the mounted starfield's backdrop `f`
-   *  of the way toward `rgb` (0-255 ints — a story scene's stage tint). The sky
-   *  is dimmed to the color of the stage it is about to be replaced by, so the
-   *  background swap at the unmount (enableStarfield(false), which hands the
-   *  frame back to the page's own CSS tint) cuts between near-identical frames
-   *  instead of flashing. `f = 0` restores the palette backdrop exactly — the
-   *  caller must restore BEFORE unmounting, since this is a silent no-op while
-   *  the starfield is unbuilt or unmounted. */
+  /** THE REVEAL'S COLOR-MATCHED CUT: blend the mounted starfield's backdrop
+   *  `f` toward `rgb` (0-255 ints), so the background swap at the unmount cuts
+   *  between near-identical frames instead of flashing. The caller MUST restore
+   *  (`f = 0`) BEFORE unmounting — this is a silent no-op once unmounted. */
   setSkyDim: (f: number, rgb: [number, number, number]) => void;
   destroy: () => void;
 }
 
-// The GLB is exported from lens_work/lens.blend in real-world millimeters
-// (confirmed: Element_01's baked geometry spans y≈65..73, i.e. its real
-// zc≈72.5mm position — the export is NOT meter-converted). glTF export
-// converts Blender's Z-up to Y-up, so a Blender local `position.z` /
-// `rotation.z` on these identity-rotated nodes becomes local `position.y` /
-// `rotation.y` here, and +z(front) ↦ +y. Scale converts real millimeters
-// down to a scene-friendly size.
+// The GLB is exported in real-world millimetres, and glTF export converts
+// Blender's Z-up to Y-up — so a Blender local z on these identity-rotated
+// nodes is a local y here, and +z(front) ↦ +y. This scales mm to world units.
 const MODEL_SCALE = 0.05;
 
 export interface SceneOptions {
-  /** Multiplier on the default camera distance (>1 pulls back to frame the whole
-   *  teardown — used by the scroll hero; the /lens page keeps 1). */
+  /** Multiplier on the default camera distance (>1 pulls back to frame the
+   *  whole teardown; the /lens page keeps 1). */
   cameraDistance?: number;
-  /** Scroll-story mode: scripts the camera from the scroll story (story/story.ts)
-   *  via `state.story` (0..1) and bypasses OrbitControls. Omit for the free-orbit
-   *  /lens viewer. */
+  /** Scroll-story mode: scripts the camera from `state.story` and bypasses
+   *  OrbitControls. Omit for the free-orbit /lens viewer. */
   story?: boolean;
-  /** Which OP RECIPES (ops/recipes.ts) the deform folds in — baked at material
-   *  build. Omit = all recipes (the /lens bench, which can scrub any of them).
-   *  The hero passes the three its scroll story actually plays
-   *  (`["assemble", "explode", "peel"]`, LensStory.astro): a recipe left out is
-   *  not folded at all, so the homepage's graphs carry only the motion it uses. */
-  recipes?: RecipeName[];
-  /** Load the removable accessories GLB (hood / UV filter / caps). Defaults to
-   *  `!story`: only /lens can show them, and the hero would otherwise download
-   *  855 KB it never draws. With it off, `setAccessory` is a no-op. */
+  /** Load the removable accessories GLB. Defaults to `!story` — only /lens can
+   *  show them. With it off, `setAccessory` is a no-op. */
   accessories?: boolean;
 }
 
 /**
- * Load-time model prep. The ORDER here is a real dependency chain — each step's
- * comment says why it must run before the next; do not reorder.
+ * Load-time model prep. THE ORDER IS A DEPENDENCY CHAIN — do not reorder:
+ *   1. deriveFrames      stamps the `_op*` attributes every graph reads
+ *   2. tagMechanismSpins tags off-axis pivots as BAKED nodes, not branches
+ *   3. createUnified     builds the model's one deform material
+ *   4. createShading     layers the bench swapper over it
  */
-function prepareModelMaterials(gltfScene: THREE.Object3D, recipes?: string[]) {
-  // MEASURE every piece's frame (`_op*` attributes) + the derived ladder/layer
-  // tables: nothing about a piece is authored upstream any more.
-  // Must run BEFORE any material build — the deform graph reads the attributes.
+function prepareModelMaterials(gltfScene: THREE.Object3D) {
   const frames = deriveFrames(gltfScene);
-  // Choose which recipes the deform folds in (per scene) BEFORE the materials
-  // bake them into their graphs. Undefined = all recipes.
-  setActiveRecipes(recipes ?? null);
-  // TAG the meshes that ride an off-axis mechanism spin pivot (the focus lead
-  // screw) BEFORE any material is built: the counter-rotation their op delta
-  // needs is a baked node, not a runtime branch, so a tag arriving later would
-  // do nothing. `createMechanism`, which owns the pivot itself, has to wait for
-  // the recentre and runs far below — hence the split.
+  // createMechanism owns the pivot itself but must wait for the recentre, which
+  // is why the TAG pass is split out and runs up here.
   tagMechanismSpins(gltfScene);
-  // THE MODEL'S MATERIAL: the realistic PBR look and the story's ink drawing,
-  // merged into one blended node material carrying the op deform.
   const unified = createUnified(gltfScene);
-  // …and the /lens bench's own look swapper on top, which forwards the merged
-  // pair to `unified` and builds only the seven bench-only styles itself.
   const shading = createShading(gltfScene, unified);
   return { unified, shading, frames };
 }
 
 /**
  * Boot the lens viewer onto `canvas`. ONE SCENE PER DOCUMENT: the deform
- * channels, the recipe knobs, the active-recipe selection (ops/host.ts) and the
- * shading uniforms are all MODULE state, so a second live scene would scrub the
- * same numbers as the first and the two would fight. Destroy one before booting
- * another.
+ * channels, the recipe knobs, the active-recipe selection and the shading
+ * uniforms are all MODULE state, so two live scenes would scrub the same
+ * numbers and fight. Destroy one before booting another.
  */
 export async function initScene(
   canvas: HTMLCanvasElement,
   opts: SceneOptions = {},
 ): Promise<SceneHandle> {
-  // performance.mark checkpoints (see the "lens:*" marks) — near-free, and they
-  // make "why is the model slow to appear" measurable in devtools / by tooling.
   performance.mark("lens:init-start");
-  // Scroll-story hero vs the free-orbit /lens bench — needed up here to size the
-  // renderer's pixel ratio (below), so declared before both.
   const storyMode = opts.story ?? false;
-  // Kick the model fetch + parse off FIRST — it needs no renderer, and
-  // serializing it behind the (~100ms+) WebGPU adapter/device request was pure
-  // added latency before the lens could appear. The BODY GLB alone gates the
-  // first frame now; accessories stream in behind it (model.ts accessoriesReady).
-  // …and the hero skips that second GLB entirely: the story shows no accessory
-  // at any point, so downloading 855 KB it never draws was pure waste.
+  // Kick the model fetch off FIRST — it needs no renderer, and serializing it
+  // behind the WebGPU adapter request is pure added latency. The BODY GLB alone
+  // gates the first frame; accessories stream in behind it.
   const withAccessories = opts.accessories ?? !storyMode;
   const modelPromise = loadLensModel({ accessories: withAccessories });
-  // WebGPU (auto-falls back to WebGL2) — required for the TSL deform node graph.
-  // high-performance: prefer the discrete GPU on dual-GPU machines — this is a
-  // full-viewport 3D hero, not a widget worth throttling to the integrated chip.
+  // WebGPU (auto-falls back to WebGL2) — required for the TSL deform graph.
+  // high-performance: this is a full-viewport hero, not a widget worth
+  // throttling to a dual-GPU machine's integrated chip.
   const renderer = new THREE.WebGPURenderer({
     canvas,
     antialias: true,
     alpha: true,
     powerPreference: "high-performance",
-    // MOBILE-FALLBACK REPRO SWITCH (`?webgl`, the `?story` dev-param mould):
-    // phones without WebGPU silently take three's WebGL2 backend
-    // (WebGPURenderer.js:57 getFallback), which compiles the TSL graphs to GLSL
-    // instead of WGSL. This param forces that same backend on the desktop so
-    // the fallback is reproducible. Read `renderer.backend.isWebGLBackend` to
-    // see which one is live (WebGLBackend.js:57 / WebGPUBackend.js:88).
+    // MOBILE-FALLBACK REPRO SWITCH: phones without WebGPU silently take
+    // three's WebGL2 backend, which compiles the TSL graphs to GLSL instead of
+    // WGSL. `?webgl` forces that backend on the desktop so it is reproducible.
     forceWebGL: new URLSearchParams(location.search).has("webgl"),
   });
-  // Story mode is the always-rendering, full-viewport hero (highest-traffic
-  // surface): cap its pixel ratio at 1.5 — on a 2× display that is ~44% fewer
-  // fragments per frame for the ambient dust/rays it repaints forever, with no
-  // visible sharpness loss at hero scale. The /lens dev bench (which only paints
-  // on interaction) keeps the full min(dpr, 2).
+  // Story mode renders forever at full viewport, so cap its pixel ratio: far
+  // fewer fragments per frame with no visible loss at hero scale. The /lens
+  // bench only paints on interaction and keeps the full ratio.
   renderer.setPixelRatio(
     Math.min(window.devicePixelRatio, storyMode ? 1.5 : 2),
   );
   renderer.setClearColor(0x000000, 0);
   await renderer.init();
   performance.mark("lens:renderer-ready");
+  // THE DEFORM'S DIALECT, the moment the backend choice is final and well
+  // before prepareModelMaterials bakes it into a graph: the chain ships as
+  // generated source (ops/emit) and WGSL and GLSL are different files.
+  setDeformBackend(
+    (renderer as unknown as { backend?: { isWebGLBackend?: true } }).backend
+      ?.isWebGLBackend
+      ? "glsl"
+      : "wgsl",
+  );
 
-  // DEV (`?diag`, same param mould as `?webgl` above): a fixed status card the
-  // owner can read off a PHONE — backend, wormhole-post status, three revision.
-  // `post` is live, written by enableWormholePost below; the overlay module is
-  // imported lazily so it stays out of the eager bundle. After
-  // `renderer.init()`, which is when the backend choice (WebGPU vs the WebGL2
-  // fallback) is final.
+  // DEV (`?diag`): a fixed status card readable off a phone — backend,
+  // wormhole-post status, three revision. Must come after `renderer.init()`,
+  // when the backend choice is final; the overlay is imported lazily.
   const diag: import("../dev/diag").LensDiag | null =
     import.meta.env.DEV && new URLSearchParams(location.search).has("diag")
       ? { post: "unmounted" }
@@ -803,9 +519,8 @@ export async function initScene(
   if (diag)
     void import("../dev/diag").then((m) => m.mountLensDiag(renderer, diag));
 
-  // DEV (`?mtrace`, same param mould): the motion trace — one row per rendered
-  // frame so the story's movement can be reviewed as CURVES instead of stills.
-  // Written from tick() below; see dev/motion-trace.ts.
+  // DEV (`?mtrace`): one row per rendered frame, so the story's movement can
+  // be reviewed as curves instead of stills. Written from tick().
   let motionTrace: import("../dev/motion-trace").MotionTrace | null = null;
   if (import.meta.env.DEV && new URLSearchParams(location.search).has("mtrace"))
     void import("../dev/motion-trace").then((m) => {
@@ -813,8 +528,8 @@ export async function initScene(
     });
 
   const scene = new THREE.Scene();
-  // far=400: the ortho holds pull the camera back to ~150 units (ORTHO_FOV 3° with
-  // matching pullback, story/camera.ts) — a 100 far plane would clip the lens away.
+  // far=400: the story's ortho holds pull the camera back far enough that a
+  // 100 far plane would clip the lens away.
   const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 400);
   const camDist = opts.cameraDistance ?? 1;
   camera.position.set(3.5 * camDist, 1.6 * camDist, 5 * camDist);
@@ -829,16 +544,10 @@ export async function initScene(
   scene.add(key, rim, hemi);
 
   // ── Room light (setRoomLight) ──────────────────────────────────────────────
-  //
-  // THE ROOM IS FOUR NUMBERS: the PMREM'd IBL above and the three lights just
-  // added. A dive INTO the barrel has to put all four out together — a lens
-  // barrel is a dark tube, and dimming only the IBL leaves the key light still
-  // painting an interior wall that has no window. Boot values are captured here
-  // so the ramp is a pure scale off the shipped look and the restore is exact.
-  //
-  // NOT scene.backgroundIntensity, which is what multiplies the traced sky
-  // (three r185 Background.js:91) — the stars are meant to be the only thing
-  // left, so nothing here may touch them.
+  // THE ROOM IS FOUR NUMBERS: the IBL and the three lights above, which a dive
+  // into the barrel puts out TOGETHER — dimming only the IBL leaves the key
+  // light painting an interior wall with no window. Boot values captured so the
+  // ramp is a pure scale. Never `scene.backgroundIntensity`, the traced sky's.
   const roomLightBoot = {
     env: scene.environmentIntensity,
     key: key.intensity,
@@ -855,40 +564,30 @@ export async function initScene(
 
   const { scene: gltfScene, accessoriesReady: accessoriesLoad } =
     await modelPromise;
-  // A never-rejecting handle to the background accessories load: on a failed
-  // fetch the lens still works (accessories just never appear), and every
-  // consumer below can `.then` without its own catch. Resolves after the
-  // accessories are merged + stylized into gltfScene (or immediately on failure).
+  // A never-rejecting handle to the accessories load, so every consumer below
+  // can `.then` without its own catch: on failure they simply never appear.
   const accessoriesReady = accessoriesLoad.catch((err) => {
     console.warn("lens: accessories failed to load (hood/caps/filter)", err);
   });
   performance.mark("lens:model-loaded");
   modelGroup.add(gltfScene);
-  // DEV (`?probe`, same param mould): the raw model root on window, so a part
-  // can be pointed at by NAME from the console/Playwright — "which mesh is
-  // that?" is a toggle-and-look instead of a guessing game.
+  // DEV (`?probe`): the raw model root on window, so a part can be addressed
+  // by NAME from the console or Playwright.
   if (import.meta.env.DEV && new URLSearchParams(location.search).has("probe"))
     (window as unknown as Record<string, unknown>).__lensModel = gltfScene;
 
-  // Roll the lens upright about its own optical axis (gltf-local +Y). The model
-  // loads with the gear train off to one side; this rotates it to the intended
-  // "up". Rolling about the optical axis is rig-safe: every mechanism (zoom/focus
-  // ring turns, iris, every recipe's theta) is defined along/about this axis,
-  // so a roll about it just re-phases the start angle without breaking anything.
+  // Roll the lens upright about its own optical axis (gltf-local +Y). RIG-SAFE
+  // because every mechanism and every recipe's theta is defined along or about
+  // that axis, so this only re-phases the start angle.
   gltfScene.rotation.y = Math.PI / 2;
 
-  const { unified, shading, frames } = prepareModelMaterials(
-    gltfScene,
-    opts.recipes,
-  );
+  const { unified, shading, frames } = prepareModelMaterials(gltfScene);
   performance.mark("lens:materials-ready");
   if (import.meta.env.DEV) {
     reportOpsFrames(gltfScene, frames);
-    // Model-contract tripwire: a lens_work re-export that drifts from the
-    // code's structural assumptions (part names, glass count) — or a derivation
-    // that leaves a mesh unframed — fails loudly HERE, not weeks later as a
-    // silent no-op or a NaN. Runs AFTER deriveFrames on purpose: half the
-    // contract is about the frames it stamps.
+    // Model-contract tripwire: a re-export that drifts from the code's
+    // structural assumptions fails loudly HERE rather than as a silent no-op.
+    // After deriveFrames on purpose — half the contract is about its frames.
     void import("../dev/model-contract").then(({ reportModelContract }) =>
       reportModelContract(
         {
@@ -899,10 +598,8 @@ export async function initScene(
         frames,
       ),
     );
-    // Prescription probe (dev/prescription-probe.ts): `window.__lensPrescriptionProbe()`
-    // measures the 13 optical elements and prints a paste-ready table for
-    // optics/prescription.ts. Dynamically imported like the contract tripwire,
-    // so nothing of it reaches a production bundle.
+    // `window.__lensPrescriptionProbe()` measures the optical elements and
+    // prints a paste-ready table for optics/prescription.ts.
     void import("../dev/prescription-probe").then(
       ({ installPrescriptionProbe }) => installPrescriptionProbe(gltfScene),
     );
@@ -915,32 +612,25 @@ export async function initScene(
 
   const node = (name: string) => gltfScene.getObjectByName(name);
 
-  // Removable accessories: hidden by default so /lens shows the bare rigged
-  // lens; the front group (cap/filter/hood) is parented to Barrel_Inner so it
-  // rides the zoom extension when shown, the rear cap sits on the mount. They
-  // load in the BACKGROUND (model.ts accessoriesReady), so these groups start
-  // EMPTY and are populated once that settles (below, after cinematics exists).
+  // Removable accessories, hidden by default. They load in the BACKGROUND, so
+  // these groups start EMPTY and are populated once that settles.
   const accessories: Record<AccessoryGroup, THREE.Object3D[]> = {
     hood: [],
     filter: [],
     caps: [],
   };
-  // The page's live accessory choice (default all off), tracked so the
-  // background load applies the latest desired visibility on arrival and a
-  // setAccessory toggle-off before load completes still wins (no stranded
-  // mesh). `setAccessory` is the ONLY writer — the story shows no accessory at
-  // any point on the track.
+  // The page's live accessory choice, so the background load applies the
+  // LATEST desired visibility on arrival and a toggle-off during the load
+  // still wins. `setAccessory` is the only writer.
   const accessoryOn: Record<AccessoryGroup, boolean> = {
     hood: false,
     filter: false,
     caps: false,
   };
 
-  // Recenter so the model's own visual center sits at the world origin —
-  // OrbitControls orbits around (0,0,0) by default, and the model's real
-  // coordinates (mount face at z=0, filter face at z=76.5) aren't symmetric.
-  // Measured over the bare lens only (Box3 ignores .visible, and accessories
-  // like the hood/rear cap would otherwise skew the center).
+  // Recentre the model's visual centre on the world origin, which is what
+  // OrbitControls orbits. Measured over the BARE lens only — Box3 ignores
+  // `.visible`, so accessories would otherwise skew the centre.
   modelGroup.updateWorldMatrix(true, true);
   const bbox = new THREE.Box3();
   const meshBox = new THREE.Box3();
@@ -951,16 +641,14 @@ export async function initScene(
   });
   const center = bbox.getCenter(new THREE.Vector3());
   modelGroup.position.sub(center);
-  // World-space radius of the assembled lens (bounding sphere). The depth-fade
-  // near/far planes are placed relative to this each frame so the body sits in the
-  // full-opacity middle and only exploded pieces cross a plane and dissolve.
+  // World radius of the assembled lens. The depth-fade planes are placed
+  // relative to it each frame, so the body sits in the full-opacity middle and
+  // only exploded pieces cross a plane and dissolve.
   const modelRadius = bbox.getBoundingSphere(new THREE.Sphere()).radius;
 
-  // Boot pose of the model GROUP, snapshotted for setModelOrientation: the
-  // recentring offset above is only correct under the boot rotation, so a
-  // reorient must re-derive it (p = R_new · R0⁻¹ · p_boot) to keep the model's
-  // visual centre pinned at the origin — and the boot rotation restores these
-  // exact values.
+  // Boot pose, for setModelOrientation: the recentring offset is only correct
+  // under the boot rotation, so a reorient re-derives it as
+  // p = R_new · R0⁻¹ · p_boot to keep the visual centre on the origin.
   const bootRotation = modelGroup.rotation.clone();
   const bootPosition = modelGroup.position.clone();
   const bootQuatInv = modelGroup.quaternion.clone().invert();
@@ -969,11 +657,9 @@ export async function initScene(
   let dollyX = 0;
 
   /** THE ONLY WRITER of modelGroup.position: the recentring offset re-derived
-   *  under the group's CURRENT rotation, plus the dolly. Both setters compose
-   *  through here because the recentre is a whole-vector write — a dolly added
-   *  beside it would be erased by the next reorient, and a reorient would erase
-   *  the dolly. The placement is a pure function of the two pieces of state, so
-   *  the setters compose in either order. */
+   *  under the CURRENT rotation, plus the dolly. Both setters compose through
+   *  here because the recentre is a whole-vector write, so a dolly written
+   *  beside it would be erased by the next reorient and vice versa. */
   function applyModelPlacement() {
     modelGroup.position
       .copy(bootPosition)
@@ -983,21 +669,20 @@ export async function initScene(
     dirty = true;
   }
 
-  // Mechanism (zoom/focus/aperture) + cinematic extras — both resolve nodes
-  // AFTER the recentre, since the lead-screw pivot math reads world positions.
+  // Both resolve nodes AFTER the recentre: the lead-screw pivot math reads
+  // world positions.
   const mechanism = createMechanism(gltfScene);
   const cinematics = createCinematics(scene, gltfScene);
 
-  // Was the scene torn down before the background accessories load resolved? The
-  // deferred integration below (and a late-arriving merge) must then no-op /
-  // clean up instead of touching a disposed controller. See destroy().
+  // Torn down before a deferred load resolved? Every continuation below must
+  // then no-op instead of touching a disposed controller.
   let destroyed = false;
 
   let dirty = true;
 
-  /** Accessory-ness by ANCESTRY: the accessories merge into the body's graph and
-   *  their sub-meshes carry generic names, so only the walk up to the `Acc_*`
-   *  root tells them apart. */
+  /** Accessory-ness by ANCESTRY: accessories merge into the body's graph and
+   *  their sub-meshes carry generic names, so only the walk up tells them
+   *  apart. */
   function underAccessory(o: THREE.Object3D): boolean {
     for (let a: THREE.Object3D | null = o; a; a = a.parent)
       if (isAccessory(a.name)) return true;
@@ -1006,67 +691,41 @@ export async function initScene(
 
   // ── Transmissive glass (setGlassTransmissive) ──────────────────────────────
   //
-  // WHY A MATERIAL SWAP AND NOT A FLAG. core/model.ts already ships the glass
-  // with `transmission: 1, ior: 1.52`, but its `thickness` is 0 — and with zero
-  // thickness three offsets the refraction sample by nothing
-  // (getVolumeTransmissionRay, three/src/nodes/functions/PhysicalLightingModel.js:42
-  // — the ray is scaled by `thickness * modelScale`), so the elements read as
-  // flat tinted windows rather than as lenses. Thickness is per-element, and
-  // all thirteen elements SHARE ONE material instance (model.ts's signature
-  // cache builds one glass material for the whole stack), so it cannot be
-  // written onto the shipped material without giving every element the front
-  // element's span. Each element therefore gets its own CLONE.
+  // A SWAP AND NOT A FLAG: the shipped glass already has transmission and IOR,
+  // but `thickness` is 0, and three scales the refraction ray by it — so the
+  // elements read as flat windows. Thickness is PER ELEMENT while all of them
+  // share one material instance, so each needs its own CLONE.
   //
-  // CLONE, never a fresh MeshPhysicalNodeMaterial: the elements are FRAMED
-  // meshes wearing ops/host's deform graph, and a fresh material would drop it
-  // — Element_12 would stop riding focus and every element would render at rest
-  // pose. NodeMaterial.copy carries every node slot across (three r185
-  // src/materials/nodes/NodeMaterial.js:1315-1360), so the clone still deforms.
+  // CLONE, never a fresh material: the elements wear ops/host's deform graph
+  // and a fresh material would drop it. NodeMaterial.copy carries every node
+  // slot across, so the clone still deforms.
   //
-  // OWNERSHIP HAZARD. The look swapper re-materials EVERY mesh — a bench look
-  // from its own build (materials/shading-bench.ts), the story's pair through
-  // unified.wear() — and neither knows about these clones. So a shading switch
-  // while this is on silently stomps them (harmless: that mode's look simply
-  // wins), and a naive restore would stomp the new mode right back. Hence the
-  // restore only touches meshes still wearing the clone it made. On the STORY
-  // path the swap is safe by construction: the hero wears ink for the whole
-  // track and the dive drives the blend, not the swapper.
-  //
-  // THE ONE PATH THAT IS NOT ORDERED: a SITE THEME FLIP on a BENCH look, on
-  // /lens, while the dive's glass swap is up. shading's setTheme re-runs the
-  // active mode over every mesh (materials/shading.ts setTheme → set(currentMode))
-  // for those, which stomps the clones out from under it — the melt then writes
-  // opacity onto materials nothing is wearing and the glass draws opaque for the
-  // rest of the dive. There is no ordering that fixes it, because the flip is
-  // the USER's, not a demo's. So setTheme RE-SEATS instead: the theme work is
-  // allowed to land, and the swap is re-made on top of it from the spans this
-  // remembers, carrying `glassFade` across (see reseatGlassTransmissive). The
-  // STORY never takes that path — the merged pair re-tints through colour
-  // uniforms and re-materials nothing — so the re-seat is a no-op there, but it
-  // is what makes the flip safe on /lens.
+  // OWNERSHIP HAZARD. The look swapper re-materials EVERY mesh and knows
+  // nothing about these clones, so a shading swap while this is on silently
+  // stomps them — and a naive restore would stomp the new look right back.
+  // Hence the restore only ever touches meshes STILL WEARING the clone it made.
+  // A site THEME FLIP on a bench look is the one path no ordering can fix (the
+  // flip is the user's, not a demo's), so setTheme RE-SEATS instead: the theme
+  // work lands, then the swap is re-made on top of it from the spans kept
+  // below, carrying the fades across.
   let glassTransmissive = false;
-  /** the spans setGlassTransmissive was last enabled with — kept so a theme
-   *  flip can re-make the swap without the caller being involved. */
+  /** the spans last enabled with, so a theme flip can re-make the swap
+   *  without the caller being involved */
   let glassSpans: Record<string, GlassSpanMm> = {};
   /** what each swapped mesh wore before, and the clones we own. */
   const glassSavedMaterial = new Map<THREE.Mesh, THREE.Material>();
   const glassClones = new Set<THREE.Material>();
   /** THE CLONES OUTLIVE THE SWAP. A fresh material is a fresh PIPELINE, and
-   *  three compiles a pipeline on the frame that first DRAWS it — which is the
-   *  first frame of the dive, so re-cloning on every crossing cost a ~55ms
-   *  stall every time (measured, dev build). So each mesh's clone is kept here
-   *  and handed back on the next crossing: nothing new compiles. An entry is
-   *  dropped only when the mesh's own material changed under it — a theme flip
-   *  on a BENCH look rebuilds every mesh's material (the story's merged pair
-   *  re-tints in place instead), and a clone of the old palette must not come
-   *  back — and the whole cache is freed at destroy(). */
+   *  three compiles one on the frame that first DRAWS it — the dive's first
+   *  frame — so each clone is kept here and handed back on the next crossing.
+   *  An entry is dropped only when the mesh's own material changed under it (a
+   *  clone of the old palette must not come back); freed at destroy(). */
   const glassCloneCache = new Map<
     THREE.Mesh,
     { src: THREE.Material; clone: THREE.MeshPhysicalNodeMaterial }
   >();
-  /** the same clones and their meshes, GROUPED BY ELEMENT — what the passage
-   *  fade writes through. Rebuilt with the clones (so a theme re-seat re-groups
-   *  the fresh ones), and the fade LEVELS below survive it. */
+  /** the same clones and meshes GROUPED BY ELEMENT — what the passage fade
+   *  writes through. Rebuilt with the clones; the fade levels survive it. */
   const glassElementClones = new Map<string, THREE.Material[]>();
   const glassElementMeshes = new Map<string, THREE.Mesh[]>();
   /** setGlassFade: the stack-wide opacity. */
@@ -1074,19 +733,16 @@ export async function initScene(
   /** setGlassElementFade: the per-element multiplier, absent = 1. */
   const glassElementFade = new Map<string, number>();
   /** setGlassGlint: the multiplier on GLASS_TRANSMISSIVE_SPECULAR. Held here
-   *  rather than on the clones because the clones are thrown away and re-made on
-   *  every theme flip — enableGlassTransmissive reads this back. */
+   *  and not on the clones, which are re-made on every theme flip. */
   let glassGlint = 1;
-  /** every mesh whose EFFECTIVE opacity (the product of the two) has reached 0 —
-   *  the set applyVisibility reads. An element at alpha 0 still costs a
-   *  transmission-pass draw and still writes depth, and "fully gone" is a
-   *  promise the fly-through's timing depends on. */
+  /** every mesh whose EFFECTIVE opacity (the product of the two fades) has
+   *  reached 0 — the set applyVisibility reads. An element at alpha 0 still
+   *  costs a transmission draw and still writes depth. */
   const glassGone = new Set<THREE.Mesh>();
 
-  /** Push `glassFade × glassElementFade[id]` onto every clone, and keep
-   *  `glassGone` in step. Returns true if the gone-set MOVED, i.e. if the caller
-   *  owes a visibilityDirty mark — the traversal half, so it is not marked from
-   *  in here (this is called every frame of the dive). */
+  /** Push `glassFade × glassElementFade[id]` onto every clone and keep
+   *  `glassGone` in step. Returns true if the gone-set MOVED, i.e. the caller
+   *  owes a visibilityDirty mark. */
   function writeGlassOpacity(): boolean {
     let goneMoved = false;
     for (const [id, clones] of glassElementClones) {
@@ -1103,11 +759,10 @@ export async function initScene(
     return goneMoved;
   }
 
-  /** The clone `m` wears while the swap is on — the cached one when the mesh is
-   *  still wearing the material it was cloned from, a fresh one otherwise. The
-   *  two values that are NOT the source material's (the element's thickness and
-   *  the live glint level) are re-applied on every hand-back: both are plain
-   *  scalars, so neither costs a recompile. */
+  /** The clone `m` wears while the swap is on — cached if the mesh still wears
+   *  the material it was cloned from, fresh otherwise. The two values that are
+   *  not the source's (thickness, glint) are re-applied on every hand-back;
+   *  both are plain scalars, so neither recompiles. */
   function glassCloneFor(
     m: THREE.Mesh,
     src: THREE.Material,
@@ -1124,29 +779,23 @@ export async function initScene(
     clone.transmission = 1;
     clone.ior = 1.52;
     clone.roughness = GLASS_TRANSMISSIVE_ROUGHNESS;
-    // …times the GLINT LEVEL, for the same reason the detint below is
-    // applied here: this is the one place a clone is made, so a theme flip's
-    // re-seat mid-dive comes back at the darkness the dive had reached
-    // instead of handing the studio lights back to the glass.
+    // …times the GLINT LEVEL, applied HERE like the detint below: this is the
+    // one place a clone is made, so a theme re-seat mid-dive comes back at the
+    // darkness the dive had reached.
     clone.specularIntensity = GLASS_TRANSMISSIVE_SPECULAR * glassGlint;
     clone.thickness = thickness;
-    // COLOURLESS (see GLASS_DETINT). Applied HERE, in the one function that
-    // makes a clone, so the theme flip's re-seat (reseatGlassTransmissive)
-    // detints too — a flip mid-dive must not hand the tint back.
-    // Whole Color objects rather than `.setHex`: `attenuationColor` and
-    // `specularColor` exist only on a physical material, and a non-physical
-    // source (a shading mode that re-materialled the glass before the flip)
-    // would make a mutation throw where an assignment is inert.
+    // COLOURLESS (see GLASS_DETINT), applied here so a theme re-seat detints
+    // too. Whole Color objects, not `.setHex`: these slots exist only on a
+    // physical material, so a mutation would throw where an assignment is
+    // inert.
     clone.color = new THREE.Color(GLASS_DETINT.color);
     clone.specularColor = new THREE.Color(GLASS_DETINT.specularColor);
     clone.attenuationColor = new THREE.Color(GLASS_DETINT.attenuationColor);
     clone.attenuationDistance = GLASS_DETINT.attenuationDistance;
     clone.iridescence = GLASS_DETINT.iridescence;
-    // Marked transparent HERE, once, rather than when the fade first moves:
-    // `transparent` picks the render list a mesh lands in, and flipping it
-    // mid-demo would re-sort (and recompile) the whole glass stack in the
-    // middle of the dive. At opacity 1 it costs nothing — a transmissive
-    // material is already drawn in the transmission pass.
+    // Marked transparent once HERE and not when the fade first moves:
+    // `transparent` picks the render list, so flipping it mid-dive would
+    // re-sort and recompile the whole stack. At opacity 1 it costs nothing.
     clone.transparent = true;
     glassCloneCache.set(m, { src, clone });
     return clone;
@@ -1159,15 +808,14 @@ export async function initScene(
       if (!root) continue;
       const meshes: THREE.Mesh[] = [];
       root.traverse((o) => {
-        // shading's inverted-hull pass parents under the mesh it outlines — not
-        // glass, and it rides its host (same rule as applyVisibility).
+        // the inverted-hull pass parents under the mesh it outlines — not
+        // glass, and it rides its host (same rule as applyVisibility)
         if (o instanceof THREE.Mesh && !(o.parent instanceof THREE.Mesh))
           meshes.push(o);
       });
       if (!meshes.length) continue;
-      // Thickness is in the mesh's LOCAL space and three multiplies it by the
-      // model scale itself, so the prescription's millimetres go in raw: the
-      // gltf frame IS millimetres (MODEL_SCALE is what makes it world units).
+      // Thickness is LOCAL and three multiplies by the model scale itself, so
+      // the prescription's millimetres go in raw.
       const thickness = Math.abs(span.frontYmm - span.rearYmm);
       const elementClones: THREE.Material[] = [];
       const elementMeshes: THREE.Mesh[] = [];
@@ -1186,17 +834,14 @@ export async function initScene(
         glassElementMeshes.set(id, elementMeshes);
       }
     }
-    // The opacities LAST, in one pass, so a re-seat resumes at exactly the fade
-    // levels the demo had reached (both of them) rather than at 1.
+    // The opacities LAST, in one pass, so a re-seat resumes at exactly the
+    // fade levels reached rather than at 1.
     writeGlassOpacity();
   }
 
   /** Hand every mesh STILL WEARING one of our clones back its saved material.
-   *  Touches neither fade LEVEL — the re-seat below carries both across, and
-   *  only the real disable resets them — and it DISPOSES NOTHING: the clones
-   *  belong to `glassCloneCache`, which is what makes the next crossing free
-   *  (see the cache's note). A theme flip's re-seat frees the stale ones as it
-   *  re-clones; destroy() frees whatever is left. */
+   *  Touches neither fade LEVEL, and DISPOSES NOTHING — the clones belong to
+   *  `glassCloneCache`, which is what makes the next crossing free. */
   function releaseGlassClones() {
     for (const [m, saved] of glassSavedMaterial)
       if (glassClones.has(m.material as THREE.Material)) m.material = saved;
@@ -1216,17 +861,12 @@ export async function initScene(
   }
 
   /**
-   * Re-make the transmissive swap over whatever the meshes are wearing NOW —
-   * the theme flip's answer to the ownership hazard above.
-   *
-   * Order matters. `releaseGlassClones` restores only meshes still holding a
-   * clone, so after shading has already stomped them it restores nothing and the
-   * NEW theme's materials stay put; the re-clone then sources from those, which
-   * is the whole point (a clone of the old theme's material would carry the old
-   * palette straight back). `enableGlassTransmissive` ends by re-applying BOTH
-   * fade levels (the stack-wide one and the per-element passage) to the fresh
-   * clones, so a flip at any point of the dive resumes at the same opacities;
-   * the visibility pass then re-composes the gone-set the release emptied.
+   * Re-make the transmissive swap over whatever the meshes wear NOW — the theme
+   * flip's answer to the ownership hazard above. ORDER MATTERS: the release
+   * restores only meshes still holding a clone, so once shading has stomped
+   * them it restores nothing and the NEW theme's materials stay put for the
+   * re-clone to source from. The re-enable re-applies both fade levels, so a
+   * flip at any point of the dive resumes at the same opacities.
    */
   function reseatGlassTransmissive() {
     releaseGlassClones();
@@ -1235,11 +875,9 @@ export async function initScene(
   }
 
   // ── Body fade (setBodyFade) ────────────────────────────────────────────────
-  //
-  // The glass fade's opposite number, and a much cheaper mechanism — see the
-  // handle method for why this writes shared material PROPERTIES where the
-  // glass had to clone. What each touched material wore before, so the restore
-  // is exact and a mesh that never faded is never written at all.
+  // The glass fade's opposite number, writing shared material PROPERTIES where
+  // the glass had to clone (see the handle method). `bodySaved` is what each
+  // touched material wore, so the restore is exact.
   let bodyFade = 1;
   let bodyFadedOut = false;
   const bodySaved = new Map<
@@ -1247,30 +885,16 @@ export async function initScene(
     { transparent: boolean; opacity: number }
   >();
 
-  /** Every DISTINCT material currently worn by a piece of the model the body
-   *  fade owns. Walks the same shapes applyVisibility does, plus the child
-   *  passes that ride a host mesh (shading's inverted hulls and its
-   *  LineSegments) — those are separate materials, and a body that fades while
-   *  its outline stays put would read as a wireframe ghost rather than as a body
-   *  going away.
+  /** Every DISTINCT material worn by a piece the body fade owns — the shapes
+   *  applyVisibility walks, PLUS the child passes riding a host mesh (outline
+   *  hulls, line-work), since a body that fades while its outline stays reads
+   *  as a wireframe ghost.
    *
-   *  THE GLASS IS IN IT, EXCEPT DURING THE DIVE. "The lens leaves" has to mean
-   *  the elements too: the story's peel/cards cross-fade takes the whole lens
-   *  away under the card shell, and with the glass held out of this set the
-   *  frame kept a column of mint elements floating where the lens had been. The
-   *  glass's own materials read `materialOpacity` for the same reason the edge
-   *  lines do (materials/unified.ts), and their `alphaTest` is what stops a
-   *  fully-faded element from writing depth — so the glass needs no branch in
-   *  applyVisibility, unlike the body's hard tail.
-   *
-   *  …BUT NOT WHILE THE DIVE OWNS THEM. Inside the fly-through the elements wear
-   *  TRANSMISSIVE CLONES whose opacity is the passage fades' (setGlassFade /
-   *  setGlassElementFade, resolved by writeGlassOpacity), and the dive uses this
-   *  same body fade as a COVER for the lens walking home past the camera. Two
-   *  owners on one opacity is exactly the hazard the glass swap documents, so
-   *  the set is captured with the glass left out for as long as the swap is on —
-   *  which, since the capture is lazy and re-taken after every restore, is
-   *  precisely the dive's own span. */
+   *  THE GLASS IS IN IT, EXCEPT WHILE THE DIVE OWNS IT: inside the fly-through
+   *  the elements wear transmissive clones whose opacity is the passage fades',
+   *  and two owners on one opacity is exactly the hazard the glass swap
+   *  documents. The capture is lazy and re-taken after every restore, so
+   *  excluding the glass while the swap is on is precisely the dive's span. */
   function bodyMaterials(): Set<THREE.Material> {
     const out = new Set<THREE.Material>();
     gltfScene.traverse((o) => {
@@ -1285,8 +909,8 @@ export async function initScene(
   }
 
   function applyGlassFade(opacity: number) {
-    // Guarded like setGlassHidden: the fly-through calls this from apply(p)
-    // every frame, and writeGlassOpacity walks every clone.
+    // guarded: the dive calls this every frame and writeGlassOpacity walks
+    // every clone
     const o = Math.min(1, Math.max(0, opacity));
     if (!glassTransmissive || o === glassFade) return;
     glassFade = o;
@@ -1310,10 +934,9 @@ export async function initScene(
     dirty = true;
   }
 
-  /** setGlassGlint: the reflection ramp, a pure scale off the shipped specular.
-   *  The LEVEL is kept whether or not the swap is on (enableGlassTransmissive
-   *  applies it to every clone it makes, which is what carries it through a theme
-   *  re-seat); with no clones the write below is simply an empty loop. */
+  /** setGlassGlint: a pure scale off the shipped specular. The LEVEL is kept
+   *  whether or not the swap is on — every clone made picks it up, which is
+   *  what carries it through a theme re-seat. */
   function applyGlassGlint(level: number) {
     const k = Math.min(1, Math.max(0, level));
     if (k === glassGlint) return;
@@ -1328,45 +951,35 @@ export async function initScene(
     const o = Math.min(1, Math.max(0, opacity));
     if (o === bodyFade) return;
     bodyFade = o;
-    // THE MERGED PAIR'S `transparent` HAS ONE OWNER (materials/unified.ts
-    // writeTransparent), because setInk's 0-edge flips the very instances this
-    // fades: whichever of the two wrote last would win, and a captured value
-    // restored here would put back a flag the ink has moved since. So the fade
-    // does not write it on those — it declares itself and unified resolves
-    // `inkOn || fadeActive`. The materials it does NOT own (a bench look's
-    // fills, its line-work) are this function's, below.
+    // THE MERGED PAIR'S `transparent` HAS ONE OWNER (materials/unified.ts),
+    // because setInk's 0-edge flips the very instances this fades — so the fade
+    // only DECLARES itself and unified resolves `inkOn || fadeActive`. The
+    // materials unified does not own are handled below.
     //
-    // FIRST, AHEAD OF THE CAPTURE, because the declaration also takes the ink
-    // twin OFF (materials/unified.ts inkTwinWorn): this function owns `opacity`
-    // on whatever the meshes are wearing when it captures them, and a swap
-    // after the capture would leave the level on a material nothing wears. The
-    // restore below is the same story in reverse — the twin goes back on before
-    // the saved opacities land on the materials it replaced.
+    // FIRST, AHEAD OF THE CAPTURE, because declaring also takes the ink twin
+    // off: this function owns `opacity` on whatever the meshes wear when it
+    // captures them, and a swap after the capture would strand the level on a
+    // material nothing wears. The restore is the same story in reverse.
     unified.bodyFadeActive(o < 1);
     if (o >= 1) {
-      // Back to the shipped state, exactly: opacity, plus the transparent flag
-      // on everything whose flag is this function's, so the body returns to the
-      // opaque render list it normally lives in.
+      // back to the shipped state exactly: opacity, plus the transparent flag
+      // on everything whose flag is this function's
       for (const [m, was] of bodySaved) {
         m.opacity = was.opacity;
         if (unified.ownsTransparent(m)) continue; // …but not that flag (below)
         // …and only when it actually MOVES: three keys a pipeline on
-        // `transparent`, so a needsUpdate here is a program rebuild. The
-        // materials that reach this branch and were already built transparent
-        // (the glass pair, which unified does not `flip`) would otherwise pay
-        // one at every edge of the peel/cards crossfade — mid-scroll, on the
-        // story's busiest beat, for a flag that never changed value.
+        // `transparent`, so a needsUpdate here is a program rebuild, and
+        // materials already built transparent would pay one at every crossfade
+        // edge for a flag that never changed value.
         if (m.transparent === was.transparent) continue;
         m.transparent = was.transparent;
         m.needsUpdate = true;
       }
       bodySaved.clear();
     } else {
-      // Captured LAZILY, on the first sub-1 call, and re-captured after every
-      // restore: a shading switch or a theme flip re-materials every mesh, so a
-      // set captured at boot would be writing opacity onto materials nothing
-      // wears (the ownership hazard the glass swap documents, in its cheaper
-      // form). Late capture always sees what is actually on the meshes NOW.
+      // Captured LAZILY and re-captured after every restore: a shading switch
+      // or a theme flip re-materials every mesh, so a set captured at boot
+      // would write opacity onto materials nothing wears.
       if (!bodySaved.size)
         for (const m of bodyMaterials()) {
           bodySaved.set(m, { transparent: m.transparent, opacity: m.opacity });
@@ -1386,11 +999,9 @@ export async function initScene(
   }
 
   // ── Shell gate (setShellFade) ──────────────────────────────────────────────
-  //
-  // A VISIBILITY gate, not a material one — the handle method states why, and
-  // why that is not a downgrade here: the level is a per-mesh THRESHOLD, so the
-  // shell leaves piece by piece across the story's fade rather than in one
-  // frame, and nothing this owns can be stomped by a shading swap.
+  // A VISIBILITY gate, not a material one (the handle method says why): the
+  // level is a per-mesh THRESHOLD, so the shell leaves piece by piece across
+  // the fade and nothing here can be stomped by a shading swap.
   let shellFade = 1;
   /** the shell meshes hidden RIGHT NOW — the set applyVisibility reads. */
   const shellGone = new Set<THREE.Mesh>();
@@ -1398,25 +1009,23 @@ export async function initScene(
    *  actually moves the level. */
   const shellThreshold = new Map<THREE.Mesh, number>();
   let shellCaptured = false;
-  /** THE INTERIOR — its own fade CHANNEL, not a band: the tubes/cladding and
-   *  the rest-cast (core/parts isPeelTube + isPeelRest) leave with the peel
-   *  like the shell does, but they RETURN over the internals tail so the
-   *  fly-through dives through the full interior (owner: "don't remove the
-   *  back elements that are part of the fly-through transition"), while the
-   *  shell and baffles stay off until the rewrap. Two levels, one mechanism. */
+  /** THE INTERIOR — its own fade CHANNEL, not a band: the cladding and the
+   *  rest-cast leave with the peel but RETURN over the internals tail, so the
+   *  dive passes through the full interior while the shell and baffles stay off
+   *  until the rewrap. Two levels, one mechanism. */
   let interiorFade = 1;
   const interiorGone = new Set<THREE.Mesh>();
   const interiorThreshold = new Map<THREE.Mesh, number>();
 
-  /** Hand every top-level mesh, IN TRAVERSAL ORDER, to the shared threshold-wink
-   *  law (core/visibility.ts) and file what it hands back on the right channel.
-   *  The bands and the scatter live there because story/cost.ts reproduces these
-   *  same two gone-sets in node, off the shipped GLB. */
+  /** Hand every top-level mesh, IN TRAVERSAL ORDER, to the shared
+   *  threshold-wink law (core/visibility.ts) and file the result on its
+   *  channel. The bands and the scatter live there so a second caller can
+   *  reproduce these gone-sets off the shipped GLB. */
   function captureShellThresholds() {
     const wink = makeWinkScatter();
     gltfScene.traverse((o) => {
       // the same shapes applyVisibility walks: top-level meshes only, since
-      // shading's child line/hull passes ride their host's flag
+      // the child line/hull passes ride their host's flag
       if (!(o instanceof THREE.Mesh) || o.parent instanceof THREE.Mesh) return;
       const w = wink(o.name);
       if (!w) return;
@@ -1452,15 +1061,13 @@ export async function initScene(
   }
 
   function applyShellFade(opacity: number) {
-    // The story envelope is a SUM of two overlapping ramps, so it can transiently
-    // exceed 1 (and, scrubbed backwards, fall below 0) — clamped here rather than
-    // at the caller, which would only be a second place to get it wrong.
+    // The story envelope is a SUM of two overlapping ramps and can transiently
+    // leave [0,1] — clamped here, not at the caller.
     const o = Math.min(1, Math.max(0, opacity));
     if (o === shellFade) return;
     shellFade = o;
-    // Captured lazily (nothing before the first move needs it) but ONCE: the
-    // set is meshes, not materials, so — unlike applyBodyFade's — a shading
-    // switch or a theme flip cannot invalidate it.
+    // Captured lazily but ONCE: the set is meshes, not materials, so — unlike
+    // applyBodyFade's — a shading switch or theme flip cannot invalidate it.
     if (!shellCaptured) {
       shellCaptured = true;
       captureShellThresholds();
@@ -1473,8 +1080,8 @@ export async function initScene(
       if (gone) shellGone.add(m);
       else shellGone.delete(m);
     }
-    // The sweep is owed only when the hidden set actually MOVED — this runs
-    // from the scroll driver on every frame of the story.
+    // the sweep is owed only when the hidden set MOVED — this runs from the
+    // scroll driver on every frame of the story
     if (moved) {
       visibilityDirty = true;
       dirty = true;
@@ -1495,22 +1102,15 @@ export async function initScene(
   }
 
   /**
-   * THE ONE OWNER of the model's `.visible` flags. Four gates can hide a
-   * piece — the tail of the glass fades (setGlassFade / setGlassElementFade,
-   * once a transmissive clone reaches opacity 0), the body fade's tail
-   * (setBodyFade at 0), the shell gate (setShellFade) and the interior gate
-   * (setInteriorFade). Composed in ONE pass: a piece is visible iff EVERY
-   * active gate allows it, so no gate's restore can stomp another that is still
-   * engaged.
+   * THE ONE OWNER of the model's `.visible` flags. Four gates can hide a piece:
+   * the glass fades' tail, the body fade's tail, the shell gate and the
+   * interior gate. Composed in ONE pass — a piece is visible iff EVERY active
+   * gate allows it, so no gate's restore can stomp another still engaged.
+   * ACCESSORIES have their own owner and are skipped entirely.
    *
-   * ACCESSORIES have their own owner — `setAccessory` drives their group ROOT —
-   * so the sweep skips them entirely.
-   *
-   * DIRTY-FLAGGED: the sweep is a pure function of the current gate state
-   * (core/visibility.ts), so gate writers raise `visibilityDirty` instead of
-   * sweeping at their own mutation sites, and tick() composes ONCE before the
-   * render — the frame that could show the change. N gate moves in one scroll
-   * frame cost one traversal; a frame with no gate motion costs none.
+   * DIRTY-FLAGGED: the sweep is a pure function of current gate state, so gate
+   * writers raise `visibilityDirty` and tick() composes ONCE before the render
+   * — N gate moves in a frame cost one traversal, no moves cost none.
    */
   let visibilityDirty = true; // compose the boot state on the first frame
   const visibilityGates: VisibilityGates = {
@@ -1526,10 +1126,9 @@ export async function initScene(
     sweepVisibility(gltfScene, visibilityGates);
   }
 
-  // Fold the accessories into the live scene once they finish loading: resolve
-  // the group node lists, apply the user's current visibility choice, and
-  // register the new meshes with the shading swapper so a mode switch styles
-  // them too.
+  // Fold the accessories into the live scene once they load: resolve the group
+  // node lists, apply the current visibility choice, and register the new
+  // meshes with the material builders.
   accessoriesReady.then(() => {
     if (destroyed) return;
     accessories.hood = [node("Acc_Hood")].filter((o): o is THREE.Object3D =>
@@ -1544,55 +1143,56 @@ export async function initScene(
     );
     for (const group of Object.keys(accessories) as AccessoryGroup[])
       for (const obj of accessories[group]) obj.visible = accessoryOn[group];
-    // The accessories arrive AFTER the body's frame pass, so each accessory root
-    // gets its OWN scoped deriveFrames pass. Deliberate limitation: an
-    // accessory is measured against itself alone — it joins neither the body's
-    // rank pool nor its ladder (it has no group under its own root, so its rung
-    // is 0). Folding them into the body pass instead would drag the hood/caps
-    // into Barrel_Inner's group centroid and shift the body ladder; selections
-    // (class `accessory`) are how a recipe addresses them.
+    // Accessories arrive AFTER the body's frame pass, so each root gets its
+    // OWN scoped pass and is measured against itself alone. Folding them into
+    // the body pass would shift the body ladder.
     for (const group of Object.keys(accessories) as AccessoryGroup[])
       for (const obj of accessories[group]) deriveFrames(obj);
-    // …then the merged material, over the WHOLE scene: a mesh that was already
-    // present when the look was built but only got its frame just now (a fast
-    // local load beats the body's own pass to it) is re-keyed onto the
-    // deforming variant here.
+    // …then the merged material over the WHOLE scene, so a mesh that was
+    // present at build time but only got its frame just now is re-keyed onto
+    // the deforming variant.
     unified.integrate(gltfScene);
     shading.integrate(gltfScene); // …and the bench swapper learns the new meshes
     visibilityDirty = true; // fold the just-arrived meshes into every active gate
     dirty = true;
   });
-  // Horizontal lens-parking is only sensible on landscape screens; on portrait /
-  // phone viewports it would shove the lens off-frame, so fade it out below ~1.5:1.
+  // Horizontal lens-parking only works on landscape screens — on portrait it
+  // would shove the lens off-frame, so it fades out below ~1.5:1.
   let parkScale = 1;
   /** the drawing buffer's CSS-pixel size — held GROW-ONLY in height (below) */
   let bufW = 0;
   let bufH = 0;
+  /** when the drawing buffer last changed — tick() rebuilds the post pass once
+   *  the run of resize events has settled (0 = nothing owed) */
+  let postStaleAt = 0;
+  /** the canvas's CSS size, re-read here rather than per frame: every read is a
+   *  forced layout, and the frame path needs it several times */
+  let cssW = 1;
+  let cssH = 1;
   function resize() {
     const w = canvas.clientWidth || 1;
     const h = canvas.clientHeight || 1;
-    // THE URL-BAR LAW: mobile Safari collapses/expands its chrome on every
-    // scroll direction change, resizing the dvh viewport by ~10% — and a
-    // drawing-buffer realloc (plus its pipeline work) on each of those is a
-    // felt stutter. So the buffer only reallocates when the WIDTH changes
-    // (a real resize or a rotation) or the height GROWS past what we have;
-    // a height-only shrink keeps the taller buffer and renders into it at the
-    // CSS aspect. The projection maps NDC to the buffer's full height and the
-    // browser squashes it back to the CSS height — the two scalings cancel
-    // exactly, so proportions stay correct and the only cost is rendering a
-    // few extra rows that are downscaled away.
+    cssW = w;
+    cssH = h;
+    // THE URL-BAR LAW: mobile browsers resize the dvh viewport on every scroll
+    // direction change, and a buffer realloc on each is a felt stutter. So the
+    // buffer only reallocates on a WIDTH change or a height GROWTH; a
+    // height-only shrink keeps the taller buffer, and the NDC mapping and the
+    // browser's squash back to the CSS height cancel exactly.
     if (w !== bufW || h > bufH) {
       renderer.setSize(w, h, false);
       bufW = w;
       bufH = h;
+      // three r185 keys the transmission backdrop texture on the render target
+      // and drops the one resize it marks, so every later copy writes the new
+      // buffer into the old texture. Only a target it has not cached clears it.
+      postStaleAt = performance.now();
     }
     camera.aspect = w / h;
     parkScale = Math.max(0, Math.min(1, (w / h - 0.8) / 0.7));
-    // Size the lens by the SMALLER viewport dimension (so a wide-but-short or a
-    // narrow-but-tall window both frame it sensibly), capped at the layout width
-    // so it stops growing on very large displays. A perspective camera otherwise
-    // scales an object's pixel size purely by viewport height, so we correct with
-    // camera.zoom = (capped min dimension) / height.
+    // Size the lens by the SMALLER viewport dimension, capped at the layout
+    // width. A perspective camera otherwise scales pixel size purely by
+    // viewport height, so zoom corrects with (capped min dimension) / height.
     const rem =
       parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
     const MAX_PX = 112 * rem; // matches --container-layout
@@ -1609,17 +1209,18 @@ export async function initScene(
   const storyTarget = new THREE.Vector3();
 
   // --- node tracking (DOM annotations that follow model parts) ---------------
-  // Every part's geometry is baked in place (origins sit at the parent — doc §4),
-  // so a node's VISUAL centre is its bbox centre, resolved once into the node's
-  // LOCAL frame (pose-independent) and then followed through the live transform.
-  const frameCbs: ((project: (name: string) => TrackedPoint | null) => void)[] =
-    [];
+  // Every part's geometry is baked in place, so a node's VISUAL centre is its
+  // bbox centre — resolved once into the node's pose-independent LOCAL frame
+  // and then followed through the live transform.
+  const frameCbs: ((
+    project: (name: string, out: TrackedPoint) => TrackedPoint | null,
+  ) => void)[] = [];
   const trackCache = new Map<
     string,
     { obj: THREE.Object3D; local: THREE.Vector3 } | null
   >();
   const trackVec = new THREE.Vector3();
-  function project(name: string): TrackedPoint | null {
+  function project(name: string, out: TrackedPoint): TrackedPoint | null {
     let t = trackCache.get(name);
     if (t === undefined) {
       const obj = gltfScene.getObjectByName(name);
@@ -1638,15 +1239,14 @@ export async function initScene(
     trackVec.copy(t.local);
     t.obj.localToWorld(trackVec).project(camera); // projection includes the view-offset park
     if (trackVec.z > 1) return null; // behind the camera
-    return {
-      x: ((trackVec.x + 1) / 2) * (canvas.clientWidth || 1),
-      y: ((1 - trackVec.y) / 2) * (canvas.clientHeight || 1),
-    };
+    out.x = ((trackVec.x + 1) / 2) * cssW;
+    out.y = ((1 - trackVec.y) / 2) * cssH;
+    return out;
   }
 
-  // …and the DRAWN disc (projectDrawn). Same cached seated centre, plus the
-  // node's world bounding radius, put through the CPU op field before it is
-  // projected — which is the whole difference from `project` above.
+  // …and the DRAWN disc (projectDrawn): the same cached seated centre plus the
+  // world bounding radius, put through the CPU op field before projection —
+  // which is the whole difference from `project` above.
   const drawCache = new Map<
     string,
     { mesh: THREE.Mesh; local: THREE.Vector3; radius: number } | null
@@ -1658,8 +1258,8 @@ export async function initScene(
     let t = drawCache.get(name);
     if (t === undefined) {
       const obj = gltfScene.getObjectByName(name);
-      // The op field is a MESH's (its lanes come off the geometry), so a group
-      // node is followed by the first mesh under it.
+      // the op field is a MESH's, so a group node is followed by its first
+      // mesh
       let mesh: THREE.Mesh | null = null;
       obj?.traverse((o) => {
         if (!mesh && o instanceof THREE.Mesh) mesh = o;
@@ -1675,9 +1275,8 @@ export async function initScene(
           local: (mesh as THREE.Mesh).worldToLocal(
             box.getCenter(new THREE.Vector3()),
           ),
-          // the LARGEST HALF-EXTENT, not the box's bounding sphere: a lens
-          // element is a disc, and the sphere around its box is a factor of √2
-          // wider than the circle it actually draws.
+          // the LARGEST HALF-EXTENT, not the bounding sphere: a lens element
+          // is a disc, and the sphere around its box is √2 too wide
           radius: Math.max(half.x, half.y, half.z),
         };
       }
@@ -1688,7 +1287,7 @@ export async function initScene(
     drawC.copy(t.local);
     displaceSeatedPoint(t.mesh, drawC);
     t.mesh.localToWorld(drawC);
-    // the radius, measured ACROSS the screen: one camera-right world offset of
+    // the radius measured ACROSS the screen: one camera-right world offset of
     // the seated bounding radius, projected alongside the centre
     drawRight
       .setFromMatrixColumn(camera.matrixWorld, 0)
@@ -1697,9 +1296,9 @@ export async function initScene(
     drawC.project(camera);
     drawE.project(camera);
     if (drawC.z > 1) return null; // behind the camera
-    // NDC → frame heights from the frame's centre: y is a straight half, and x
-    // carries the aspect (see TrackedCircle).
-    const aspect = (canvas.clientWidth || 1) / (canvas.clientHeight || 1);
+    // NDC → frame heights from the centre: y is a straight half, x carries the
+    // aspect (see TrackedCircle)
+    const aspect = cssW / cssH;
     const x = (drawC.x * aspect) / 2;
     return {
       x,
@@ -1708,17 +1307,15 @@ export async function initScene(
     };
   }
 
-  // Story mode scripts the camera (and the hero canvas is pointer-events:none),
-  // so OrbitControls there would only be dead pointer/wheel listeners — it's
-  // created for the interactive viewer alone.
+  // Story mode scripts the camera and the hero canvas is pointer-events:none,
+  // so OrbitControls there would be dead listeners.
   const controls = storyMode ? null : new OrbitControls(camera, canvas);
   if (controls) {
     controls.enableDamping = true;
     controls.minDistance = 2;
     controls.maxDistance = 20;
     controls.target.set(0, 0, 0);
-    // Middle-drag orbits like left-drag (owner request) — the wheel already
-    // owns dolly, so MIDDLE's default DOLLY was redundant.
+    // middle-drag orbits like left-drag; the wheel already owns dolly
     controls.mouseButtons.MIDDLE = THREE.MOUSE.ROTATE;
     controls.addEventListener("change", () => {
       dirty = true;
@@ -1726,9 +1323,9 @@ export async function initScene(
     controls.update();
   }
 
-  // DEV hero-camera preview (/lens): while true, tick() takes the story-mode
-  // camera branch and OrbitControls is bypassed — see SceneHandle.setStoryCamera.
-  // orbitPose is the free-orbit camera state saved on engage, restored on exit.
+  // DEV hero-camera preview: while true, tick() takes the story-mode camera
+  // branch and OrbitControls is bypassed. orbitPose is the free-orbit state
+  // saved on engage and restored on exit.
   let storyCam = false;
   const orbitPose = {
     pos: new THREE.Vector3(),
@@ -1736,21 +1333,17 @@ export async function initScene(
     fov: camera.fov,
   };
 
-  // STORY fly-through fov override (see setStoryFov): the dive's own fov ramp,
-  // laid over the story sample in tick(). The POSE stays the story's — the dive
-  // moves the lens, not the camera (setLensDolly).
+  // STORY fly-through fov override, laid over the story sample in tick(). The
+  // POSE stays the story's — the dive moves the lens, not the camera.
   let storyFov: number | null = null;
   let storyFovMix = 1;
   /** setStoryCentre: how much of the story's view offset the dive drops. */
   let storyCentre = 0;
 
   // --- per-part additive offsets (SceneHandle.setPartOffset) -----------------
-  // Applied around each RENDERED frame: after mechanism.update has written this
-  // frame's transforms, every offset part's CURRENT transform is snapshotted as
-  // the base and base⊕offset is written; after the frame's callbacks the base is
-  // restored. Between frames every part therefore holds its un-offset transform
-  // — mechanism-driven parts get a fresh base each frame, untouched parts keep
-  // their rest transform, and repeated setPartOffset calls can never accumulate.
+  // Applied around each RENDERED frame: the post-mechanism transform is
+  // snapshotted, base⊕offset is written, and the base is restored after the
+  // frame's callbacks — so repeated calls can never accumulate.
   const partOffsets = new Map<
     string,
     {
@@ -1804,9 +1397,8 @@ export async function initScene(
   const EASE = CHANNEL_EASE;
   const STATE_EPS = 1e-4;
 
-  // --- shading swaps (instant + choreographed) -------------------------------
-  // applyShading is the ONE instant-swap path — the plain setShading method and
-  // the transition runner below both land here.
+  // applyShading is the ONE instant-swap path — the setShading method and the
+  // transition runner below both land here.
   let currentShading: ShadingMode = "realistic";
   function applyShading(mode: ShadingMode) {
     currentShading = mode;
@@ -1814,7 +1406,7 @@ export async function initScene(
     dirty = true;
   }
 
-  // Choreographed look swap (see core/transitions.ts for the registry and the
+  // Choreographed look swap (core/transitions.ts holds the registry and the
   // snapshot/restore contract). One run at a time: a second call mid-flight
   // retargets the pending mode instead of stacking motion.
   const transitionCtx: TransitionContext = {
@@ -1834,8 +1426,8 @@ export async function initScene(
   function swapShading(mode: ShadingMode, opts: SwapShadingOptions = {}) {
     if (activeSwap) {
       activeSwap.pending = mode;
-      // past the swap beat, the cut already landed — recut to the new mode now
-      // (still inside the residual motion) rather than spinning again
+      // past the swap beat the cut already landed — recut now, inside the
+      // residual motion, rather than spinning again
       if (activeSwap.swapped && mode !== currentShading) applyShading(mode);
       return;
     }
@@ -1879,34 +1471,30 @@ export async function initScene(
   /**
    * Push the CURRENT channel values into the mechanism and the shader channels.
    * Split out of tick() so the dev path visualizer can re-drive everything at
-   * arbitrary channel values while it walks an animation — one drive path, so a
-   * walked pose is built exactly the way a rendered frame is. Returns the
-   * derived values tick() also needs.
+   * arbitrary values — ONE drive path, so a walked pose is built exactly the
+   * way a rendered frame is.
    */
   function driveChannels(): { apertureT: number; explodeT: number } {
-    // Real cams are non-linear; apply one shared ease across every zoom
-    // channel (never per-channel, or the guts visibly desynchronize).
+    // Real cams are non-linear. ONE shared ease across every zoom channel —
+    // per-channel eases visibly desynchronize the guts.
     const zoomT = smoothstep(0, 1, clamp01(state.zoom));
     const focusT = clamp01(state.focus);
     const apertureT = clamp01(state.aperture);
     const explodeT = clamp01(state.explode);
 
-    // The MEASURED motions only (ops/mechanism.ts): ring throws, the element
-    // slides they drive, the lead screw's spin, the iris sweep. Everything
-    // else — the explode ladder, the reassembly formations, the peel — is a
-    // recipe and runs in-shader off the channels below.
+    // The MEASURED motions only: ring throws, the element slides they drive,
+    // the lead screw's spin, the iris sweep. Everything else is a recipe and
+    // runs in-shader off the channels below.
     mechanism.update({
       zoom: zoomT, // the shared-smoothstep value, NOT the raw eased channel
       focus: focusT,
       aperture: apertureT,
     });
 
-    // The op recipe channels: these ARE the deform. Each registry motion
-    // channel is its recipe's channel uniform, one-for-one — no shim, and no
-    // object-space ladder underneath to double-drive explode. DERIVED from the
-    // recipe list, so a new recipe + its registry row is the whole edit; the
-    // mechanism trio above stays hand-written because its three reads share one
-    // ease, which a loop would hide.
+    // The op recipe channels: these ARE the deform, one registry channel per
+    // recipe uniform. DERIVED from the recipe list, so a new recipe plus its
+    // registry row is the whole edit; the mechanism trio above stays
+    // hand-written because its three reads share one ease.
     for (const name of RECIPE_NAMES)
       recipeChannel(name).value = clamp01(state[name]);
 
@@ -1914,36 +1502,37 @@ export async function initScene(
   }
 
   function tick() {
-    // skipped (not just disabled) under the hero-camera preview: update() would
-    // re-aim the camera from the controls' own state every frame
+    // skipped, not just disabled, under the hero-camera preview: update()
+    // would re-aim the camera from the controls' own state every frame
     if (controls && !storyCam) controls.update();
 
-    // ease every channel toward its target; `easing` = any channel still moving
-    // (past STATE_EPS), which keeps redraws running until everything settles
+    if (
+      postStaleAt !== 0 &&
+      performance.now() - postStaleAt > POST_RESIZE_SETTLE_MS
+    )
+      rebuildPost();
+
+    // ease every channel toward its target; `easing` keeps redraws running
+    // until everything settles
     let easing = false;
-    for (const c of CHANNELS) {
+    for (let i = 0; i < CHANNELS.length; i++) {
+      const c = CHANNELS[i];
       const before = state[c];
-      state[c] = lerp(before, state[`${c}Target`], EASE);
+      state[c] = lerp(before, state[TARGET_KEYS[i]], EASE);
       if (Math.abs(state[c] - before) > STATE_EPS) easing = true;
     }
 
-    // Story mode has no idle early-out: it renders every tick, because the
-    // ambient dust, the internals phase clock and the card orbit are time-based
-    // onFrame riders that write no channel and mark nothing dirty — gating them
-    // on dirty/easing would FREEZE them. (A parked-story half-rate throttle
-    // lived here once; the owner cut it — the ambients are always moving, so
-    // the 30 Hz was always visible.) Everything below only affects the frame
-    // we're about to render, so it sits behind this gate — a fully idle /lens
-    // tick does near-zero work (only the controls-damping update + the cheap
-    // ease loop above run). controls.update() above still marks dirty while a
-    // glide damps, so those frames DO render here and pick up the fresh camera
-    // transform before renderer.render.
+    // NO IDLE EARLY-OUT IN STORY MODE: the ambient dust, the internals phase
+    // clock and the card orbit are time-based onFrame riders that write no
+    // channel and mark nothing dirty, so gating them here would FREEZE them.
+    // Everything below only affects the frame about to be rendered, so a fully
+    // idle /lens tick does near-zero work.
     if (!storyMode && !dirty && !easing) return;
     dirty = false;
 
     if (storyMode || storyCam) {
-      // sample the scripted pose, then hand the framing (pose copy, view-offset
-      // park, portrait lift) to story/camera — it lives next to sampleStory
+      // sample the scripted pose, then hand the framing (pose copy, park,
+      // portrait lift) to story/camera
       const storyP = clamp01(state.story);
       const sample = sampleStory(storyP, storyPos, storyUp, storyTarget);
       applyStoryFraming(
@@ -1952,22 +1541,16 @@ export async function initScene(
         storyPos,
         storyUp,
         storyTarget,
-        canvas.clientWidth || 1,
-        canvas.clientHeight || 1,
+        cssW,
+        cssH,
         parkScale,
         storyP,
       );
-      // THE DIVE'S FRAMING, over the pose the story just placed (story/fly.ts):
-      // its own fov ramp, and its claim on the CENTRE of the frame.
-      //
-      // The offset the framing wrote is scaled toward zero rather than cleared,
-      // so the two owners cross over on a ramp instead of at an edge: at
-      // storyCentre 1 the optical axis is exactly at the middle of the frame,
-      // which is the dive's whole geometry (a bore shot from the axis) and what
-      // the old moving-camera path got for free by clearing the offset. The
-      // fly-through rows park at xs 0, so on landscape there is nothing here to
-      // scale; on PORTRAIT the offset is story/camera.ts's lift, 6% of the
-      // canvas height, and leaving it in place framed the entire dive that high.
+      // THE DIVE'S FRAMING over the pose the story just placed: its own fov
+      // ramp and its claim on the frame's CENTRE. The offset is scaled toward
+      // zero rather than cleared, so the two owners cross on a ramp instead of
+      // at an edge; at 1 the optical axis sits dead centre, which is the dive's
+      // whole geometry. Landscape rows park at xs 0 and have nothing to scale.
       if (storyCentre > 0) {
         const v = camera.view;
         if (v)
@@ -1986,27 +1569,15 @@ export async function initScene(
       }
     }
 
-    // Depth-fade planes track the live camera distance so the lens body stays in the
-    // full-opacity middle; pieces exploding toward the camera cross the near plane
-    // (and pieces receding cross the far plane) and dissolve. Widths are in model
-    // radii, so it scales with whatever distance the current scene is shot from.
-    // Runs on every RENDERED frame (before the render below) with the pose just
-    // applied above, so a scrub/orbit/animation-select repaints with correct fade.
+    // Depth-fade planes track the live camera distance so the body stays in
+    // the full-opacity middle and only exploded pieces cross one. Widths are in
+    // model radii, so this scales with the scene's shooting distance.
     {
-      // distance to the SUBJECT: the story's orbit target PLUS the lens' own
-      // dolly (the story camera is at target + storyPos and the model's centre
-      // sits at x = dollyX, so this is |camera − subject| while the orbit
-      // target stays at the origin — true of every dolly≠0 scene today; at
-      // dolly 0 the sqrt form below is storyPos.length() bit for bit, x−0
-      // being x), or the origin the free-orbit /lens camera circles.
-      // TRACKING THE DOLLY IS THE INK'S LICENCE: the ink
-      // look folds this fade into its opacity (×uInk, materials/unified.ts),
-      // and the return ramp now opens while the reveal's overshoot is still
-      // seating (story/fly.ts INK_RETURN against flySeatAt) — planes centred
-      // on the ORIGIN there would put the parked lens 3.5 units into its own
-      // far fade and dissolve its tail as the drawing came back. (Dev bench:
-      // the /lens ?story preview's ink display modes — whose fade is not
-      // uInk-gated, shading.ts — ride these same tracked planes; dev-only.)
+      // Distance to the SUBJECT, which is the lens at x = dollyX, not the
+      // origin. TRACKING THE DOLLY IS THE INK'S LICENCE: the ink look folds
+      // this fade into its opacity, and its return ramp opens while the reveal
+      // is still seating — planes centred on the origin would put the parked
+      // lens deep into its own far fade and dissolve its tail.
       const camDist =
         storyMode || storyCam
           ? Math.sqrt(
@@ -2021,60 +1592,55 @@ export async function initScene(
       uFadeFar1.value = camDist + modelRadius * 2.6;
     }
 
-    // The drawn sky rides ON the camera: parking the sphere on this frame's eye
-    // position is what makes 200-unit-away geometry behave like the traced
-    // background's infinitely distant sky (no parallax as the dive travels).
+    // The drawn sky rides ON the camera: parking it on this frame's eye
+    // position is what makes near geometry behave like an infinitely distant
+    // sky (no parallax as the dive travels).
     starfield?.sync(camera);
-    // The screen-space wormhole reads the SAME frame the starfield just synced — the
-    // throat is the exit axis projected through this tick's camera pose, so the
+    // The wormhole reads the SAME frame the starfield just synced, so the
     // funnel's centre and the sky it swallows can never be a frame apart.
     if (postMounted) wormholePost?.sync(camera);
 
     const { explodeT } = driveChannels();
-    // Per-part offsets compose ON TOP of what the mechanism just wrote (and are
-    // reverted after the frame's callbacks — see the block above tick()).
+    // composed on top of what the mechanism just wrote; reverted after the
+    // frame's callbacks
     applyPartOffsets();
     cinematics.update(explodeT, performance.now());
-    // ONE owner writes every `.visible` flag, composing the glass, body, shell
-    // and interior gates (see applyVisibility) — but only when a gate writer
-    // marked the composition stale since the last pass.
+    // ONE owner writes every `.visible` flag, and only when a gate writer
+    // marked the composition stale (see applyVisibility)
     if (visibilityDirty) {
       visibilityDirty = false;
       applyVisibility();
     }
 
-    // TWO RENDER PATHS, and the second one exists only while the fly-through is
-    // running: mounted, the frame goes through optics/wormhole-post.ts's
-    // RenderPipeline (scene → target → pinch → canvas); unmounted, this is the
-    // direct call the whole site has always made, untouched.
-    // The fly warm-up's one off-screen frame, if it is owed (SceneHandle
-    // .warmFly): taken HERE, ahead of this tick's own render, because the pass
-    // renders its scene once per frame and a render driven from outside the
-    // loop compiles nothing.
-    // the pose for THIS frame is final here (story framing, the fly blend and
-    // every channel have been applied) — record it before the render
+    // TWO RENDER PATHS: mounted, the frame goes through the wormhole pass;
+    // unmounted, it is the direct render. The warm-up's off-screen frame is
+    // taken HERE, ahead of this tick's own render, because the pass renders
+    // once per frame and a render from outside the loop compiles nothing.
+    // the pose for THIS frame is final here — record it before the render
     motionTrace?.record(camera, state, modelRadius);
-    // THE BODY'S OWN WARM-UP, FROM THE FRAME AFTER THE FIRST: the ink twin's
-    // pipeline, drawn once on the CANVAS, ahead of the look resolution below so
-    // the first frame that can wear it is a frame whose pipeline exists. Asked
-    // per frame rather than armed once — integrate() mints body materials when
-    // the accessories land, and those keys owe their own warm.
+    // THE BODY'S WARM-UP, FROM THE FRAME AFTER THE FIRST: the ink twin's
+    // pipeline, drawn once on the CANVAS ahead of the look resolution below.
+    // Asked per frame rather than armed once, since integrate() mints new body
+    // materials when the accessories land.
     if (firstFrameDone && unified.needsWarm("canvas"))
-      unified.warmBodyLooks("canvas", () => renderer.render(scene, camera));
-    if (warmFlyPending) {
-      const spans = warmFlyPending;
-      warmFlyPending = null;
-      warmFlyFrame(spans);
+      unified.warmBodyLooks("canvas", () =>
+        drewScene(() => renderer.render(scene, camera)),
+      );
+    // ONE WARM STEP PER TICK, and never on a tick the pass will draw for real:
+    // the pass draws its SCENE once per tick, so a second step sharing the tick
+    // — or a step sharing it with the render below — gets an output quad alone.
+    if (warmQueue.length && !postMounted) {
+      warmQueue.shift()!();
+      if (warmQueue.length) dirty = true;
     }
-    // WHICH CONTEXT THIS FRAME DRAWS IN — one reading, handed to the look
-    // resolution and then used: three keys a pipeline on the render context, so
-    // it decides whether the twin may be worn at all, and the two must not be
-    // able to disagree.
+    // WHICH CONTEXT THIS FRAME DRAWS IN — ONE reading, since three keys a
+    // pipeline on the render context and it decides whether the twin may be
+    // worn at all. The resolution and the render must not disagree.
     const viaPass = postMounted && wormholePost !== null ? wormholePost : null;
     unified.syncBody(viaPass ? "pass" : "canvas");
     if (viaPass) viaPass.render();
     else renderer.render(scene, camera);
-    // after the render, so tracked annotations see this frame's final transforms
+    // after the render, so annotations see this frame's final transforms
     for (const cb of frameCbs) cb(project);
     revertPartOffsets();
     if (!firstFrameDone) {
@@ -2082,93 +1648,231 @@ export async function initScene(
       performance.mark("lens:first-frame"); // model visible (pipelines compiled)
     }
   }
-  /** …and the ink twin's own compile goes on the frame AFTER the first, never
-   *  on it: the first frame is the one the whole site's time-to-first-frame is
-   *  measured on, and the twin is an optimization for the frames after it (see
-   *  the warm-up in tick). Until a warm frame is paid, the body wears the blend
-   *  material — which is exactly what it wore before the twin existed. */
+  /** The ink twin's compile goes on the frame AFTER the first, never on it:
+   *  the first frame is what time-to-first-frame is measured on, and the twin
+   *  is an optimization for the frames after it. Until a warm frame is paid the
+   *  body wears the blend material. */
   let firstFrameDone = false;
   renderer.setAnimationLoop(tick);
   let paused = false;
   let pathViz: PathViz | null = null;
   let inspector: Inspector | null = null;
-  // The dive's DRAWN starfield (optics/starfield.ts). Dynamically imported,
-  // like the path viz and the inspector, so nothing of it reaches the initial
-  // bundle; the page's live choice is tracked separately because that import is
-  // awaited, so an on→off during the fetch must resolve OFF. While mounted it
-  // is re-centred on the camera from tick() and owns scene.background.
+  // The dive's DRAWN starfield, dynamically imported. The page's live choice
+  // is tracked separately because the import is awaited, so an on→off during
+  // the fetch must resolve OFF. While mounted it owns scene.background.
   let starfield: import("../optics/starfield").Starfield | null = null;
   let starsWanted = false;
   let starsBgSaved: THREE.Scene["background"] = null;
-  // DEV (/lens Demos): the fly-through's SCREEN-SPACE wormhole
-  // (optics/wormhole-post.ts). Same lazy-import shape as the starfield above, and
-  // the same latest-state rule — `postMounted` is what tick() renders through,
-  // and it is only ever set from `postWanted` AFTER the await, so an exit
-  // during the import cannot strand the pipeline on the shipped path.
+  // The fly-through's SCREEN-SPACE wormhole — same lazy-import shape and
+  // latest-state rule as the starfield: `postMounted` is what tick() renders
+  // through and is only ever set from `postWanted` AFTER the await, so an exit
+  // during the import cannot strand the pipeline.
   let wormholePost: import("../optics/wormhole-post").WormholePost | null =
     null;
   let postWanted = false;
   let postMounted = false;
+  /** Build the pass if it is not up. The caller owns `postMounted`. */
+  async function startPost(): Promise<boolean> {
+    if (wormholePost) return true;
+    try {
+      const { createWormholePost } = await import("../optics/wormhole-post");
+      if (destroyed) return false; // torn down mid-import
+      wormholePost = createWormholePost(renderer, scene, camera, () => {
+        dirty = true;
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `lens optics: the wormhole post pass failed to start — ${msg}`,
+        err,
+      );
+      if (diag) diag.post = `FAILED: ${msg}`;
+      return false;
+    }
+    return true;
+  }
+
+  /** How long the buffer must hold still before the pass is rebuilt, so a
+   *  window drag pays one rebuild rather than one per resize event. */
+  const POST_RESIZE_SETTLE_MS = 250;
+
+  /** Drop the resized-out pass and put the wanted one back up. */
+  function rebuildPost() {
+    postStaleAt = 0;
+    if (!wormholePost) return;
+    wormholePost.dispose();
+    wormholePost = null;
+    postMounted = false; // the direct render carries the frames until it lands
+    void startPost().then((ok) => {
+      if (ok && !destroyed) postMounted = postWanted;
+      if (diag) diag.post = postMounted ? "mounted" : "unmounted";
+      dirty = true;
+    });
+  }
+
   /** warmFly runs once per page — see the handle method. */
   let warmedFly = false;
-  /** the spans the dry frame owes, handed over by warmFly for tick() to take. */
-  let warmFlyPending: Record<string, GlassSpanMm> | null = null;
+  /**
+   * THE WARM QUEUE — every dry frame the scene owes, one per tick.
+   *
+   * The wormhole pass draws its SCENE once per tick (three's own frame guard on
+   * `PassNode`): a second `render()` inside one tick re-runs the output quad
+   * alone, so two pass warms sharing a tick leave the second compiling nothing.
+   * Every step therefore gets a tick of its own, stages and restores inside it
+   * ahead of that tick's render, and chains the next through `dirty`.
+   */
+  const warmQueue: (() => void)[] = [];
+  function queueWarm(...steps: (() => void)[]) {
+    warmQueue.push(...steps);
+    dirty = true;
+  }
 
-  /** ONE FRAME OF THE DIVE, DRAWN NOWHERE (SceneHandle.warmFly). The dive's
-   *  look goes on, one frame is drawn through the wormhole pass into a 1×1
-   *  target, and everything comes back off — inside one tick, so no rendered
-   *  frame ever sees the half-state and the canvas is repainted normally by the
-   *  render below. What it buys is the pipeline cache: three keys a pipeline on
-   *  the render context as well as the shader, so every material in the model
-   *  needs a second one the first time the PASS draws it, and that compile is
-   *  the crossing's stall. */
+  /** Did `body` reach the SCENE, or only the pass's output quad (one draw)? The
+   *  renderer's own count is the probe, and it is what lets a warm refuse to
+   *  mark a context it never drew in. */
+  function drewScene(body: () => void): boolean {
+    const before = renderer.info.render.drawCalls;
+    body();
+    return renderer.info.render.drawCalls - before > 1;
+  }
+
+  /** ONE FRAME THROUGH THE DIVE'S PASS, into a 1×1 target — the scene compiles
+   *  against the pass's own target format and sample count, which is a
+   *  different pipeline from the canvas's for every material drawn. No-op until
+   *  the pass exists (warmFly builds it). */
+  function warmPassFrame() {
+    if (!wormholePost) return;
+    const dry = new THREE.RenderTarget(1, 1);
+    try {
+      renderer.setRenderTarget(dry);
+      wormholePost.render();
+    } finally {
+      renderer.setRenderTarget(null);
+      dry.dispose();
+    }
+  }
+
+  /** ONE DRAW OF `objects`, SHOWN NOWHERE — their buffers and textures upload
+   *  here instead of on the frame their scene arrives. The canvas draw covers
+   *  the canvas context; `viaPass` adds a pass-context draw because three keys
+   *  a pipeline on the render context, and the queue gives it the tick to
+   *  itself that its scene render needs. tick() renders again below in this
+   *  same frame, so nothing reaches the screen. Culling is off for the draw: a
+   *  sky object sits where the story camera is not yet looking, and a culled
+   *  object uploads nothing. */
+  function warmDrawFrame(objects: THREE.Object3D[], viaPass: boolean) {
+    const parked = objects.filter((o) => !o.parent);
+    const culled: THREE.Object3D[] = [];
+    for (const o of objects)
+      o.traverse((c) => {
+        if (c.frustumCulled) {
+          c.frustumCulled = false;
+          culled.push(c);
+        }
+      });
+    for (const o of parked) scene.add(o);
+    try {
+      renderer.render(scene, camera);
+      if (viaPass) warmPassFrame();
+    } finally {
+      for (const o of parked) scene.remove(o);
+      for (const c of culled) c.frustumCulled = true;
+    }
+    dirty = true;
+  }
+
+  /** The dive's sky, up for the duration of one dry frame: a warm frame must
+   *  draw what the crossing draws, and the backdrop is part of it. */
+  function withDiveSky(sky: NonNullable<typeof starfield>, body: () => void) {
+    const bgSaved = scene.background ?? null;
+    scene.background = sky.backdrop;
+    scene.add(sky.object);
+    try {
+      body();
+    } finally {
+      scene.remove(sky.object);
+      scene.background = bgSaved;
+    }
+  }
+
+  /** ONE FRAME OF THE DIVE, DRAWN NOWHERE. The dive's look goes on, a frame is
+   *  drawn through the wormhole pass into a 1×1 target, and everything comes
+   *  back off — all inside ONE tick, so no rendered frame sees the half-state.
+   *  What it buys is the pipeline cache the crossing would otherwise stall
+   *  on. THE FIRST of the fly warm's three steps (see `warmQueue`). */
   function warmFlyFrame(spans: Record<string, GlassSpanMm>) {
     if (!starfield || !wormholePost) return;
     // THE CANVAS'S OWN HALF OF THE WARM-UP, first. `transparent` is the one
-    // thing the realistic/ink blend cannot blend (materials/unified.ts) — and
-    // three keys a pipeline on it, so the realistic variant of every shared
-    // material compiles on the frame the dive's ramp reaches 0 unless it is
-    // compiled here (measured: one 95ms frame right at the dive's edge). This
-    // is a real render of the live canvas at ink 0, which is the only way to
-    // reach the CANVAS render context; tick() repaints it normally a few lines
-    // below, inside this same frame, so nothing is ever shown.
+    // thing the realistic/ink blend cannot blend and three keys a pipeline on
+    // it, so every shared material's realistic variant would otherwise compile
+    // on the frame the ramp reaches 0. tick() repaints below in this same
+    // frame, so nothing is shown. A canvas render spends no pass frame, so it
+    // rides the same tick as the crossing's below.
     shading.withOriginals(() => renderer.render(scene, camera));
     const dry = new THREE.RenderTarget(1, 1);
-    const bgSaved = scene.background ?? null;
-    scene.background = starfield.backdrop;
-    scene.add(starfield.object);
-    // withOriginals, not setShading: a mode switch re-materials every mesh both
-    // ways and would stomp the transmissive clones enabled just below (the
-    // ownership hazard materials/shading.ts's swapper documents above).
-    shading.withOriginals(() => {
-      enableGlassTransmissive(spans);
-      try {
-        renderer.setRenderTarget(dry);
-        wormholePost?.render();
-      } finally {
-        renderer.setRenderTarget(null);
-        // the CLONES stay in the cache — half the point of the exercise
-        disableGlassTransmissive();
-      }
+    withDiveSky(starfield, () => {
+      // withOriginals, not setShading: a mode switch re-materials every mesh and
+      // would stomp the clones enabled just below (the ownership hazard above)
+      shading.withOriginals(() => {
+        enableGlassTransmissive(spans);
+        try {
+          renderer.setRenderTarget(dry);
+          wormholePost?.render();
+        } finally {
+          renderer.setRenderTarget(null);
+          // the CLONES stay in the cache — half the point of the exercise
+          disableGlassTransmissive();
+        }
+      });
     });
-    // AND THE INK TWIN THROUGH THE SAME PASS: the ink returns while the span is
-    // still active (story/fly.ts INK_RETURN), so the twin is drawn through the
-    // wormhole pass for the last third of the rewrap. Its OWN context flag —
-    // the canvas warm unlocks the twin for canvas frames only.
-    try {
-      renderer.setRenderTarget(dry);
-      unified.warmBodyLooks("pass", () => wormholePost?.render());
-    } finally {
-      renderer.setRenderTarget(null);
-    }
-    scene.remove(starfield.object);
-    scene.background = bgSaved;
     dry.dispose();
     dirty = true;
   }
 
-  // Dev-only perf probe: renderer.info (draw calls/triangles) + live scene
-  // internals for measurement scripts. Never present in prod builds.
+  /** THE INK TWIN THROUGH THE PASS: the ink returns while the span is still
+   *  active, so the twin is drawn through the wormhole pass for the last of the
+   *  rewrap. Its own tick, and its own context flag — the canvas warm unlocks
+   *  the twin for canvas frames only, and the flag here is only granted if the
+   *  draw reached the scene. */
+  function warmFlyTwinFrame() {
+    if (!starfield || !wormholePost) return;
+    const dry = new THREE.RenderTarget(1, 1);
+    withDiveSky(starfield, () => {
+      try {
+        renderer.setRenderTarget(dry);
+        unified.warmBodyLooks("pass", () =>
+          drewScene(() => wormholePost?.render()),
+        );
+      } finally {
+        renderer.setRenderTarget(null);
+      }
+    });
+    dry.dispose();
+    dirty = true;
+  }
+
+  /** …AND THE HAND-BACK'S OWN FRAME. Below GLASS_HANDOVER `current` gives the
+   *  elements their own material back, and the rewrap crosses that edge while
+   *  the pass is still up. WEAR-FOR-WARMING: the blend is forced under the edge
+   *  for the draw and put straight back; `current` still owns what a real frame
+   *  wears. */
+  function warmFlyGlassFrame() {
+    if (!starfield || !wormholePost) return;
+    const dry = new THREE.RenderTarget(1, 1);
+    withDiveSky(starfield, () => {
+      try {
+        renderer.setRenderTarget(dry);
+        shading.withOriginals(() => wormholePost?.render());
+      } finally {
+        renderer.setRenderTarget(null);
+      }
+    });
+    dry.dispose();
+    dirty = true;
+  }
+
+  // Dev-only perf probe: renderer.info plus live scene internals for
+  // measurement scripts. Never present in prod builds.
   if (import.meta.env.DEV) {
     (window as unknown as Record<string, unknown>).__lensPerf = {
       renderer,
@@ -2179,44 +1883,38 @@ export async function initScene(
       invalidate: () => {
         dirty = true;
       },
-      // The two model dissolves, reachable from the console for look passes —
-      // the handle itself is held by lens.astro and the demo kit, not by
-      // window, and an opening treatment is judged by driving BOTH against a
-      // parked scrub beat.
+      // the two model dissolves, reachable from the console for look passes
+      // (the handle itself is not on window)
       setBodyFade: applyBodyFade,
       setGlassFade: applyGlassFade,
-      // the dive's two darkness ramps, for the same parked-beat look passes —
-      // the room, and the glass's own reflections
+      // the dive's two darkness ramps: the room, and the glass's reflections
       setRoomLight: applyRoomLight,
       setGlassGlint: applyGlassGlint,
-      // where a node is DRAWN, in frame heights — the same reading the crown
-      // arc tracks with (story/trails.ts), reachable from the console so its
-      // authored landing circle can be re-measured against the live scene
-      // instead of off a screenshot.
+      // where a node is DRAWN, in frame heights — so an authored landing
+      // circle can be re-measured against the live scene, not a screenshot
       projectDrawn,
     };
   }
 
-  // Named, because two methods call their siblings: the fly warm-up drives the
-  // two optics latches through the same public path the dive does.
+  // Named, because warmFly drives the two optics latches through the same
+  // public path the dive does.
   const handle: SceneHandle = {
     state,
     setPaused(p) {
-      if (p === paused) return; // guard: IO callbacks can repeat the same state
+      if (p === paused) return; // IO callbacks can repeat the same state
       paused = p;
       if (p) {
         renderer.setAnimationLoop(null);
       } else {
-        dirty = true; // scroll may have moved targets while paused — force a redraw
+        dirty = true; // scroll may have moved targets while paused
         renderer.setAnimationLoop(tick);
       }
     },
     setAccessory(group, visible) {
       accessoryOn[group] = visible;
       // Accessories stream in behind the body, so a toggle may land before its
-      // meshes exist: apply once loaded, re-reading the LATEST desired state
-      // (accessoryOn) so a rapid on→off during load resolves off and never
-      // strands a visible mesh. Resolves instantly once the load is done.
+      // meshes exist. Applied once loaded, re-reading the LATEST desired state
+      // so a rapid on→off during the load resolves off.
       accessoriesReady.then(() => {
         for (const obj of accessories[group]) obj.visible = accessoryOn[group];
         visibilityDirty = true;
@@ -2233,8 +1931,8 @@ export async function initScene(
         orbitPose.fov = camera.fov;
         if (controls) controls.enabled = false;
       } else {
-        // SNAP the story channel home — easing it down would sweep storyP back
-        // through the light-path isolate window and flash the structure out.
+        // SNAP the story channel home: easing it down would sweep storyP back
+        // through the isolate window and flash the structure out.
         state.story = 0;
         state.storyTarget = 0;
         camera.position.copy(orbitPose.pos);
@@ -2284,9 +1982,8 @@ export async function initScene(
       for (const id of ids) {
         const root = node(id);
         if (!root) continue;
-        // Ancestors AND descendants: the model group's own matrix carries the
-        // recentre and MODEL_SCALE, and nothing guarantees this is called after
-        // a render.
+        // Ancestors AND descendants: the model group's matrix carries the
+        // recentre and MODEL_SCALE, and this need not follow a render.
         root.updateWorldMatrix(true, true);
         const box = new THREE.Box3().setFromObject(root);
         if (box.isEmpty()) continue;
@@ -2308,7 +2005,7 @@ export async function initScene(
     },
     setModelOrientation(euler) {
       // null (and every omitted axis) is the boot rotation, which makes the
-      // recentring re-derivation below the identity — one path, no reset branch.
+      // re-derivation below the identity — one path, no reset branch
       modelGroup.rotation.set(
         euler?.x ?? bootRotation.x,
         euler?.y ?? bootRotation.y,
@@ -2364,9 +2061,8 @@ export async function initScene(
       dirty = true;
     },
     starfieldAttach(obj) {
-      // `.parent` is the mount test: enableStarfield adds/removes the group
-      // from the scene and never disposes it in between, so a built-but-
-      // unmounted starfield must read as false.
+      // `.parent` is the mount test: the group is added/removed and never
+      // disposed in between, so a built-but-unmounted starfield reads false
       if (!starfield || !starfield.object.parent) return false;
       if (obj.parent !== starfield.object) {
         starfield.object.add(obj);
@@ -2379,9 +2075,8 @@ export async function initScene(
       dirty = true;
     },
     setSkyDim(f, rgb) {
-      // `.parent` is the mount test (see starfieldAttach): a built-but-unmounted
-      // starfield's backdrop is not on screen, so dimming it would only leave
-      // state behind for the next mount.
+      // `.parent` is the mount test (see starfieldAttach): an unmounted
+      // backdrop is off screen, so dimming it would only leak state forward
       if (!starfield || !starfield.object.parent) return;
       starfield.setBackdropDim(f, rgb[0], rgb[1], rgb[2]);
     },
@@ -2406,8 +2101,8 @@ export async function initScene(
             invalidate: () => {
               dirty = true;
             },
-            // the ONE channel registry, handed over so analysis walks can start
-            // from the neutral pose without re-listing channels anywhere
+            // the ONE channel registry, so analysis walks start from the
+            // neutral pose without re-listing channels anywhere
             channelDefaults: CHANNEL_DEFAULTS,
           },
           onStatus,
@@ -2464,11 +2159,9 @@ export async function initScene(
         }
       }
       // The LATEST desired state, not the captured `on`: an exit during the
-      // import above must not let this continuation strand a mount.
-      // The BACKDROP travels with the mount: the stars are drawn ONTO a flat
-      // ground rather than onto whatever the page was showing, and `backdrop`
-      // is one live Color the starfield re-tints on a theme flip, so assigning
-      // it once is enough.
+      // import must not let this continuation strand a mount. The BACKDROP
+      // travels with the mount — `backdrop` is one live Color the starfield
+      // re-tints on a theme flip, so assigning it once is enough.
       if (starsWanted && !starfield.object.parent) {
         starsBgSaved = scene.background ?? null;
         scene.background = starfield.backdrop;
@@ -2480,77 +2173,56 @@ export async function initScene(
       dirty = true;
       return true;
     },
+    async buildWormholePost() {
+      if (destroyed) return false;
+      return wormholePost ? true : startPost();
+    },
     async enableWormholePost(on) {
       postWanted = on;
       if (!wormholePost) {
         if (!on) return true; // never started, nothing to turn off
-        try {
-          const { createWormholePost } =
-            await import("../optics/wormhole-post");
-          if (destroyed) return false; // torn down mid-import
-          wormholePost = createWormholePost(renderer, scene, camera, () => {
-            dirty = true;
-          });
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.warn(
-            `lens optics: the wormhole post pass failed to start — ${msg}`,
-            err,
-          );
-          if (diag) diag.post = `FAILED: ${msg}`;
-          return false;
-        }
+        if (!(await startPost())) return false;
       }
-      // The LATEST desired state, not the captured `on`: an exit during the
-      // import above must not let this continuation strand a mount.
+      // the LATEST desired state, not the captured `on`: an exit during the
+      // import must not let this continuation strand a mount
       postMounted = postWanted;
       if (diag) diag.post = postMounted ? "mounted" : "unmounted";
       dirty = true;
       return true;
     },
     async warmFly(spans) {
-      // Never over a live dive (nothing here would survive being torn down
-      // under one) and never twice — the second call has nothing to compile.
+      // never over a live dive, and never twice
       if (destroyed || warmedFly || glassTransmissive || postMounted)
         return false;
       warmedFly = true;
-      // BUILD, then DROP. Each pair mounts and unmounts inside one microtask
-      // chain, so no frame is ever rendered with the sky or the pass up, and
-      // awaiting (rather than the fire-and-forget latch pair the dive uses)
-      // means two calls can never both find the module missing and build it
-      // twice. What survives is what costs: the modules, the geometry, and the
-      // pass's own pipeline (createWormholePost compiles it in its
-      // constructor).
+      // BUILD, then DROP: each pair mounts and unmounts inside one microtask
+      // chain, so no frame renders with the sky or the pass up, and AWAITING
+      // means two calls can never both build the module.
       await handle.enableStarfield(true);
       await handle.enableStarfield(false);
       await handle.enableWormholePost(true);
       await handle.enableWormholePost(false);
       if (destroyed || !starfield || !wormholePost) return false;
-      // The dry frame itself is TAKEN BY tick() (warmFlyFrame) — the wormhole
-      // pass renders its scene once per FRAME (PassNode's update type), so a
-      // render driven from outside the animation loop re-runs the quad over a
-      // stale target and compiles nothing. Measured: 3ms and no effect.
-      warmFlyPending = spans;
-      dirty = true;
+      // THREE STEPS, THREE TICKS (see `warmQueue`): the crossing's clones, the
+      // ink twin, and the hand-back's own material each need the pass's one
+      // scene render of a tick, and none may run from outside the loop.
+      queueWarm(() => warmFlyFrame(spans), warmFlyTwinFrame, warmFlyGlassFrame);
       return true;
+    },
+    warmDraw(objects, viaPass = false) {
+      // TAKEN BY tick(), like the dive's own dry frames: the renderer is not
+      // re-entered from the idle callback that asked, and a `viaPass` job needs
+      // a tick to itself.
+      if (destroyed || objects.length === 0) return;
+      const job = objects.slice();
+      queueWarm(() => warmDrawFrame(job, viaPass));
     },
     setInkMix(v) {
       unified.setInk(v);
-      // THE ENDPOINTS ARE THE TWO MODES, and `currentShading` has to say so for
-      // TWO reasons. (1) swapShading early-returns on `mode === currentShading`,
-      // so leaving it stale would make a later swapShading("ink") — after the
-      // story had already blended to 1 — a no-op that drops the transition and
-      // whatever the blend is holding. (2) getShading() is what /lens's demos
-      // snapshot on enter() to restore on exit(), and the honest answer is the
-      // look that is actually on screen.
-      //
-      // MID-RAMP THE TWO DIVERGE, deliberately: between the endpoints this
-      // leaves `currentShading` reading "realistic" or "ink" while the screen
-      // shows a blend of both. Benign, because a ramp only ever runs on the
-      // STORY page, where nothing calls swapShading and no demo snapshots
-      // anything — and the ramp's own next frame writes the endpoint the moment
-      // it lands. Naming the blend would need a third mode the swapper cannot
-      // wear, which is a worse lie than a stale endpoint.
+      // THE ENDPOINTS ARE THE TWO MODES, and `currentShading` must say so:
+      // swapShading early-returns on it, and getShading() is what demos
+      // snapshot to restore later. Mid-ramp the two diverge deliberately — a
+      // ramp only runs on the STORY page, where nothing calls swapShading.
       if (v <= 0) currentShading = "realistic";
       else if (v >= 1) currentShading = "ink";
       dirty = true;
@@ -2578,14 +2250,10 @@ export async function initScene(
       shading.setTheme(l);
       cinematics.setTheme(l);
       starfield?.setTheme(l); // the drawn sky just re-tints (no re-bake)
-      // AFTER shading, never instead of it: on a BENCH look shading.setTheme
-      // re-materials every mesh and stomps the transmissive clones (the
-      // ownership hazard at enableGlassTransmissive). Let the theme work land,
-      // then re-seat the swap on top of it — the fade value rides along, so a
-      // flip mid-melt is invisible instead of freezing the glass opaque for the
-      // rest of the dive. On the story's merged pair nothing is re-materialled
-      // (the ink re-tints through a colour uniform), so this re-clones from the
-      // same materials and costs one pass.
+      // AFTER shading, never instead of it: on a bench look shading.setTheme
+      // re-materials every mesh and stomps the clones (the ownership hazard at
+      // enableGlassTransmissive). Let the theme work land, then re-seat on top
+      // of it — the fade rides along, so a flip mid-melt is invisible.
       if (glassTransmissive) reseatGlassTransmissive();
       dirty = true;
     },
@@ -2594,15 +2262,14 @@ export async function initScene(
       postMounted = false;
       if (activeSwap) {
         cancelAnimationFrame(activeSwap.raf);
-        activeSwap.run.finish(); // restore whatever the transition was driving
+        activeSwap.run.finish(); // restore whatever it was driving
         activeSwap = null;
       }
       renderer.setAnimationLoop(null);
-      // put the shipped glass materials back before the model teardown walks
-      // them, so the clones this owns are the only thing it frees here, and
-      // hand the body materials back their opacity/transparent flags
+      // put the shipped glass materials back BEFORE the model teardown walks
+      // them, so the clones are the only thing freed here
       disableGlassTransmissive();
-      // …and the cache the swap hands its clones back to, which outlives it.
+      // …and the cache the swap hands its clones back to, which outlives it
       for (const e of glassCloneCache.values()) e.clone.dispose();
       glassCloneCache.clear();
       applyBodyFade(1);
@@ -2618,9 +2285,8 @@ export async function initScene(
       shading.dispose();
       unified.dispose();
       disposeLensModel(gltfScene);
-      // The accessories may still be in flight — dispose again once (if) they
-      // merge, so their deferred geometries/materials are freed too. disposeLensModel
-      // dedupes per call, so re-running over the (already-disposed) body is safe.
+      // The accessories may still be in flight — dispose again once they
+      // merge. disposeLensModel dedupes per call, so re-running is safe.
       accessoriesReady.then(() => disposeLensModel(gltfScene));
     },
   };

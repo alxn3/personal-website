@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import * as THREE from "three/webgpu";
 import { REVEAL_END, SKY_OUT_END, atFrac, rangeOf } from "../story";
 import { SKY, dirOf } from "../../optics/sky";
 import { SKY_SPIN_AXIS, rodrigues, starRho } from "../../optics/starfield";
@@ -7,6 +8,7 @@ import {
   TRAIL_SWEEP_MAX,
   TRAIL_TAIL_FRACTION,
   buildTrailArcs,
+  createStarTrails,
   trailDirAt,
 } from "../../optics/star-trails";
 import { CROWN_LOOK, crownPointAt } from "../../optics/crown-arc";
@@ -38,12 +40,11 @@ const angleTo = (a: readonly number[], b: readonly number[]) =>
 
 describe("the sky's spin", () => {
   it("the pole is a unit direction ON the view axis", () => {
-    // STRUCTURE CHANGE, OWNER-DIRECTED: this used to pin the pole 0.42 rad BELOW
-    // the axis. A rectilinear camera projects a cone about its own axis to a
-    // circle and a cone about any other axis to a conic section, and at fov 70
-    // the tilt was visible — owner, off a screenshot: "it's not a perfect
-    // circle. Is it due to the camera fov?" It was. The pole is on the axis now,
-    // and every trail is a true circle concentric with the frame's centre.
+    // STRUCTURE CHANGE: this used to pin the pole 0.42 rad BELOW the axis. A
+    // rectilinear camera projects a cone about its own axis to a circle and a
+    // cone about any other axis to a conic section, and at fov 70 the tilt was
+    // visible — the trails read as ellipses, not circles. The pole is on the
+    // axis now, and every trail is a true circle concentric with the centre.
     expect(unit(SKY_SPIN_AXIS)).toBeCloseTo(1, 12);
     // the held fly pose looks down world +X, so the axis IS the pole
     expect(angleTo(SKY_SPIN_AXIS, [1, 0, 0])).toBeCloseTo(0, 6);
@@ -149,10 +150,10 @@ describe("the arcs", () => {
   const arcs = buildTrailArcs(SKY.stars);
 
   it("gives EVERY star an arc, in catalog order, all unit directions", () => {
-    // OWNER-DIRECTED: this used to be a cut — the 90 brightest inside a 60°
-    // cone — and the cut is what the owner read off the screen ("we're missing
-    // some stars that start at the bottom left so the right sides are more trail
-    // heavy"). There is no selection left to be lopsided.
+    // this used to be a cut — the 90 brightest inside a 60° cone — and the cut
+    // is what read as lopsided on screen: stars missing from one corner left
+    // the opposite side of the frame more trail-heavy. There is no selection
+    // left to be lopsided.
     expect(arcs.length).toBe(SKY.stars.length);
     for (const a of arcs) expect(unit(a.dir)).toBeCloseTo(1, 10);
     for (const [i, a] of arcs.entries()) {
@@ -198,12 +199,88 @@ describe("the arcs", () => {
     // THE SPREAD, over the whole catalog: a handful of bright arcs over an
     // exponentially growing mass of faint ones — 16 of the 795 at ≥ 0.9 of full
     // ink, 53 at ≥ 0.6 and 493 at ≥ 0.2, median 0.24. That is the fix for a
-    // full-sweep frame the owner read as a uniform rope-field.
+    // full-sweep frame that used to read as a uniform rope-field.
     const at = (t: number) => arcs.filter((a) => a.ink >= t).length;
     expect(at(0.9)).toBeLessThan(arcs.length * 0.04);
     expect(at(0.6)).toBeLessThan(arcs.length * 0.1);
     expect(at(0.6)).toBeGreaterThan(at(0.9) * 2);
     expect(at(0.3)).toBeGreaterThan(at(0.6) * 4);
+  });
+});
+
+describe("the arcs' geometry", () => {
+  // AN ARC IS A CIRCLE ABOUT THE POLE, so none of it is pre-expanded: ONE
+  // template ribbon of `segments` quads carries the parametric coordinate and
+  // every star is an INSTANCE of it. The buffers used to hold every star's arc
+  // vertex by vertex — 795 × 81 × 2 vertices, ~7 MB of attributes uploaded at
+  // warm — for a draw that is identical either way.
+  const trails = createStarTrails({ light: false });
+  const mesh = trails.object as THREE.Mesh;
+  const geo = mesh.geometry as THREE.InstancedBufferGeometry;
+  const RUNGS = TRAIL_LOOK.segments + 1;
+  const n = SKY.stars.length;
+  const attr = (name: string) =>
+    geo.getAttribute(name) as THREE.BufferAttribute;
+
+  it("draws one instance of one ribbon per star", () => {
+    expect(geo.isInstancedBufferGeometry).toBe(true);
+    expect(geo.instanceCount).toBe(n);
+    // the DRAWN vertex count is what it always was — this is a representation
+    // change, not a look change
+    expect(geo.instanceCount * RUNGS * 2).toBe(n * RUNGS * 2);
+    expect(geo.getIndex()!.count).toBe(TRAIL_LOOK.segments * 6);
+  });
+
+  it("the template carries the arc's PARAMETERS and nothing else", () => {
+    const pos = attr("position");
+    expect(pos.count).toBe(RUNGS * 2);
+    expect(pos instanceof THREE.InstancedBufferAttribute).toBe(false);
+    for (let r = 0; r < RUNGS; r++)
+      for (const k of [0, 1]) {
+        const v = r * 2 + k;
+        expect(pos.getX(v), `rung ${r} side`).toBe(k === 0 ? -1 : 1);
+        expect(pos.getY(v), `rung ${r} s`).toBe(
+          Math.fround(r / TRAIL_LOOK.segments),
+        );
+      }
+  });
+
+  it("everything per-STAR is an instance attribute, in catalog order", () => {
+    const arcs = buildTrailArcs(SKY.stars);
+    for (const name of ["aDir", "aHalf", "aInk", "aTint"]) {
+      expect(attr(name) instanceof THREE.InstancedBufferAttribute, name).toBe(
+        true,
+      );
+      expect(attr(name).count, name).toBe(n);
+    }
+    for (const i of [0, 3, 17, n - 1]) {
+      const a = arcs[i];
+      expect([
+        attr("aDir").getX(i),
+        attr("aDir").getY(i),
+        attr("aDir").getZ(i),
+      ]).toEqual(a.dir.map((x) => Math.fround(x)));
+      expect(attr("aHalf").getX(i)).toBe(Math.fround(a.half));
+      expect(attr("aInk").getX(i)).toBe(Math.fround(a.ink));
+      expect(attr("aTint").getX(i)).toBe(Math.fround(a.tint[0]));
+    }
+  });
+
+  it("states its own bounding sphere — the whole sky", () => {
+    // `position` holds parameters, so three's own computation would measure the
+    // template's unit ball; the mesh rides the camera-centred starfield group
+    expect(geo.boundingSphere!.radius).toBe(TRAIL_LOOK.radius);
+    expect(geo.boundingSphere!.center.length()).toBe(0);
+    expect(mesh.frustumCulled).toBe(false);
+  });
+
+  it("fits in tens of KB", () => {
+    let bytes = geo.getIndex()!.array.byteLength;
+    for (const a of Object.values(geo.attributes))
+      bytes += (a as THREE.BufferAttribute).array.byteLength;
+    expect(bytes).toBeLessThan(64 * 1024);
+    // …where the pre-expanded soup was megabytes
+    expect(bytes).toBeLessThan(n * RUNGS * 2 * 44 * 0.01);
   });
 });
 
@@ -299,8 +376,8 @@ describe("the crown arc", () => {
     expect(mid).toBeLessThan(1);
     expect(trailEnvAt(atFrac(rwR, 0.08))).toBeGreaterThan(0);
     // …still travelling where the field is only half gone — the far edge rides
-    // the fade rather than sitting at a fixed 0.14 (measured: 0.5576 of the
-    // field's ink left there, and it was DONE at 0.14 before this was re-timed)
+    // the fade rather than sitting at a fixed 0.14 (0.5576 of the field's ink
+    // is left there, and it was DONE at 0.14 before this was re-timed)
     expect(crownResolveAt(atFrac(rwR, 0.14))).toBeLessThan(1);
     expect(trailEnvAt(atFrac(rwR, 0.14))).toBeGreaterThan(0.5);
     // …and lands at 0.75 of the fade's span, inside the live hand-off's own far
@@ -364,8 +441,8 @@ describe("the crown arc", () => {
 
 describe("the trails driver's laws", () => {
   it("the sweep holds at zero until local 0.25, then runs to the max at SKY_OUT_END", () => {
-    // the owner's ask, coarsely: the chapter turns the sky AROUND half a
-    // revolution ("around a 180deg revolution"). A range, not a pin — the exact
+    // coarsely: the chapter turns the sky AROUND half a
+    // revolution. A range, not a pin — the exact
     // sweep is a look value and the suite must not hold look values still.
     expect(TRAIL_SWEEP_MAX).toBeGreaterThan(2.6);
     expect(TRAIL_SWEEP_MAX).toBeLessThan(3.7);
@@ -408,11 +485,11 @@ describe("the trails driver's laws", () => {
   });
 
   it("the sky is STILL TURNING when the last arc goes out", () => {
-    // OWNER-DIRECTED, and the reverse of what this case used to pin ("the turn
-    // is over before the arcs start to fade"): the sweep used to saturate at
-    // trails-local 0.9, so the crossfade into the reveal played over a sky that
-    // had already stopped — "have the trails continue spinning during the
-    // transition". The turn now holds its cruising rate past the envelope's own
+    // the reverse of what this case used to pin (the turn is over before the
+    // arcs start to fade): the sweep used to saturate at trails-local 0.9, so
+    // the crossfade into the reveal played over a sky that had already
+    // stopped, and the trails must keep spinning through the transition
+    // instead. The turn now holds its cruising rate past the envelope's own
     // end, and the reveal's rotation is handed the same law (story/reveal.ts).
     const end = atFrac(rwR, 0.28); // where trailEnvAt reaches 0
     expect(trailEnvAt(end)).toBe(0);
@@ -423,9 +500,9 @@ describe("the trails driver's laws", () => {
     expect(rate(end)).toBeGreaterThan(0.8 * rate(atFrac(tR, 0.6)));
   });
 
-  // THE HAND-OVER IS LONG — the owner's fluid-transition correction ("for the
-  // trail to reassemble there should be a longer transition with the spinning…
-  // if we scroll fast it will look very off"). The old windows concentrated
+  // THE HAND-OVER IS LONG — the fluid-transition correction: a fast scroll made
+  // the short exchange look off, so the reassemble needs a longer transition
+  // with the spinning arcs still on screen. The old windows concentrated
   // the whole identity exchange into rewrap-local [0.06, 0.18]; these pins
   // hold the widened overlap open so it cannot silently shrink back.
   it("keeps BOTH figures on screen across a long shared stretch", () => {
@@ -436,7 +513,7 @@ describe("the trails driver's laws", () => {
     expect(trailEnvAt(top)).toBeGreaterThan(1 / 3);
     // …and they are still VISIBLE ink — not a dying epsilon — a twentieth of
     // the scene beyond it, with the fully drawn shell turning under them
-    // (measured 0.2258 at 0.20; the envelope runs out at 0.28)
+    // (0.2258 at 0.20; the envelope runs out at 0.28)
     expect(trailEnvAt(atFrac(rwR, 0.2))).toBeGreaterThan(0.15);
     // the sky itself outlives the whole collapse (REVEAL_END inside its fade),
     // so the pieces never seat onto an already-empty stage…
