@@ -1,23 +1,26 @@
-// THE PEEL AND THE CARD FIELD, and ONE MOTION across them: the shell peels off
-// like a sticker (ops/house stickerPeelOps), the curl hands the wedge over
-// mid-flight to the departure (story/envelopes.ts CARDS_APART, which owns that
-// half), the outer layers unwrap and fly off, and each cast winks away as it
-// goes. The mechanism under them never moves and is never hidden — the scene
-// ends on exactly what it has been revealing.
+// THE PEEL SCENE AND THE CARD FIELD, in two beats. The PEEL is the expansion:
+// the outer layers unwrap off the lens on the reversed reassembly
+// (story/envelopes.ts CARDS_APART) while the body ROLLS about its own bore
+// under them, and each cast DISAPPEARS where it floats once its flight is
+// spent — the wink below, outside-in. It ends on the lens' REAR: the camera has
+// swung dead astern (story/story.ts's peel row) and the roll is a whole
+// revolution, so the hand-over frame is still and shows the mount. The CARDS
+// scene is what is left: the bare mechanism TURNS clockwise about the stage's
+// vertical axis from that pose, the nose dipping below horizontal as it goes
+// (story/envelopes.ts dipAt opens with the turn), the card field arrives around
+// it, and the turn carries on as the lens stands up for the internals scene.
+// The mechanism never moves in its seat and is never hidden.
 //
-// This module owns the unroll channel and its release, the lens' own roll, the
-// wink's window, and the card field.
+// THE STICKER PEEL IS NOT IN THE STORY. The `peel` recipe is /lens's; nothing
+// on this page drives that channel, so it is a hard 0 for the whole track and
+// the two-unwrap-chains-on-one-wedge problem cannot arise.
 //
-// TWO CLOCKS: scroll (frame(p)) owns the unroll channel, value AND target, so a
-// scrub lands on the same pose either way; TIME (scene.onFrame) owns only the
-// card shell's rotation, off an accumulated dt — never performance.now(), which
-// would teleport the field across a pause.
+// This module owns the lens' bore roll and its turn, the wink's window, and the
+// card field.
 //
-// The unroll and the departure are two unwrap chains on one wedge and the
-// deform host SUMS recipe deltas, so the hand-off is a CROSSFADE whose channel
-// sum stays near 1 — no rest frame. That the composed FOLD stays under the
-// larger single one is a per-piece bound, measured in
-// story/__tests__/piece-flow.test.ts.
+// ONE CLOCK, and one exception: scroll (frame(p)) owns everything but the card
+// shell's rotation, which TIME owns off an accumulated dt — never
+// performance.now(), which would teleport the field across a pause.
 //
 // THE 2D LAW: a card is a view-space billboard — its centre goes through
 // modelViewMatrix and the corners are added in VIEW space, so the quad is
@@ -35,10 +38,11 @@ import {
 import type { SceneHandle } from "../core/scene";
 import { clamp01, deg, smoothstep } from "../core/math";
 import { isLightTheme, watchTheme } from "../core/theme";
-import { atFrac, rangeOf } from "./story";
+import { STORY_R, atFrac, rangeOf } from "./story";
 
 const peR = rangeOf("peel");
 const cdR = rangeOf("cards");
+const inR = rangeOf("internals");
 
 /** Scene-local fraction of `p`, clamped — every law below is written in it. */
 const localOf = (r: { p0: number; p1: number }, p: number) =>
@@ -47,69 +51,93 @@ const localOf = (r: { p0: number; p1: number }, p: number) =>
 // --- the choreography numbers ----------------------------------------------
 // All windows are in the fraction of the scene named on the line.
 
-/** peel: the unroll. Both edges saturate, so the channel is a hard 0 through
- *  the camera's transit into the scene and a hard 1 well before it leaves. The
- *  scene's remaining fractions belong to SPIN below. */
-const PEEL_ROLL: [number, number] = [0.02, 0.45];
-/** cards: the unroll's RELEASE, and the FIRST HALF OF ONE MOTION. It opens on
- *  the same frame as the departure (story/envelopes.ts CARDS_APART) and closes
- *  just inside it, so the curl hands the wedge over mid-flight: the two chains
- *  cross, their sum stays near 1, and no frame sits at rest between them.
- *  `RELEASE_SPAN` is the same window in absolute p. */
-const PEEL_RELEASE: [number, number] = [0.04, 0.36];
-// --- THE SPIN --------------------------------------------------------------
-// One normalized shape with one consumer: the lens' rigid roll about the bore
-// (peelRollAt → hero-driver's single setModelOrientation writer). Rigid, so it
-// turns the seat, the unroll and the departure together and no radius moves.
+// --- THE BORE ROLL ----------------------------------------------------------
+// THE PEEL SCENE'S OWN LENS MOTION: the body turns about its OPTICAL AXIS while
+// the layers unwrap off it, so the departure reads as a mechanism being taken
+// apart on a turntable rather than as pieces drifting off a still object.
+// Rigid, and about the bore, so which END faces the reader never changes — the
+// scene still hands over on the mount.
+//
+// IT RIDES THE MODEL'S `x` EULER, which is a bore roll only while the turn (`y`)
+// and the dip (`z`) are exactly 0: the driver's one setModelOrientation write
+// composes Rx·Ry·Rz, so a turned or dipped bore under this would precess. Both
+// of those open at the cards scene's foot, which is where this is spent.
 
-/** peel: where the spin opens — deliberately NOT at a beat boundary. What
- *  separates the curl from the turn is the RAMP, which leaves here at rate
- *  exactly 0; later, and the wind-up would run under the crossfade. */
-const SPIN_START = 0.32;
-/** cards: where it is spent — inside the departure, so the lens is still
- *  turning as the layers leave and still by the time the field has it. */
-const SPIN_END = 0.55;
-/** cards: the roll settles ON SCREEN — nothing hides a rate step in this scene
- *  any more, so the ramp is a smoothstep: 0 rate at both edges. */
-/** WHOLE TURNS the lens body makes over the span, SIGNED — negative is the
- *  peel's own winding direction (ops/house WRAP_DIR), so the spin carries on
- *  the way the sides came off. It MUST stay an integer: peelRollAt drops to
- *  exactly 0 past SPIN_END, and a whole number of turns makes that drop an
- *  identity rather than a snap. */
-const SPIN_TURNS = -2;
+/** peel: the roll's span. Spent before the scene ends, so the hand-over frame
+ *  is dead still. */
+const ROLL_START = 0.06;
+const ROLL_END = 0.92;
+/** WHOLE turns about the bore, SIGNED — negative is the departure's own winding
+ *  direction (ops/house WRAP_DIR), so the body turns the way the layers leave.
+ *  It MUST stay an integer: peelRollAt drops to exactly 0 past the window, and
+ *  a whole revolution makes that drop an identity rather than a snap. */
+const ROLL_TURNS = -1;
+
+// --- THE TURN --------------------------------------------------------------
+// THE CARDS SCENE'S ONE MOTION: the lens turns CLOCKWISE about the stage's
+// vertical axis (world +Y) with its bore dipped below horizontal, so the nose
+// sweeps a cone and the front element swings past the camera. Rigid — it turns
+// the seat and whatever is still leaving together, and no radius moves.
+//
+// IT PICKS UP FROM THE MOUNT: the peel hands over with the lens' rear facing
+// the reader and dead still, and this turn opens on that frame.
+//
+// IT RUNS THROUGH THE STAND-UP. The turn is spent exactly where the lens
+// reaches vertical (story/envelopes.ts UPRIGHT), where a rotation about +Y no
+// longer moves the bore at all, so the scene hands the internals its pose while
+// still turning rather than stopping first.
+
+/** cards: where the turn opens — the frame the peel hands over on. The ramp
+ *  leaves at rate exactly 0, so no frame reads as its first. */
+const TURN_START = 0;
+/** internals: where it is spent, and where the lens is fully upright. */
+const TURN_END = 0.3;
+/** WHOLE revolutions about world +Y, SIGNED — negative sweeps the nose from
+ *  world +X toward +Z, which reads clockwise from above. It MUST stay an
+ *  integer: peelTurnAt drops to exactly 0 past the window, and a whole
+ *  revolution makes that drop an identity rather than a snap. */
+const TURN_TURNS = -2;
+
 // --- THE WINK ---------------------------------------------------------------
-// THE CARDS SCENE NO LONGER FADES THE LENS OUT. The outer layers unwrap, fly
-// off and wink away one cast at a time; the mechanism under them is never
-// hidden and never moves (the departure is scoped off it — ops/recipes.ts
-// `keepScope`), so the internals scene opens on exactly what the cards scene
-// has been showing all along. hero-driver holds setBodyFade at 1 for the whole
-// span below the dive.
+// HOW THE SIDES DISAPPEAR. The expansion carries the outer layers off the lens
+// and then, still floating, they simply go — cast by cast, outside-in, with no
+// second flight and nothing fading the lens itself out. The mechanism under
+// them is never hidden and never moves (the departure is scoped off it —
+// ops/recipes.ts `keepScope`), so the turn plays on exactly what the internals
+// scene opens on. hero-driver holds setBodyFade at 1 for the whole span below
+// the dive.
 
 /** THE SHELL'S AND THE INTERIOR'S WINK — hero-driver writes both gates on this
- *  one window, IN PLAIN SIGHT. It trails the departure's own rise so a piece
- *  goes out while it is far from the lens and small, and core/scene's per-mesh
- *  thresholds order the casts outside-in, the same order the departure has. It
- *  must be spent before story/envelopes.ts CARDS_APART's fall, which is what
- *  makes that fall invisible. */
+ *  one window, IN PLAIN SIGHT. IT IS A RELAY, NOT A QUEUE: it opens inside the
+ *  departure's tail, where the outer casts are already at the top of their
+ *  throw and only the deepest ranks are still travelling, so the band never
+ *  holds a stretch with nothing but the bore roll moving. core/scene's per-mesh
+ *  thresholds order the four bands outside-in, the same order the departure
+ *  had, and NO PIECE IS TAKEN BEFORE ITS OWN FLIGHT IS OVER — the per-piece
+ *  margin is pinned off the shipped model in
+ *  story/__tests__/piece-flow.test.ts. It is spent inside the peel, on a still
+ *  frame, and before story/envelopes.ts CARDS_APART's fall, which is what makes
+ *  that fall invisible. */
 export const WINK_SPAN: [number, number] = [
-  atFrac(cdR, 0.42),
-  atFrac(cdR, 0.62),
+  atFrac(peR, 0.66),
+  atFrac(peR, 0.99),
 ];
 
 /** cards: card k's fade-in window, offset by k·CARD_STAGGER — the field comes
- *  up as the layers leave, around the mechanism rather than over it. */
-const CARD_FADE_START = 0.3;
-const CARD_FADE_HELD = 0.52;
+ *  up inside the turn, once the sides are gone, around the bare mechanism
+ *  rather than over it. */
+const CARD_FADE_START = 0.24;
+const CARD_FADE_HELD = 0.48;
 /** cards: the LAST card is fully out by here — what sets the stagger below */
-const CARD_FADE_DONE = 0.6;
+const CARD_FADE_DONE = 0.62;
 
 /** cards: the field's own fade-out — the mechanism it has been orbiting is
  *  what the scene ends on, and what the internals scene opens by taking apart. */
-const CARDS_OUT: [number, number] = [0.7, 0.88];
+const CARDS_OUT: [number, number] = [0.84, 0.97];
 
 export const CARD_COUNT = 8;
 /** the stagger falls out of the deadline: eight windows fanned between
- *  CARD_FADE_HELD and CARD_FADE_DONE, so card 7 completes exactly at 0.98 */
+ *  CARD_FADE_HELD and CARD_FADE_DONE, so the last card completes on that edge */
 const CARD_STAGGER = (CARD_FADE_DONE - CARD_FADE_HELD) / (CARD_COUNT - 1);
 
 /** card size in world units, BEFORE the per-card scale below (the lens is ≈ 3
@@ -135,6 +163,46 @@ const SHELL_RATE = 0.9;
  *  axis would leave it dead still. */
 const SHELL_LAT = 0.78;
 
+// --- THE FIT: the shell sized to the frame ----------------------------------
+
+/** a card's own reach past its centre, world units — the half-diagonal at the
+ *  largest per-card scale, what the fit must clear beyond SHELL_R */
+const CARD_REACH = 1.2;
+/** the cards scene's settle distance, world units — the depth the frame's
+ *  width is measured at */
+const CARDS_DIST = Math.hypot(...cdR.scene.cam.pos) * STORY_R;
+/** the fit's floor: below this the ring sits ON the mechanism and the field
+ *  reads as clutter — a narrow frame crops a little instead */
+const FIT_MIN = 0.6;
+
+/** THE PORTRAIT FIT — how much of the authored shell radius the frame can
+ *  hold. The card sphere is sized for a landscape frame; a portrait frame is
+ *  exactly one half-height wide (core/scene's zoom law), so without this the
+ *  orbit parks most of the field off screen. `halfW` is the frame's world
+ *  half-WIDTH at the cards' depth (frameHalf × aspect × distance); at 16:9 the
+ *  fit is exactly 1, so the landscape field is untouched. */
+export const cardFitOf = (halfW: number): number =>
+  Math.min(1, Math.max(FIT_MIN, halfW / (SHELL_R + CARD_REACH)));
+
+// --- THE GATHER: the middle of the scene ------------------------------------
+// The sides are gone before the scene opens (WINK_SPAN, on the peel's tail) and
+// the field comes up in their place; from there it GATHERS on the scroll — the
+// eight stations slide off their sphere onto one ring, the ring draws in past
+// the lens, and scrolling advances it, so the photos flip past the turning
+// mechanism instead of orbiting it. Eight quads either way: no draw, no upload,
+// no residency change.
+
+/** cards: the gather's window — the shape the field ARRIVES in, not a beat of
+ *  its own: it runs under the fade-in so the deck forms as it appears. */
+const GATHER: [number, number] = [0.4, 0.78];
+/** how much of the shell's radius the ring pulls in — the cards pass closer to
+ *  the eye than the lens, which is what makes them the subject of the middle. */
+const GATHER_PULL = 0.42;
+/** whole turns the gather ADDS on the scroll, on top of the shell's own clock.
+ *  Subordinate on purpose: the scene's action is the pieces leaving, and a
+ *  second turn competing with it is what made the middle read as spin. */
+const GATHER_TURNS = 0.25;
+
 /** wedges per segmented shell family in the shipped GLBs */
 export const SEG_COUNT = 5;
 
@@ -153,43 +221,44 @@ export const segSectorAngle = (seg: number): number =>
 
 // --- the laws ---------------------------------------------------------------
 
-/** The `peel` channel's UNROLL, in peel-local fraction. */
-export const peelChannelAt = (local: number): number =>
-  smoothstep(PEEL_ROLL[0], PEEL_ROLL[1], local);
-
-/** The unroll's release, in CARDS-local fraction: 1 = fully released. */
-const peelReleaseAt = (local: number): number =>
-  smoothstep(PEEL_RELEASE[0], PEEL_RELEASE[1], local);
-
-/** THE WHOLE `peel` CHANNEL at story position `p` — the unroll, released again
- *  over the cards scene. Zero everywhere outside those two scenes, so no other
- *  span on the page ever sees the recipe driven. */
-export const peelValueAt = (p: number): number =>
-  peelChannelAt(localOf(peR, p)) * (1 - peelReleaseAt(localOf(cdR, p)));
-
-/** THE SPIN'S SPAN in absolute story p, [open, spent]. Exported so the tests
- *  pin the shape's laws against the window itself, leaving SPIN_START/SPIN_END
- *  free to be retuned. */
-export const SPIN_SPAN: [number, number] = [
-  atFrac(peR, SPIN_START),
-  atFrac(cdR, SPIN_END),
+/** THE BORE ROLL'S SPAN in absolute story p, [open, spent]. Exported for the
+ *  turn's reason: the tests pin the shape, not the tuning. */
+export const ROLL_SPAN: [number, number] = [
+  atFrac(peR, ROLL_START),
+  atFrac(peR, ROLL_END),
 ];
-/** The unroll's RELEASE in absolute story p, for the same reason. */
-export const RELEASE_SPAN: [number, number] = [
-  atFrac(cdR, PEEL_RELEASE[0]),
-  atFrac(cdR, PEEL_RELEASE[1]),
-];
-/** THE SPIN'S SHAPE at story position `p`, normalized 0 → 1 over SPIN_SPAN. A smoothstep, so the rate is 0
- *  at BOTH edges: the roll spins up and settles in plain sight. */
-export const peelSpinAt = (p: number): number =>
-  smoothstep(SPIN_SPAN[0], SPIN_SPAN[1], p);
 
-/** THE LENS' OWN ROLL over the peel, radians about the OPTICAL AXIS — added to
- *  story/reveal.ts's `revealRollAt` in hero-driver's ONE setModelOrientation
- *  call, and disjoint from it in p. Exactly 0 at both edges: below the window
- *  literally, past it because SPIN_TURNS makes the drop an identity. */
+/** THE BORE ROLL'S SHAPE at p, normalized 0 → 1 over ROLL_SPAN — a smoothstep,
+ *  so the body winds up and settles in plain sight. */
+export const peelRollFracAt = (p: number): number =>
+  smoothstep(ROLL_SPAN[0], ROLL_SPAN[1], p);
+
+/** THE LENS' ROLL, radians about its OWN BORE — handed to hero-driver's ONE
+ *  setModelOrientation call as its `x`, and 0 everywhere the reveal's roll
+ *  writes the same axis. Exactly 0 at both edges: below the window literally,
+ *  past it because ROLL_TURNS makes the drop an identity. */
 export const peelRollAt = (p: number): number =>
-  p >= SPIN_SPAN[1] ? 0 : SPIN_TURNS * 2 * Math.PI * peelSpinAt(p);
+  p >= ROLL_SPAN[1] ? 0 : ROLL_TURNS * 2 * Math.PI * peelRollFracAt(p);
+
+/** THE TURN'S SPAN in absolute story p, [open, spent]. Exported so the tests
+ *  pin the shape's laws against the window itself, leaving TURN_START/TURN_END
+ *  free to be retuned. */
+export const TURN_SPAN: [number, number] = [
+  atFrac(cdR, TURN_START),
+  atFrac(inR, TURN_END),
+];
+/** THE TURN'S SHAPE at story position `p`, normalized 0 → 1 over TURN_SPAN. A
+ *  smoothstep, so the rate is 0 at BOTH edges: it winds up and settles in plain
+ *  sight. */
+export const peelTurnFracAt = (p: number): number =>
+  smoothstep(TURN_SPAN[0], TURN_SPAN[1], p);
+
+/** THE LENS' TURN, radians about WORLD +Y — handed to hero-driver's ONE
+ *  setModelOrientation call as its `y`, and 0 everywhere the reveal's roll
+ *  writes `x`. Exactly 0 at both edges: below the window literally, past it
+ *  because TURN_TURNS makes the drop an identity. */
+export const peelTurnAt = (p: number): number =>
+  p >= TURN_SPAN[1] ? 0 : TURN_TURNS * 2 * Math.PI * peelTurnFracAt(p);
 
 /** Card k's opacity from the cross-fade alone, in CARDS-local fraction. */
 export const cardFadeAt = (k: number, local: number): number =>
@@ -244,22 +313,34 @@ const cardLatAt = (k: number): number =>
  *
  *  A SPHERICAL SHELL THAT TURNS AS ONE: every card sits at exactly SHELL_R from
  *  the lens centre on its own latitude and longitude, and the whole shell
- *  revolves about the OPTICAL AXIS at one rate in one direction, so each card
+ *  revolves about WORLD X at one rate in one direction, so each card
  *  runs the latitude circle its station sits on. Occlusion is free — half the
  *  shell is behind the lens and hidden by it (depthWrite, buildField). */
 export const cardOrbitAt = (
   k: number,
   tMs: number,
+  gather = 0,
 ): { x: number; y: number; z: number } => {
-  const lat = cardLatAt(k);
-  const ring = SHELL_R * Math.sqrt(1 - lat * lat);
-  const phi = cardPhaseAt(k) + SHELL_RATE * (tMs / 1000);
+  // the gather flattens the sphere onto one ring and pulls it in; `lat` is what
+  // holds a card off the equator, so it is the term that goes
+  const lat = cardLatAt(k) * (1 - gather);
+  const r = SHELL_R * (1 - GATHER_PULL * gather);
+  const ring = r * Math.sqrt(1 - lat * lat);
+  const phi =
+    cardPhaseAt(k) +
+    SHELL_RATE * (tMs / 1000) +
+    gather * GATHER_TURNS * 2 * Math.PI;
   return {
-    x: SHELL_R * lat,
+    x: r * lat,
     y: ring * Math.cos(phi),
     z: ring * Math.sin(phi),
   };
 };
+
+/** How far the field has GATHERED, in cards-local fraction: 0 = the spherical
+ *  shell it arrives as, 1 = the ring it dissolves as. */
+export const cardGatherAt = (local: number): number =>
+  smoothstep(GATHER[0], GATHER[1], local);
 
 // --- the card faces ---------------------------------------------------------
 
@@ -388,6 +469,9 @@ function buildFace(k: number, light: boolean) {
 
 interface Card {
   mat: THREE.MeshBasicNodeMaterial;
+  /** PARKED until `show()` mounts the field — so `warm()` can draw the quads
+   *  one per tick (warmDrawFrame only adds objects that have no parent). */
+  mesh: THREE.Mesh;
   canvas: HTMLCanvasElement;
   tex: THREE.CanvasTexture;
   uCentre: { value: THREE.Vector3 };
@@ -458,8 +542,7 @@ function buildField(light: boolean): Field {
     // the geometry sits at the origin and the real position is a uniform, so
     // three's bounding sphere means nothing here
     mesh.frustumCulled = false;
-    group.add(mesh);
-    cards.push({ mat, canvas, tex, uCentre, uOpacity, uRollCS });
+    cards.push({ mat, mesh, canvas, tex, uCentre, uOpacity, uRollCS });
   }
   return { group, geo, cards };
 }
@@ -536,7 +619,10 @@ export function createPeelCards(scene: SceneHandle): {
     const f = ensureField();
     // the retained opacities are the ones it left on; the frame callback
     // rewrites them only after this frame's render
-    for (const c of f.cards) c.uOpacity.value = 0;
+    for (const c of f.cards) {
+      c.uOpacity.value = 0;
+      f.group.add(c.mesh); // parked until the field mounts (see Card.mesh)
+    }
     scene.addOverlay(f.group);
     shown = true;
   }
@@ -571,10 +657,14 @@ export function createPeelCards(scene: SceneHandle): {
     const p = scene.state.storyTarget;
     const cardsLocal = localOf(cdR, p);
     const alive = 1 - cardsFadeOutAt(cardsLocal);
+    const gather = cardGatherAt(cardsLocal);
+    // the whole sphere rides the fit — centres only, so the cards keep their
+    // size and simply orbit closer on a narrow frame
+    const fit = cardFitOf(scene.frameHalf() * scene.frameAspect() * CARDS_DIST);
     for (let k = 0; k < CARD_COUNT; k++) {
       const c = field.cards[k];
-      const o = cardOrbitAt(k, tAcc);
-      c.uCentre.value.set(o.x, o.y, o.z);
+      const o = cardOrbitAt(k, tAcc, gather);
+      c.uCentre.value.set(o.x * fit, o.y * fit, o.z * fit);
       c.uOpacity.value = cardFadeAt(k, cardsLocal) * alive;
       const roll = cardRollAt(k, cardsLocal);
       c.uRollCS.value.set(Math.cos(roll), Math.sin(roll));
@@ -582,19 +672,17 @@ export function createPeelCards(scene: SceneHandle): {
   });
 
   return {
-    /** Build the eight faces and pay their upload off the gesture. A photo that
-     *  lands later repaints its own face, as it does at any other time. */
+    /** Build the eight faces and pay their upload off the gesture. ONE CARD PER
+     *  TICK: eight 512×640 uploads on a single frame is a stall the reader
+     *  meets on their first scroll. A photo that lands later repaints its own
+     *  face, as it does at any other time. */
     warm() {
-      scene.warmDraw([ensureField().group]);
+      // A card the reader already outran is mounted, and its real frames
+      // upload it — only the parked ones owe a dry draw.
+      for (const c of ensureField().cards)
+        if (!c.mesh.parent) scene.warmDraw([c.mesh]);
     },
     frame(p) {
-      // THE UNROLL CHANNEL, value AND target: a pure function of the scroll, so
-      // a scrub either way lands on the same pose and the ease can never chase
-      // a stale target.
-      const peel = peelValueAt(p);
-      scene.state.peel = peel;
-      scene.state.peelTarget = peel;
-
       if (p >= MOUNT_LO && p <= MOUNT_HI) show();
       else if (p < MOUNT_LO - MOUNT_HYST || p > MOUNT_HI + MOUNT_HYST) hide();
     },

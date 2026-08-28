@@ -62,24 +62,32 @@ function isClass<S>(A: Algebra<S>, ctx: OpCtx<S>, c: number): S {
 //
 // Every term is a PER-PIECE exact 0/1 constant, so this stays rigid-safe as a
 // group selector.
+export function sheetTerm<S>(A: Algebra<S>, ctx: OpCtx<S>): S {
+  // ctx carries the HALF span and `step(edge, x)` is x ≥ edge, so this is 1
+  // exactly while the measured span is BELOW the cut-off.
+  const sector = A.mul(
+    A.sub(1, A.step(SHEET_SPAN_MAX, A.mul(ctx.halfSpan, 2))),
+    A.sub(1, ctx.axi),
+  );
+  const rides = A.max(ctx.adopted, isClass(A, ctx, PART_CLASS.decal));
+  const barred = A.max(
+    A.max(isClass(A, ctx, PART_CLASS.glass), isClass(A, ctx, PART_CLASS.iris)),
+    isClass(A, ctx, PART_CLASS.accessory),
+  );
+  return A.mul(A.max(rides, sector), A.sub(1, barred));
+}
+
 export function selSheet<S>(A: Algebra<S>): OpItem<S> {
-  return selFront<S>((ctx) => {
-    // ctx carries the HALF span and `step(edge, x)` is x ≥ edge, so this is 1
-    // exactly while the measured span is BELOW the cut-off.
-    const sector = A.mul(
-      A.sub(1, A.step(SHEET_SPAN_MAX, A.mul(ctx.halfSpan, 2))),
-      A.sub(1, ctx.axi),
-    );
-    const rides = A.max(ctx.adopted, isClass(A, ctx, PART_CLASS.decal));
-    const barred = A.max(
-      A.max(
-        isClass(A, ctx, PART_CLASS.glass),
-        isClass(A, ctx, PART_CLASS.iris),
-      ),
-      isClass(A, ctx, PART_CLASS.accessory),
-    );
-    return A.mul(A.max(rides, sector), A.sub(1, barred));
-  });
+  return selFront<S>((ctx) => sheetTerm(A, ctx));
+}
+
+/** THE BEND CAST: sheet pieces that are THIN SHELLS. A bend strains walls by
+ *  |off|/R, so the kept mechanism's chunky solids (brackets, plates, boards —
+ *  the focus drive's walls run ±9.5 mm at R 17) may ride and slide but never
+ *  bend. One term, so every bend op and every slide-share that defers to the
+ *  bend agree piece for piece. */
+export function bendTerm<S>(A: Algebra<S>, ctx: OpCtx<S>): S {
+  return A.mul(sheetTerm(A, ctx), A.sub(1, isClass(A, ctx, PART_CLASS.kept)));
 }
 
 /** 1 everywhere except the MECHANISM THE WINK KEEPS — the `kept` class plus the
@@ -108,11 +116,9 @@ export function selNotKept<S>(A: Algebra<S>, scope: Sc<S>): OpItem<S> {
 // ── the EXPLODE participation terms ───────────────────────────────────────
 // Same idiom as selSheet, split into the teardown's two exemptions:
 //
-//   • ACCESSORIES never ride the teardown at all. Every accessory is also
-//     axisymmetric, and `spread` falls back to a PER-VERTEX dilation there, so
-//     an unexcluded hood would inflate radially instead of translating.
-//   • GLASS and the iris MECHANISM never dilate RADIALLY — they move along the
-//     AXIS only, which keeps the elements reading as one column.
+//   • ACCESSORIES never ride the teardown at all.
+//   • GLASS and the iris MECHANISM never turn round the bore — they move along
+//     the AXIS only, which keeps the elements reading as one column.
 export function selNotAccessory<S>(A: Algebra<S>): OpItem<S> {
   return selFront<S>((ctx) => A.sub(1, isClass(A, ctx, PART_CLASS.accessory)));
 }

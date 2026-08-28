@@ -11,25 +11,17 @@ import {
   createStarTrails,
   trailDirAt,
 } from "../../optics/star-trails";
-import { CROWN_LOOK, crownPointAt } from "../../optics/crown-arc";
 import {
   AMBIENT_DECAY,
   AMBIENT_MAX,
   AMBIENT_SPIN_RATE,
-  CROWN_P1,
   ENV_END,
   SPAN_P0,
   SPAN_P1,
-  crownEnvAt,
-  crownLiveAt,
-  crownResolveAt,
   trailEnvAt,
   trailSweepAt,
 } from "../trails";
-// the span's own edge, imported rather than copied: the crown's whole reason
-// for hanging on the scene root is that it outlives the sky's unmount — and
-// the reveal/sky ramps, for the hand-over overlap law below
-import { EXIT_END, flyRevealAt, skyOutAt } from "../fly";
+import { flyRevealAt, skyOutAt } from "../fly";
 
 const tR = rangeOf("trails");
 const rwR = rangeOf("rewrap");
@@ -284,161 +276,6 @@ describe("the arcs' geometry", () => {
   });
 });
 
-describe("the crown arc", () => {
-  const trail = CROWN_LOOK.trail;
-  const lens = CROWN_LOOK.lens;
-
-  it("draws a circle: every point of the arc is one radius from the centre", () => {
-    for (const c of [trail, lens])
-      for (const s of [0, 0.25, 0.5, 0.75, 1]) {
-        const [x, y] = crownPointAt(c, CROWN_LOOK.phi0, CROWN_LOOK.span, s);
-        expect(Math.hypot(x - c.cx, y - c.cy)).toBeCloseTo(c.r, 12);
-      }
-  });
-
-  it("sweeps BACKWARD from the head, like a trail", () => {
-    // s = 0 is the head and sits exactly at phi0; the tail is span radians back
-    const head = crownPointAt(trail, CROWN_LOOK.phi0, CROWN_LOOK.span, 0);
-    expect(head[0]).toBeCloseTo(
-      trail.cx + trail.r * Math.cos(CROWN_LOOK.phi0),
-      12,
-    );
-    const ang = (s: number) =>
-      Math.atan2(
-        crownPointAt(trail, CROWN_LOOK.phi0, CROWN_LOOK.span, s)[1] - trail.cy,
-        crownPointAt(trail, CROWN_LOOK.phi0, CROWN_LOOK.span, s)[0] - trail.cx,
-      );
-    let prev = ang(0);
-    for (let i = 1; i <= 8; i++) {
-      const a = ang(i / 8);
-      expect(a).toBeLessThan(prev);
-      prev = a;
-    }
-  });
-
-  it("is a zero-length mark before the sky has turned", () => {
-    // the head rides the spin and the arc IS the history behind it, so at
-    // sweep 0 the whole strip collapses onto one point — nothing to see, which
-    // is what makes a scrub back into the dive bit-for-bit unchanged
-    const a = crownPointAt(trail, CROWN_LOOK.phi0, 0, 0);
-    const b = crownPointAt(trail, CROWN_LOOK.phi0, 0, 1);
-    expect(a).toEqual(b);
-  });
-
-  it("resolves from one of the family to a tight arc on the element", () => {
-    // WHILE IT IS A TRAIL it must be one: the pole is on the view axis, so every
-    // star's arc is a circle about the FRAME'S CENTRE and the crown's has to be
-    // centred there too or it reads as the odd one out.
-    expect(trail.cx).toBe(0);
-    expect(trail.cy).toBe(0);
-    // …and the landing circle is a different circle: much TIGHTER, which is now
-    // the whole of the resolve's visible move. It is CONCENTRIC with the family
-    // (the reveal is shot straight down the optical axis and the element sits on
-    // that axis — story/story.ts REVEAL_END holds the camera there), so the arc
-    // tightens onto the element instead of walking off to find it. What still
-    // disqualifies it from being a real trail is that a trail's radius is fixed
-    // by its star: it can neither shrink to this nor grow and walk away from it
-    // afterwards, which is what the live tracking does from 0.14 on.
-    expect(trail.r).toBeGreaterThan(lens.r * 3);
-    expect(lens.cx).toBe(trail.cx);
-    expect(lens.cy).toBe(trail.cy);
-    // and the crown's own arc, centred on phi0, opens UPWARD (screen +y is down)
-    const mid = crownPointAt(
-      lens,
-      CROWN_LOOK.phi0 + CROWN_LOOK.span / 2,
-      CROWN_LOOK.span,
-      0.5,
-    );
-    expect(mid[1]).toBeCloseTo(lens.cy - lens.r, 12);
-    expect(mid[0]).toBeCloseTo(lens.cx, 12);
-    // …and stops short of closing into a ring
-    expect(CROWN_LOOK.span).toBeLessThan(Math.PI);
-  });
-
-  // IT RESOLVES WITH THE FIELD, NOT AHEAD OF IT — at BOTH edges. The crown must
-  // be one of the trails for the whole of the scene (the resolve is the beat
-  // where the field goes out and this one arc does something else instead, so it
-  // may not start before `trailEnvAt` starts falling, rewrap-local 0.02), and it
-  // must not be finished and parked while the field is still most of the way
-  // there. The far edge is PROPORTIONAL: 0.75 of the fade's own span, which is
-  // where it sat when the fade ran [0.02, 0.18] and the resolve [0.02, 0.14].
-  it("stays a trail until the field starts to go, then resolves with it", () => {
-    expect(crownResolveAt(tR.p0)).toBe(0);
-    expect(crownResolveAt(atFrac(tR, 0.6))).toBe(0);
-    expect(crownResolveAt(atFrac(tR, 0.9))).toBe(0);
-    expect(crownResolveAt(tR.p1)).toBe(0);
-    // not one frame of it runs while the field is still whole
-    expect(crownResolveAt(atFrac(rwR, 0.02))).toBe(0);
-    expect(trailEnvAt(atFrac(rwR, 0.02))).toBeCloseTo(1, 12);
-    // …then it travels while the field fades under it…
-    const mid = crownResolveAt(atFrac(rwR, 0.08));
-    expect(mid).toBeGreaterThan(0);
-    expect(mid).toBeLessThan(1);
-    expect(trailEnvAt(atFrac(rwR, 0.08))).toBeGreaterThan(0);
-    // …still travelling where the field is only half gone — the far edge rides
-    // the fade rather than sitting at a fixed 0.14 (0.5576 of the field's ink
-    // is left there, and it was DONE at 0.14 before this was re-timed)
-    expect(crownResolveAt(atFrac(rwR, 0.14))).toBeLessThan(1);
-    expect(trailEnvAt(atFrac(rwR, 0.14))).toBeGreaterThan(0.5);
-    // …and lands at 0.75 of the fade's span, inside the live hand-off's own far
-    // edge (0.22), with the field down to a sixth of its ink
-    // built from the FADE's own edges (0.02 → the imported ENV_END), so a
-    // retune of the field's exit in EITHER direction fails here instead of
-    // quietly decoupling the two
-    const fadeFoot = atFrac(rwR, 0.02);
-    const far = fadeFoot + 0.75 * (ENV_END - fadeFoot);
-    expect(crownResolveAt(far)).toBeCloseTo(1, 12);
-    expect(far).toBeLessThan(atFrac(rwR, 0.22));
-    expect(trailEnvAt(far)).toBeLessThan(0.2);
-    expect(crownResolveAt(atFrac(rwR, 0.3))).toBeCloseTo(1, 12);
-    // scrub back below the start and it is a trail again, exactly
-    expect(crownResolveAt(rangeOf("constellations").p1)).toBe(0);
-  });
-
-  it("holds still until the lens is drawn, then follows it", () => {
-    // nothing of the hand-over may run while there is nothing to follow: the
-    // element is behind the camera through the sky chapter and fully faded glass
-    // until story/fly.ts's reveal restores it — which is why this starts at 0.14
-    // (where CROWN_LOOK.lens was measured), not at the span's edge. The resolve
-    // above is still travelling onto that same circle when it does; both are
-    // lerps toward one target, so they compose without a fight.
-    expect(crownLiveAt(tR.p1)).toBe(0);
-    expect(crownLiveAt(atFrac(rwR, 0.14))).toBe(0);
-    // …and it is following well before the crown starts to go, so the whole of
-    // the fade is spent tracking rather than travelling
-    expect(crownLiveAt(atFrac(rwR, 0.22))).toBeCloseTo(1, 12);
-    expect(crownLiveAt(atFrac(rwR, 0.3))).toBeCloseTo(1, 12);
-    expect(crownEnvAt(atFrac(rwR, 0.3))).toBeGreaterThan(0.9);
-  });
-
-  it("outlives the field, and the sky it was drawn on", () => {
-    // it arrives with the trails…
-    expect(crownEnvAt(tR.p0)).toBe(0);
-    expect(crownEnvAt(atFrac(tR, 0.12))).toBeCloseTo(1, 12);
-    expect(crownEnvAt(atFrac(tR, 0.12))).toBeCloseTo(
-      trailEnvAt(atFrac(tR, 0.12)),
-      12,
-    );
-    // …holds at full where the last trail is already gone…
-    expect(trailEnvAt(atFrac(rwR, 0.3))).toBe(0);
-    expect(crownEnvAt(atFrac(rwR, 0.3))).toBeCloseTo(1, 12);
-    // …is still whole where the front element is drawn again (the reveal, up by
-    // rewrap 0.16) and past the frame the sky's own fade lands on zero
-    // (SKY_OUT_END, rewrap 0.32 — the crown's fall foot sits at 0.34, just
-    // clear of it, so "alone" survived the widened hand-over): this is why the
-    // crown hangs on the SCENE ROOT and not the sky. (It does not outlive the
-    // SPAN's unmount edge — EXIT_END sits out at 0.58 for the de-stacked fov
-    // hand-back, past the crown's own 0.48 fall — but the unmount tears down
-    // an invisible starfield, and the law was always about the VISIBLE sky.)
-    expect(crownEnvAt(SKY_OUT_END)).toBeCloseTo(1, 12);
-    expect(crownEnvAt(atFrac(rwR, 0.4))).toBeGreaterThan(0);
-    expect(EXIT_END).toBeGreaterThan(atFrac(rwR, 0.48)); // the new order, stated
-    expect(crownEnvAt(atFrac(rwR, 0.48))).toBe(0);
-    expect(crownEnvAt(rangeOf("capsOn").p0)).toBe(0);
-    expect(crownEnvAt(rangeOf("flythrough").p0)).toBe(0);
-  });
-});
-
 describe("the trails driver's laws", () => {
   it("the sweep holds at zero until local 0.25, then runs to the max at SKY_OUT_END", () => {
     // coarsely: the chapter turns the sky AROUND half a
@@ -567,9 +404,9 @@ describe("the trails driver's laws", () => {
   });
 });
 
-describe("the arcs' and the crown's attach windows", () => {
-  // Newly EXPORTED for story/cost.ts's overlay columns — a draw call each, and
-  // it may not re-spell either window. Pinned here, where they are owned.
+describe("the arcs' attach window", () => {
+  // EXPORTED for story/cost.ts's overlay column — one draw call, and it may not
+  // re-spell the window. Pinned here, where it is owned.
 
   it("pads the driven span at both ends", () => {
     expect(SPAN_P0).toBeLessThan(tR.p0);
@@ -579,16 +416,5 @@ describe("the arcs' and the crown's attach windows", () => {
     expect(tR.p0 - SPAN_P0).toBeCloseTo(SPAN_P1 - ENV_END, 12);
     expect(trailEnvAt(SPAN_P0)).toBe(0);
     expect(trailEnvAt(SPAN_P1)).toBe(0);
-  });
-
-  it("keeps the crown attached long after the arcs have gone", () => {
-    // the crown hangs on the SCENE ROOT precisely so it outlives the sky — it
-    // resolves onto the front element and fades out on it
-    expect(CROWN_P1).toBeGreaterThan(SPAN_P1);
-    expect(crownEnvAt(SPAN_P1)).toBeGreaterThan(0);
-    expect(crownEnvAt(CROWN_P1)).toBe(0);
-    // …and it outlives even the fly span, which is the whole reason it hangs on
-    // the scene root rather than on the starfield: the sky unmounts under it
-    expect(CROWN_P1).toBeGreaterThan(EXIT_END);
   });
 });

@@ -52,10 +52,13 @@ import { DIVE_P0, RANGES, holdCentreOf, rangeOf } from "./story";
 import { EXIT_END, GLASS_OUT } from "./fly";
 import { CARD_COUNT, MOUNT_HI, MOUNT_LO } from "./peelcards";
 import {
-  CROWN_P1,
   SPAN_P0 as TRAILS_SPAN_P0,
   SPAN_P1 as TRAILS_SPAN_P1,
 } from "./trails";
+import {
+  SPAN_P0 as PETALS_SPAN_P0,
+  SPAN_P1 as PETALS_SPAN_P1,
+} from "./petals";
 import {
   LABELS,
   SPAN_P0 as SKY_INK_P0,
@@ -273,17 +276,18 @@ export interface OverlayCost {
   cards: number;
   /** the long-exposure arcs — one instanced draw (optics/star-trails.ts) */
   trails: number;
-  /** the authored screen-space arc — one draw (optics/crown-arc.ts) */
-  crown: number;
   /** the self-drawing strokes' ring buffer — one draw, forever
    *  (optics/constellation-lines.ts) */
   constellation: number;
   /** the star-name sprites plus the quote, one draw each. Reported at its
    *  MAXIMUM, since which labels are eligible depends on the live frame. */
   sprites: number;
+  /** the bloom's falling petals — one instanced draw (story/petals.ts) */
+  petals: number;
   /** the ambient dust cloud (1 THREE.Points) + the three refraction lines,
-   *  mounted for the life of the page, dust off inside the dive. An upper
-   *  bound: see the header. */
+   *  mounted for the life of the page, dust off inside the dive and again
+   *  inside the bloom, where the petals replace it. An upper bound: see the
+   *  header. */
   cinematics: number;
 }
 
@@ -411,7 +415,9 @@ export function storyCostAt(p: number, table: PartTable): StoryCost {
   // the ink 0-edge is materials/unified.ts setInk's own (`const on = k > 0`)
   const inkOn = s.look.inkMix > 0;
   // The elements wear their realistic (transmissive) material below the
-  // hand-over and their flat ink fill above it (materials/unified.ts setInk).
+  // hand-over and their flat ink fill above it (materials/unified.ts setInk —
+  // the transmission pass reads the OPAQUE backdrop, so glass may not stay
+  // transmissive while the ink has the body in the transparent list).
   const transmission = s.look.inkMix < GLASS_HANDOVER ? glassVisible : 0;
   const channels = activeChannels(s);
   // THE BODY'S 0-EDGE, called rather than respelled: the body is in the
@@ -421,15 +427,16 @@ export function storyCostAt(p: number, table: PartTable): StoryCost {
 
   // ── the mount windows, each read from its owner ───────────────────────────
   const flyOn = inSpan(p, DIVE_P0, EXIT_END);
+  const petalsOn = inSpan(p, PETALS_SPAN_P0, PETALS_SPAN_P1);
   const overlay: OverlayCost = {
     cards: inSpan(p, MOUNT_LO, MOUNT_HI) ? CARD_COUNT : 0,
     trails: inSpan(p, TRAILS_SPAN_P0, TRAILS_SPAN_P1) ? 1 : 0,
-    crown: inSpan(p, TRAILS_SPAN_P0, CROWN_P1) ? 1 : 0,
     constellation: inSpan(p, SKY_INK_P0, SKY_INK_P1) ? 1 : 0,
     sprites: inSpan(p, SKY_INK_P0, SKY_INK_P1) ? LABELS.length + 1 : 0,
-    // the dust cloud goes out for the dive and comes back with it; the three
-    // refraction lines are mounted throughout
-    cinematics: flyOn ? RAY_LINES : RAY_LINES + 1,
+    petals: petalsOn ? 1 : 0,
+    // the dust cloud goes out for the dive and for the bloom, and comes back
+    // with each; the three refraction lines are mounted throughout
+    cinematics: flyOn || petalsOn ? RAY_LINES : RAY_LINES + 1,
   };
   const drawsSky = flyOn ? (STARFIELD_LOOK.staticLines ? 2 : 1) : 0;
   // NO ACCESSORY COLUMN: the story shows none at any p, so there is nothing to

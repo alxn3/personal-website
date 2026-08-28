@@ -16,6 +16,8 @@ export interface StorySample {
   fov: number;
   xs: number;
   ys: number;
+  /** the frame half-width the scene needs, in its own half-heights (Pose.wide) */
+  wide: number;
 }
 
 const ORIGIN: [number, number, number] = [0, 0, 0];
@@ -132,6 +134,11 @@ const PLANS: readonly ScenePlan[] = RANGES.map((r, i) => {
     first = i > 0 ? RANGES[i - 1].scene.cam : r.scene.cam;
     last = r.scene.cam;
     path = [first, ...(r.scene.via ?? []), last];
+    // The scene's own window, in ABSOLUTE p and in `atFrac`'s own arithmetic:
+    // a fraction-of-local form rounds differently and the hold below has to be
+    // bit-exact at its far edge.
+    pStart = r.p0 + (r.p1 - r.p0) * (r.scene.camHold ?? 0);
+    pEnd = r.p0 + (r.p1 - r.p0) * r.scene.transit;
   }
   const base = { linked, flattenNever: linked && i === head, first, last };
   if (path.length === 2)
@@ -168,15 +175,16 @@ export function sampleStory(
   const { first, last } = plan;
   const local = clamp01((p - r.p0) / Math.max(1e-6, r.p1 - r.p0));
 
-  // A chain can be HELD before it starts (`camHold`): below that point moveT is
-  // exactly 0, and a chain at moveS 0 evaluates to its FIRST waypoint
-  // bit-for-bit (the Hermite basis at t = 0 is [1,0,0,0] and every lerp
-  // collapses to `first`), so the hold IS the previous scene's parked pose
-  // rather than an approximation of it.
-  const moveT = plan.linked
-    ? clamp01((p - plan.pStart) / Math.max(1e-6, plan.pEnd - plan.pStart))
-    : sc.transit > 0
-      ? clamp01(local / sc.transit)
+  // ONE WINDOW, whatever the plan: the move runs [pStart, pEnd] in absolute p —
+  // a fused chain's is the head's `camHold` to the tail's transit end, a plain
+  // transit's is this scene's own. Below pStart moveT is exactly 0, and a path
+  // at moveS 0 evaluates to its FIRST waypoint bit-for-bit (the Hermite basis
+  // at t = 0 is [1,0,0,0] and every lerp collapses to `first`), so a hold IS
+  // the previous scene's parked pose rather than an approximation of it. A
+  // zero-width window is a scene that never moves: it wears its pose at once.
+  const moveT =
+    plan.pEnd > plan.pStart
+      ? clamp01((p - plan.pStart) / (plan.pEnd - plan.pStart))
       : 1;
   // one eased transit parameter shared by the orbit AND the xs/ys park shifts,
   // so the lateral slide has the orbit's velocity profile
@@ -231,20 +239,34 @@ export function sampleStory(
     xsKey = chainAt(chain, seg, st, GET_XS);
   }
 
-  // "Flatten" to an orthographic elevation only while PARKED: 0 during every
-  // transit and eased back to 0 before the scene ends, so the next scene begins
-  // in perspective. A linked HEAD is in motion its whole range and never
-  // flattens; the LAST scene keeps its flatten to the end, since it hands off
-  // to the page below rather than to another scene's transit.
-  const flattenIn =
-    plan.flattenNever || sc.transit >= 1
-      ? 0
-      : sc.transit > 0
-        ? smoothstep(sc.transit, Math.min(1, sc.transit + 0.12), local)
-        : 1;
-  const endRelease =
-    i < RANGES.length - 1 ? 1 - smoothstep(0.9, 1.0, local) : 1;
-  const settled = flattenIn * endRelease;
+  // "Flatten" to an orthographic elevation. By default only while PARKED: 0
+  // during every transit and eased back to 0 before the scene ends, so the next
+  // scene begins in perspective. A linked HEAD is in motion its whole range and
+  // never flattens; the LAST scene keeps its flatten to the end, since it hands
+  // off to the page below rather than to another scene's transit.
+  //
+  // A scene may instead author the flatten's OWN window (story/story.ts
+  // `orthoIn`/`orthoOut`), for a flat frame that is not the park — an omitted
+  // side holds the flatten open at that end, which is how the ending's one flat
+  // frame spans the rewrap→descent boundary.
+  const oIn = sc.orthoIn;
+  const oOut = sc.orthoOut;
+  let settled: number;
+  if (oIn || oOut) {
+    settled =
+      (oIn ? smoothstep(oIn[0], oIn[1], local) : 1) *
+      (oOut ? 1 - smoothstep(oOut[0], oOut[1], local) : 1);
+  } else {
+    const flattenIn =
+      plan.flattenNever || sc.transit >= 1
+        ? 0
+        : sc.transit > 0
+          ? smoothstep(sc.transit, Math.min(1, sc.transit + 0.12), local)
+          : 1;
+    const endRelease =
+      i < RANGES.length - 1 ? 1 - smoothstep(0.9, 1.0, local) : 1;
+    settled = flattenIn * endRelease;
+  }
   const ortho = sc.cam.ortho * settled;
   const fov = lerp(fovKey, ORTHO_FOV, ortho);
   const back = Math.tan(deg(fovKey) / 2) / Math.tan(deg(fov) / 2);
@@ -265,6 +287,8 @@ export function sampleStory(
     fov,
     xs: xsKey,
     ys: lerp(first.ys ?? 0, last.ys ?? 0, moveS),
+    // like ys and the target: the endpoints define it, vias carry none
+    wide: lerp(first.wide ?? 1, last.wide ?? 1, moveS),
   };
 }
 
@@ -286,8 +310,15 @@ export function applyStoryFraming(
   parkScale: number,
   storyP: number,
 ): void {
-  const { fov, xs, ys } = sample;
+  const { fov, xs, ys, wide } = sample;
   camera.up.copy(storyUp);
+  // THE NARROW-VIEWPORT REACH (story/story.ts `Pose.wide`). The frame is
+  // `aspect/zoom` half-heights wide, which is 1 on every portrait viewport, so
+  // a scene whose subject fills the frame sideways has to be shot from further
+  // back there. It scales the ORBIT OFFSET, so the flatten's own pullback and
+  // the park offsets below scale with it and the projection is untouched.
+  const frameW = camera.aspect / camera.zoom;
+  if (wide > frameW) storyPos.multiplyScalar(wide / frameW);
   // The camera stays ON-AXIS looking at the scene's orbit target; the park (xs
   // and ys, in units of STORY_R) is applied as an OFF-CENTRE PROJECTION WINDOW
   // rather than by shifting the camera and target. Shifting leaves the lens off

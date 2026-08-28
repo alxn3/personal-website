@@ -430,7 +430,14 @@ export function createStoryFly(scene: SceneHandle): {
       // row's own fov IS this pose's (FLY.fovFar), so the way in has no step.
       dollyNow = flyDollyAt(p);
       scene.setLensDolly(dollyNow);
-      scene.setStoryFov(flyFovOf(pose), flyFovMixAt(p));
+      // …ON THE CAMERA'S OWN CLOCK. The fov is the one thing here that lands on
+      // the CAMERA, and core/scene samples the camera pose at the EASED
+      // `state.story`; the ending's flatten pairs a fov with a pullback
+      // (story/camera.ts `back`), so a mix read at the raw p would scale a
+      // frame the pose never asked for — 12x on a backward flick into the
+      // rewrap. Everything above is model-side and stays raw.
+      const pCam = clamp01(scene.state.story);
+      scene.setStoryFov(flyFovOf(flyPoseAt(pCam)), flyFovMixAt(pCam));
       // THE BODY GOES WITH IT (flyBodyFadeAt carries the hand-over law).
       scene.setBodyFade(flyBodyFadeAt(p));
       // …and each element goes down as the camera arrives at it: from inside an

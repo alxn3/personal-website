@@ -16,10 +16,9 @@
 // WHAT IT REPORTS is the AUTHORED state at p — what the drivers would write on
 // a frame handed exactly this p in a settled session, deliberately NOT what is
 // on screen. The difference is the honest residual: EASE LAG (core/scene eases
-// `state.story` toward `storyTarget`, though `peel` and `assemble` below
-// WRAP_EASE_P0 are written value-and-target off the raw scroll, so for those
-// this IS the drawn value — which is what the two chapters' illegal-pair laws
-// rest on); PHASE CLOCKS (the internals rack/breath and the card orbit run on
+// `state.story` toward `storyTarget`, though `peel` and `assemble` are written
+// value-and-target off the raw scroll, so for those this IS the drawn value —
+// which is what the cards chapter's illegal-pair laws rest on); PHASE CLOCKS (the internals rack/breath and the card orbit run on
 // accumulated dt, so only their envelopes are knowable); LATCHES AND WARM-UP;
 // the VIEWPORT and THEME (`framing` needs `opts.canvas`, the tint is for the
 // `opts.light` you ask for); and THE FRAME ITSELF — occlusion, depth fade,
@@ -41,24 +40,25 @@ import {
 } from "./story";
 import { sampleStory, applyStoryFraming } from "./camera";
 import {
-  ASSEMBLE_PULSE,
   CARDS_APART,
+  HUDDLE,
+  DIP,
   CHROME_FADE,
   EXPLODE_PULSE,
-  INK_DROP,
   INK_FULL,
   INK_HALF,
-  INK_RESTORE,
   INTERIOR_BACK,
   IRIS_HANDBACK,
   IRIS_HANDOVER,
   PRE_SHUT,
+  ROCK,
   ROSE_PULSE,
   SCROLL_CUE,
   SHELL_BACK,
   ZOOM_PULSE,
   assembleAt,
   bgAt,
+  huddleAt,
   chromeAt,
   driverOwnsIris,
   explodeAt,
@@ -67,23 +67,28 @@ import {
   inkFillAt,
   interiorFadeAt,
   preShutAt,
+  rockYAt,
+  rockZAt,
   roseAt,
   sceneIndexAt,
   scrollCueAt,
   shellFadeAt,
   zoomAt,
+  uprightAt,
+  dipAt,
   type Rgb,
 } from "./envelopes";
 import { ROLL_P1, TURN_P0, TURN_P1, revealRollAt, turnAt } from "./reveal";
 import {
-  RELEASE_SPAN,
-  SPIN_SPAN,
+  ROLL_SPAN,
+  TURN_SPAN,
   WINK_SPAN,
   peelRollAt,
-  peelSpinAt,
-  peelValueAt,
+  peelTurnAt,
+  peelTurnFracAt,
 } from "./peelcards";
 import { internalsEnvAt } from "./internals";
+import { MODEL_BORE_X_Z, frameZoom } from "../core/scene";
 import {
   CAM_IN,
   EXIT_END,
@@ -111,13 +116,7 @@ import {
   flyWarpAt,
   skyOutAt,
 } from "./fly";
-import {
-  crownEnvAt,
-  crownLiveAt,
-  crownResolveAt,
-  trailEnvAt,
-  trailSweepAt,
-} from "./trails";
+import { trailEnvAt, trailSweepAt } from "./trails";
 import {
   constellationEnvAt,
   labelEnvAt,
@@ -147,28 +146,28 @@ export const STORY_WINDOWS: StoryWindowSpan[] = (
     ["zoom.fall", windowEdges(ZOOM_PULSE.fall)],
     ["explode.rise", windowEdges(EXPLODE_PULSE.rise)],
     ["explode.fall", windowEdges(EXPLODE_PULSE.fall)],
-    ["assemble.rise", windowEdges(ASSEMBLE_PULSE.rise)],
-    ["assemble.fall", windowEdges(ASSEMBLE_PULSE.fall)],
     ["rose.rise", windowEdges(ROSE_PULSE.rise)],
     ["iris.handover", [IRIS_HANDOVER, IRIS_HANDBACK]],
     ["preShut", PRE_SHUT],
     ["ink.half", INK_HALF],
     ["ink.full", INK_FULL],
-    ["ink.drop", INK_DROP],
-    ["ink.restore", INK_RESTORE],
     ["shell.back", SHELL_BACK],
     ["interior.back", INTERIOR_BACK],
     ["scrollCue", SCROLL_CUE],
     ["chrome", CHROME_FADE],
     ["wink", WINK_SPAN],
-    ["peel.spin", SPIN_SPAN],
-    ["peel.release", RELEASE_SPAN],
+    ["peel.roll", ROLL_SPAN],
+    ["peel.turn", TURN_SPAN],
+    ["nose.dip", [windowEdges(DIP.rise)[0], windowEdges(DIP.fall)[1]]],
+    ["rock", windowEdges(ROCK)],
     ["cards.apart.rise", windowEdges(CARDS_APART.rise)],
+    ["huddle.rise", windowEdges(HUDDLE.rise)],
+    ["huddle.fall", windowEdges(HUDDLE.fall)],
     ["cards.apart.fall", windowEdges(CARDS_APART.fall)],
     ["turn", [TURN_P0, TURN_P1]],
-    // the roll's true support: nonzero from the assemble RISE's foot (invisible
+    // the roll's true support: nonzero from the explode RISE's foot (invisible
     // — the body cover is 0 there), not from TURN_P0 where the cruise begins.
-    ["roll", [windowEdges(ASSEMBLE_PULSE.rise)[0], ROLL_P1]],
+    ["roll", [windowEdges(EXPLODE_PULSE.rise)[0], ROLL_P1]],
     ["fly.span", [DIVE_P0, EXIT_END]],
     ["fly.dive", [DIVE_P0, flyR.p1]],
     ["fly.glass", [DIVE_P0, GLASS_OUT]],
@@ -209,6 +208,9 @@ export interface StoryState {
     ys: number;
     /** |pos| — the orbit radius the flatten's pullback has already been applied to */
     radius: number;
+    /** the frame width the scene needs, in its own half-heights (Pose.wide):
+     *  above the viewport's own `aspect/zoom` it pulls the camera back */
+    wide: number;
   };
   /** only with opts.canvas: the view offset story/camera.ts writes for the
    *  park. The portrait lift is folded INTO offsetY, since applyStoryFraming
@@ -217,11 +219,18 @@ export interface StoryState {
   model: {
     /** world X of the lens under the parked camera (story/fly.ts flyDollyAt) */
     dollyX: number;
-    /** total roll about the optical axis, radians — the ONE value the driver
-     *  hands SceneHandle.setModelOrientation, and its two disjoint terms */
+    /** roll about the optical axis, radians: the peel's bore roll
+     *  (story/peelcards.ts) plus the reveal's own, disjoint in p */
     rollX: number;
-    revealRoll: number;
     peelRoll: number;
+    revealRoll: number;
+    /** the cards scene's turn about world +Y, radians (story/peelcards.ts),
+     *  plus the ending's rock (story/envelopes.ts rockYAt) */
+    turnY: number;
+    /** the tip about Z, radians: the boot roll gives way to 0 as the lens
+     *  stands up for the internals scene (story/envelopes.ts uprightAt), less
+     *  the turn's nose dip, plus the rock's other half */
+    tiltZ: number;
   };
   /** every channel's AUTHORED target at p. `null` where the value is not a
    *  function of p alone (see `irisOwner`) — only the internals span, whose
@@ -232,6 +241,8 @@ export interface StoryState {
     aperture: number | null;
     explode: number;
     assemble: number;
+    /** the cards chapter's compact core (ops/mechanism.ts huddleMm) */
+    huddle: number;
     peel: number;
     /** the ending's origami bloom — rise-only over the final scene */
     rose: number;
@@ -281,17 +292,14 @@ export interface StoryState {
     /** the same turn, normalized — story/reveal.ts's ONE law */
     turn: number;
     trailEnv: number;
-    crownEnv: number;
-    crownResolve: number;
-    crownLive: number;
     constellationEnv: number;
     labelEnv: number;
     quoteEnv: number;
   };
   /** the internals ambient's two AMPLITUDE envelopes (the phase is a clock) */
   ambient: { breath: number; rack: number };
-  /** the peel's own normalized spin, 0 → 1 across SPIN_SPAN */
-  peelSpin: number;
+  /** the cards scene's normalized turn, 0 → 1 across TURN_SPAN */
+  peelTurn: number;
   caption: {
     /** the band whose scene owns p (story/story.ts CAPTION_BANDS) */
     id: string;
@@ -347,10 +355,15 @@ export function storyStateAt(p: number, opts: StoryStateOpts = {}): StoryState {
       sample.fov,
       opts.canvas.w / opts.canvas.h,
     );
+    // the viewport's own zoom, or the narrow-viewport reach below would read a
+    // frame no canvas ever has
+    cam.zoom = frameZoom(opts.canvas.w, opts.canvas.h);
+    // a COPY: applyStoryFraming scales the offset by that reach, and `camera`
+    // below reports the pose the table authored
     applyStoryFraming(
       cam,
       sample,
-      pos,
+      pos.clone(),
       up,
       target,
       opts.canvas.w,
@@ -365,13 +378,15 @@ export function storyStateAt(p: number, opts: StoryStateOpts = {}): StoryState {
 
   const explode = explodeAt(p);
   const zoom = zoomAt(p);
-  // the roll's gate is the ASSEMBLE channel (story/reveal.ts ROLL_P1).
-  // hero-driver's writer passes the LIVE eased channel; this is what that write
-  // settles to at p — the header's ease-lag residual.
-  const revealRoll = revealRollAt(p, assembleAt(p));
-  // The PEEL's half is not eased — the writer takes it at the raw p — so this
-  // is not a settled approximation of that write but exactly it.
+  // the roll's gate is the EXPLODE channel (story/reveal.ts). hero-driver's
+  // writer passes the LIVE eased channel; this is what that write settles to
+  // at p — the header's ease-lag residual.
+  const revealRoll = revealRollAt(p, explode);
   const peelRoll = peelRollAt(p);
+  // The TURN is not eased — the writer takes it at the raw p — so this is not
+  // a settled approximation of that write but exactly it. The ending's rock
+  // rides the same two axes the driver adds it to.
+  const turnY = peelTurnAt(p) + rockYAt(p);
 
   // THE IRIS' THREE WRITERS, tiled by range. The fly is checked FIRST because
   // its writes land last in the driver's frame(), so inside its span it wins
@@ -422,13 +437,16 @@ export function storyStateAt(p: number, opts: StoryStateOpts = {}): StoryState {
       xs: sample.xs,
       ys: sample.ys,
       radius: pos.length(),
+      wide: sample.wide,
     },
     framing,
     model: {
       dollyX: flyDollyAt(p),
-      rollX: revealRoll + peelRoll,
-      revealRoll,
+      rollX: peelRoll + revealRoll,
       peelRoll,
+      revealRoll,
+      turnY,
+      tiltZ: MODEL_BORE_X_Z * (1 - uprightAt(p)) - dipAt(p) + rockZAt(p),
     },
     channels: {
       zoom,
@@ -436,7 +454,9 @@ export function storyStateAt(p: number, opts: StoryStateOpts = {}): StoryState {
       aperture,
       explode,
       assemble: assembleAt(p),
-      peel: peelValueAt(p),
+      huddle: huddleAt(p),
+      // the sticker peel is /lens's alone — the story never drives it
+      peel: 0,
       rose: roseAt(p),
       story: p,
     },
@@ -469,15 +489,12 @@ export function storyStateAt(p: number, opts: StoryStateOpts = {}): StoryState {
       trailSweep: trailSweepAt(p),
       turn: turnAt(p),
       trailEnv: trailEnvAt(p),
-      crownEnv: crownEnvAt(p),
-      crownResolve: crownResolveAt(p),
-      crownLive: crownLiveAt(p),
       constellationEnv: constellationEnvAt(p),
       labelEnv: labelEnvAt(p),
       quoteEnv: quoteEnvAt(p),
     },
     ambient: internalsEnvAt(p),
-    peelSpin: peelSpinAt(p),
+    peelTurn: peelTurnFracAt(p),
     caption: {
       id: bandSpec.id,
       a: bandSpec.a,

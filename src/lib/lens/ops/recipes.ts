@@ -22,10 +22,12 @@ import {
   anchor,
   approach,
   arc,
+  coil,
   crease,
   during,
   group,
   ladder,
+  rise,
   orbit,
   rot,
   selFront,
@@ -44,6 +46,7 @@ import {
   selNotAccessory,
   selNotOptical,
   selSheet,
+  bendTerm,
   selNotKept,
   stickerPeelOps,
 } from "./house";
@@ -65,11 +68,60 @@ const ASSEMBLE_PIN_END = 0.25; // the reel-in pin is spent by 25% stuck
 const ASSEMBLE_LADDER_GAIN = 0.4; // rung → model-mm, scaled by the depth knob
 
 // ── EXPLODE constants ───────────────────────────────────────────────────────
-/** the ending's stagger, by LAYER then by the piece's own phase inside it —
- *  the three shares sum to 1 so both channel ends stay saturating identities */
-const EXPLODE_LAYER_STAGGER = 0.42;
-const EXPLODE_PART_STAGGER = 0.24;
-const EXPLODE_WINDOW = 0.34;
+/** the gate's own grain: no rank stagger at all — the ORDER is the `during`
+ *  slot below — and a little phase spread so a rank layer's own pieces do not
+ *  land together. The shares sum to 1, so both channel ends stay saturating
+ *  identities. */
+const EXPLODE_LAYER_STAGGER = 0;
+const EXPLODE_PART_STAGGER = 0.15;
+const EXPLODE_WINDOW = 0.85;
+/** THE ORDER KEY's exponent: rank is a value-normalized radius, and the OUTER
+ *  fifth of it carries two pieces in five — the whole visible stack. The power
+ *  hands that band about half the order axis, so the layers the reader can see
+ *  land one at a time instead of together, and collapses the core toward 0, so
+ *  the middle leaves first as one group. (`rose` keys its whorl the same way.) */
+const EXPLODE_ORDER_EXP = 3;
+/** how much of the channel the arrival order is spread over; the remainder is
+ *  ONE piece's own flight. Stagger ≫ window is what makes the sequence read
+ *  rather than smear. */
+const EXPLODE_ORDER_SPREAD = 0.86;
+/** how far the piece's own meridian winds the order, against the radial run.
+ *  Small on purpose: the build still reads outward, with each turn of the
+ *  staircase carrying a few layers' worth of landings around the bore. */
+const EXPLODE_WIND = 0.14;
+/** how much higher the OUTER ranks hang, as a multiple of `hover`: the cloud
+ *  opens upward away from the lens instead of hovering as a second one. */
+export const EXPLODE_HOVER_RANK = 0.55;
+/** THE DISPERSAL's two terms, both scaled by the `scatter` knob and both spent
+ *  along the descent's own helix: radians round the bore, signed, and a
+ *  fraction of the piece's radius, always OUTWARD so the fall drifts in. */
+const EXPLODE_SCATTER_SWING = 0.6;
+const EXPLODE_SCATTER_R = 0.7;
+/** the outward scatter's floor, as a share of its own maximum — no piece drifts
+ *  in on exactly the ring's own line, so none of them reads as the one that
+ *  stayed. */
+const EXPLODE_SCATTER_MIN = 0.3;
+/** the dispersal bump's gain. The ops fold their own `flight` in, so the drawn
+ *  amplitude is `gain × flight × (1 − flight)` — 0 at both channel ends and
+ *  `gain / 4` at its peak. 4 puts the mid-fall spread at the knob's full value,
+ *  i.e. where the parked cloud used to hold it. */
+const EXPLODE_DISPERSE = 4;
+/** THE PER-PIECE PHASES the two terms read. Coprime-ish frequencies on three
+ *  lane constants, so the scatter is deterministic, backend-stable (no hashing
+ *  by fract of a huge product) and uncorrelated between the terms. */
+const EXPLODE_SWING_FREQ = [2.7, 11, 4.3] as const;
+const EXPLODE_RADIAL_FREQ = [4.9, 7, 9.1] as const;
+/** THE RING PHASE's key: the piece's own ladder station (`rung`), which
+ *  ops/frames.ts derives per GROUP — a shell's wedges, its decals and anything
+ *  parented under it all carry the same one. So a ring turns as a unit and
+ *  stays evenly spaced, while neighbouring shells turn by different amounts.
+ *  The turn is taken the SHORT way round (wrapPi), or a far group would unwind
+ *  whole turns on the way down instead of the fraction its pose needs. */
+const explodeRingTurn = <S>(A: Algebra<S>, rung: S, turnsPerMm: S): S => {
+  const a = A.mul(A.mul(turnsPerMm, TAU), rung);
+  return A.sub(a, A.mul(TAU, A.floor(A.div(A.add(a, PI), TAU))));
+};
+
 // The house split. It MUST stay below rollEnd + overlap, or the stick ramp's
 // denominator is 0 and the seated state computes NaN where the identity anchor
 // requires exactly 1 (ops/gate.ts).
@@ -301,8 +353,14 @@ export function makeRecipes<S>(
       rewind: 0.95,
       curl: 0.85,
       depth: 1,
-      stagger: 0.6,
-      partStagger: 0,
+      // THE GRAIN. `stagger` orders the LAYERS (rank01, outermost first) and
+      // `partStagger` orders each layer's OWN pieces (layerPhase, round the
+      // bore); the window is the remainder, so a piece's own flight is short
+      // against the order and the cast reads as a sequence rather than a sheet.
+      // Without the second term the five wedges of a family share one window
+      // and fly as one shell.
+      stagger: 0.5,
+      partStagger: 0.25,
       keepScope: 0,
       split: 0.95,
       overlap: 0.9,
@@ -314,11 +372,8 @@ export function makeRecipes<S>(
 
   const explode: Recipe<S> = {
     name: "explode",
-    // A STAGGERED gate: pieces arrive one after another, by layer and then by
-    // their own phase inside it — the ending's read is each piece spiralling
-    // home in turn, not one radial collapse. The three shares sum to 1, so
-    // every piece still saturates at channel 0 and 1. Nothing here reads stick,
-    // but the split keeps its denominator positive so the identity is exact.
+    // Nothing here reads stick, but the split keeps its denominator positive so
+    // the channel-0 identity is exact rather than NaN.
     gateSpec: () => ({
       layerStagger: EXPLODE_LAYER_STAGGER,
       partStagger: EXPLODE_PART_STAGGER,
@@ -328,35 +383,175 @@ export function makeRecipes<S>(
       snapExp: EXPLODE_SNAP_EXP,
     }),
     // THE DEFAULT SELECTION, in assemble's idiom — an exemption is a per-recipe
-    // selection, never a flag baked into an op. Two scopes:
+    // selection, never a flag baked into an op: accessories drop out of
+    // everything at the head, and the optics ride the axial ladder alone.
     //
-    //   1. A selector at the pipeline HEAD drops accessories from everything,
-    //      the ladder included — they are removable attachments.
-    //   2. A group scopes the three RADIAL ops away from glass and the iris
-    //      mechanism, which move on the axial ladder ALONE.
+    // THE PARKED POSE (channel 1) IS THE LENS OPENED OUT, NOT REDRAWN. Three
+    // terms, all UNIFORM and all RIGID: `bloom` slides every piece out along its
+    // own meridian, one `orbit` turns the whole cloud round the bore, and `rise`
+    // + the ladder lift it up the axis. Nothing that reaches the park bends,
+    // scales or stretches a piece, so there it is drawn at its authored size and
+    // shape, evenly spaced and square to its own arc.
     //
-    // The ladder therefore sits OUTSIDE the group. Its position past the orbit
-    // is motion-neutral: it only adds to `axial`, which no op here reads.
-    build: (ctx, knobs) => [
-      selNotAccessory(A),
-      group<S>([
-        selNotOptical(A),
-        // The dilation: every piece pushes out along its own sector centre.
-        // `dilate` and `sep` are ONE spread — consecutive spreads compose
-        // additively (displacement is linear in frac), and the fused form skips
-        // a polar round-trip per vertex while both knobs stay tunable.
-        spread<S>(A.add(knobs.dilate, knobs.sep)),
-        // THE SPIRAL. `orbit`'s angle is `flight × spin`, so this is a rigid
-        // revolution about the bore, exactly 0 at channel 0 and per piece on
-        // the same gate that stages the radius: each sweeps round as it comes
-        // rather than sliding straight in.
-        orbit<S>(A.mul(knobs.spin, ctx.wrapDir)),
-      ]),
-      ladder<S>("attr", knobs.axialGain),
-    ],
-    // `spin` is THE taste knob for the spiral; it feeds no gate divisor, so it
-    // is unbounded and safe to retune.
-    knobDefaults: { dilate: 2.4, sep: 0.55, axialGain: 0.4, spin: 0.7 },
+    // THE DISPERSAL AND THE CURL ARE THE MOTION'S, NOT THE POSE'S: the two
+    // per-piece terms ride `disperse` and the shape ride `curl`, and all three
+    // windows are EXACTLY 0 at the park and at the seat because the ops fold the
+    // piece's own `flight` in. So the cloud is even, the fall opens out into
+    // individual pieces that shut around the glass as they land, and the seat is
+    // still exact.
+    //
+    // THE FALL IS ONE HELIX: every term rides the SAME per-piece flight, so a
+    // piece spends its swing, its radius and its height together and traces a
+    // corkscrew down onto its seat.
+    build: (ctx, knobs) => {
+      // THE ORDER IS A SPIRAL STAIRCASE: radius sets the run and the piece's
+      // own meridian winds it, so consecutive landings step AROUND the bore as
+      // the build goes outward. A piece is seated below its slot's foot, so
+      // key 0 (innermost, at the seam) lands first. Both terms are per-piece
+      // constants, so the key is monotone in each and needs no wrap.
+      const ang01 = A.add(A.div(ctx.t0, TAU), 0.5);
+      const key = A.div(
+        A.add(A.pow(ctx.rank01, EXPLODE_ORDER_EXP), A.mul(EXPLODE_WIND, ang01)),
+        1 + EXPLODE_WIND,
+      );
+      const from = A.mul(A.sub(1, key), EXPLODE_ORDER_SPREAD);
+      // THE DISPERSAL's per-piece phases: a smooth function of three lane
+      // constants, so two pieces of one layer scatter differently and the CPU
+      // mirror and the shaders agree to the last few digits.
+      const phase = (f: readonly [number, number, number]) =>
+        A.sin(
+          A.add(
+            A.add(A.mul(ctx.t0, f[0]), A.mul(ctx.layerPhase, f[1])),
+            A.mul(ctx.rank01, f[2]),
+          ),
+        );
+      // THE FLIGHT WINDOW the two per-piece terms ride. The ops multiply their
+      // own `flight` in, so `1 − flight` makes a bump: exactly 0 at the park,
+      // exactly 0 at the seat, peaking mid-fall at `EXPLODE_DISPERSE / 4` of
+      // the knob. LIVE, so a `during` scope's own flight drives it.
+      const disperse = (c: OpCtx<S>): S =>
+        A.mul(A.sub(1, c.flight), EXPLODE_DISPERSE);
+      // THE CURL's own window, on the same idiom: `coil` folds `flight` in too,
+      // so the drawn factor is `1 + curl × flight × (1 − flight)²` — exactly 1
+      // (the identity) at the park and at the seat, peaking two thirds of the
+      // way down, so the wedge shuts as it lands rather than as it leaves. The
+      // square is spelled as a product: `pow` with a base of exactly 0 is a
+      // driver-dependent corner and this one reaches it at every park frame.
+      //
+      // …PLUS THE REBEND: `rebend × bloom` more, constant in the factor, so the
+      // drawn radius at flight f is R·(1 + rebend·bloom·f) — the SAME radius
+      // the `spread` slide below has carried the piece to. At `rebend` 1 a
+      // parked wedge therefore LIES ON its ring (its curvature is the circle
+      // it sits on) and relaxes back to its own shape as it flies home,
+      // matching its current ring the whole way down. Exactly 1 at the seat.
+      const curl = (c: OpCtx<S>): S => {
+        const left = A.sub(1, c.flight);
+        return A.add(
+          1,
+          A.add(
+            A.mul(knobs.curl, A.mul(left, left)),
+            A.mul(A.mul(knobs.rebend, knobs.bloom), A.sub(1, ctx.axi)),
+          ),
+        );
+      };
+      // THE RING PHASE: a per-piece constant turn, one per ladder group, that
+      // rides the same rigid revolution `spin` does — so it is the PARK's, spent
+      // by the piece's own flight and exactly 0 at the seat.
+      const ringTurn = explodeRingTurn(A, ctx.rung, knobs.ringPhase);
+      return [
+        selNotAccessory(A),
+        during<S>({ from, to: A.add(from, A.sub(1, EXPLODE_ORDER_SPREAD)) }, [
+          // THE MID-FALL CURL: the shell wedge opens off its seated radius as it
+          // leaves and shuts back onto it as it lands, so the pieces visibly
+          // curl closed around the glass on the way down. FIRST, because `coil`
+          // turns the vertex about the BORE — it has to run while the piece is
+          // still on its seated meridian, before the terms below carry it off.
+          // …ON THE BEND CAST ONLY (ops/house bendTerm): shells bend; the
+          // kept mechanism's chunky solids park and fly RIGID — a bend strains
+          // walls by |off|/R, up to 2× girth on the focus drive's sections.
+          group<S>([selFront<S>((c) => bendTerm(A, c)), coil<S>(curl)]),
+          group<S>([
+            selNotOptical(A),
+            // THE SWIRL: `orbit`'s angle is `flight × spin`, a rigid revolution
+            // about the bore that is exactly 0 at channel 0 and unwinds as the
+            // piece comes down — so a piece descends turning rather than
+            // dropping. UNIFORM WITHIN A RING at the park: `spin` is one angle
+            // for the whole cloud and `ringTurn` one per ladder group, so a
+            // ring's own spacing stays even while its SEAM lands somewhere no
+            // neighbouring ring's does — without which every shell is cut on the
+            // same meridians and the gaps fuse into radial spokes. The per-piece
+            // share on top rides the flight window. The optics are out of all of
+            // it: the column keeps its line.
+            orbit<S>((c) =>
+              A.add(
+                A.add(A.mul(knobs.spin, ctx.wrapDir), ringTurn),
+                A.mul(
+                  A.mul(
+                    A.mul(knobs.scatter, EXPLODE_SCATTER_SWING),
+                    disperse(c),
+                  ),
+                  phase(EXPLODE_SWING_FREQ),
+                ),
+              ),
+            ),
+            // THE OPENING: one uniform slide out along each piece's own
+            // meridian. A translation, so the piece arrives rigid — same size,
+            // same curvature, same facing — and identical for every piece of a
+            // ring, so the ring opens as a regular rosette. On top of it each
+            // piece's own share of the radius, outward and never inward and
+            // spent on the flight window, so the fall drifts back IN onto the
+            // even ring. Axisymmetric pieces have no meridian to slide along.
+            spread<S>((c) =>
+              A.mul(
+                A.add(
+                  // THE SHEET'S SHARE OF THE SLIDE MOVES INTO THE COIL as
+                  // `rebend` comes up: the coil's push-out IS the ride to the
+                  // ring for a re-bent wedge, and a second slide on top would
+                  // carry it past it. Non-sheet pieces keep the whole slide.
+                  A.mul(
+                    knobs.bloom,
+                    A.sub(1, A.mul(knobs.rebend, bendTerm(A, ctx))),
+                  ),
+                  A.mul(
+                    A.mul(A.mul(knobs.scatter, EXPLODE_SCATTER_R), disperse(c)),
+                    A.add(
+                      EXPLODE_SCATTER_MIN,
+                      A.mul(
+                        (1 - EXPLODE_SCATTER_MIN) / 2,
+                        A.add(1, phase(EXPLODE_RADIAL_FREQ)),
+                      ),
+                    ),
+                  ),
+                ),
+                A.sub(1, ctx.axi),
+              ),
+            ),
+          ]),
+          // THE HOVER: model-mm up the axis, a little higher for the outer
+          // ranks so the cloud opens away from the lens rather than sitting on
+          // it as a second one. OUTSIDE the optics group, because the glass
+          // column is part of the cloud too — it simply rides up without
+          // dilating.
+          rise<S>(
+            A.mul(knobs.hover, A.add(1, A.mul(EXPLODE_HOVER_RANK, ctx.rank01))),
+          ),
+          ladder<S>("attr", knobs.axialGain),
+        ]),
+      ];
+    },
+    knobDefaults: {
+      axialGain: 0.4,
+      spin: 1.35,
+      hover: 100,
+      scatter: 1.35,
+      bloom: 0.9,
+      curl: 0,
+      // turns of parked azimuth per model-mm of ladder station
+      ringPhase: 0,
+      // 1 = a parked wedge is re-bent to lie ON its ring (drawn radius matches
+      // the slide's circle at every flight). /lens keeps the authored shapes.
+      rebend: 0,
+    },
   };
 
   // The STORY's shell peel — the STICKER chain (ops/house stickerPeelOps),

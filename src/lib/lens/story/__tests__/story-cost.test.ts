@@ -206,9 +206,9 @@ const costRow = (c: StoryCost): string[] => [
   String(
     c.overlay.cards +
       c.overlay.trails +
-      c.overlay.crown +
       c.overlay.constellation +
       c.overlay.sprites +
+      c.overlay.petals +
       c.overlay.cinematics,
   ),
   String(c.drawsSky),
@@ -260,7 +260,7 @@ and \`story/__tests__/story-cost.test.ts\` asserts the checked-in file matches,
 so a wave that makes a scene heavier fails the suite with the new table in the
 diff.
 
-**Model:** \`lens_web_segmented.glb\` — ${table.parts.length} mesh nodes, ${num(modelTris)} triangles, ${num(modelVerts)} vertices seated, plus ${modelLines} ink edge lines carrying ${num(modelLineVerts)} vertices of their own (every mesh but the decals, cut at ${EDGE_THRESHOLD_DEG}° — \`materials/unified.ts\`). \`lens_web_accessories.glb\` — ${table.accessories.length} nodes, ${num(accTris)} triangles, NONE of which the story ever draws (it is loaded for \`/lens\`'s accessory toggles; the hero shows no cap, hood or filter at any \`p\`), and they are censused here only to keep their triangles out of the model's own count.
+**Model:** \`lens_web_segmented.glb\` — ${table.parts.length} mesh nodes, ${num(modelTris)} triangles, ${num(modelVerts)} vertices seated, plus ${modelLines} ink edge lines carrying ${num(modelLineVerts)} vertices of their own (every mesh but the decals and the elements, cut at ${EDGE_THRESHOLD_DEG}° — \`materials/unified.ts\`). \`lens_web_accessories.glb\` — ${table.accessories.length} nodes, ${num(accTris)} triangles, NONE of which the story ever draws (it is loaded for \`/lens\`'s accessory toggles; the hero shows no cap, hood or filter at any \`p\`), and they are censused here only to keep their triangles out of the model's own count.
 
 **What it is not.** An UPPER BOUND, and deliberately so: frustum culling is off
 on this whole path (in-shader displacement invalidates rest-pose bounds), so
@@ -381,14 +381,15 @@ describe("the census covers the model exactly once", () => {
   });
 
   it("cuts the ink line-work off the shipped geometry, and only where it exists", () => {
-    // 176 lines — every mesh but the 18 decals (materials/unified.ts
-    // `hasInkEdgeLine`, called here rather than restated), which is the line
-    // count the live graph draws through the story (story/cost.ts's
-    // cross-check: 370 model draws = 194 + 176 at the hero)
-    expect(table.parts.filter((r) => r.edgeLine)).toHaveLength(176);
+    // 163 lines — every mesh but the 18 decals and the 13 elements
+    // (materials/unified.ts `hasInkEdgeLine`, called here rather than
+    // restated), which is the line count the live graph draws through the
+    // story (story/cost.ts's cross-check: 357 model draws = 194 + 163 at the
+    // hero)
+    expect(table.parts.filter((r) => r.edgeLine)).toHaveLength(163);
     for (const r of table.parts)
       expect(r.lineVerts > 0, `${r.name} lineVerts`).toBe(r.edgeLine);
-    expect(table.parts.reduce((n, r) => n + r.lineVerts, 0)).toBe(66956);
+    expect(table.parts.reduce((n, r) => n + r.lineVerts, 0)).toBe(65100);
     // A TABLE BUILT WITHOUT THE DECODE REPORTS 0, NEVER AN ESTIMATE: the JSON
     // chunk cannot answer this one, and the honest answer to that is a zero the
     // reader can see, not a multiplier.
@@ -526,11 +527,10 @@ describe("the cost at the story's edges", () => {
   it("carries the line pass's vertices, and drops them with the ink", () => {
     // THE HALF `kVerts` COULD NOT SEE. At the hero every mesh is up and the ink
     // is on, so the frame pushes the whole model AND the whole of its line-work
-    // through the deform: 86,966 + 66,956, i.e. 1.77× what kVerts alone reports
-    // (the render-optimization note had estimated 1.5–2×).
+    // through the deform: 86,966 + 65,100, i.e. 1.75× what kVerts alone reports.
     const hero = at(SCENE_HOLD_PS.find((h) => h.id === "hero")!.p);
     expect(hero.verts).toBe(86966);
-    expect(hero.lineVerts).toBe(66956);
+    expect(hero.lineVerts).toBe(65100);
     // the dive runs at ink 0 — the line objects are hidden there and the pass
     // costs nothing, exactly as its draw calls drop out of `drawsModel`
     const dive = at(SCENE_HOLD_PS.find((h) => h.id === "flythrough")!.p);
@@ -647,7 +647,7 @@ describe("the cost at the story's edges", () => {
   it("keeps the sky's marks inside the sky's chapters", () => {
     for (const p of COST_SAMPLE_PS) {
       const c = at(p);
-      if (c.overlay.trails || c.overlay.constellation || c.overlay.crown)
+      if (c.overlay.trails || c.overlay.constellation)
         expect(c.scene, `sky ink at p ${p}`).not.toBe("hero");
     }
   });

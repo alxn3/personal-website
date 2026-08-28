@@ -53,69 +53,15 @@ function graphOf(root: unknown): { names: string[]; nodes: Set<unknown> } {
 // wireframe ghost of the lens hanging in the frame.
 describe("the ink edge-lines' opacity", () => {
   it("reads materialOpacity, so setBodyFade can fade the outlines with the fills", () => {
-    for (const glass of [false, true])
-      expect(graphOf(inkLineOpacity(glass)).names, `glass ${glass}`).toContain(
-        "MaterialNode:opacity",
-      );
+    expect(graphOf(inkLineOpacity()).names).toContain("MaterialNode:opacity");
   });
 
-  // (The two line looks are no longer graph-identical — the glass lines ride
-  // the ramp's TOP HALF with the fill they outline, see inkLineOpacity — so
-  // the old graph-equality pin is replaced by the shared-envelope law below;
-  // the materialOpacity factor on BOTH is covered by the test above.)
-  it("arrives WITH the glass ink fill, and not before it", () => {
-    // the coupling this pins: the glass outline and the mint
-    // fill share ONE envelope (the ramp's top half — glassInkOpacity's own
-    // factor), so neither can appear without the other while a returning piece
-    // is still displaced. Pinned structurally: the glass line graph carries
-    // the ink uniform through the same clamped-sub-div shape the fill uses,
-    // and the BODY lines keep the whole ramp (their fill mixes on raw uInk).
-    const glassLine = graphOf(inkLineOpacity(true)).names;
-    const glassFill = graphOf(glassInkOpacity()).names;
-    const bodyLine = graphOf(inkLineOpacity(false)).names;
-    // the top-half shape — clamp((uInk − ½)/½).sqrt() — appears in both glass
-    // graphs; the body line multiplies the raw uniform and has none of it
-    const topHalfShape = [
-      "MathNode{sqrt}",
-      "MathNode{clamp}",
-      "OperatorNode[/]",
-    ];
-    for (const node of topHalfShape) {
-      expect(glassLine, `glass line has ${node}`).toContain(node);
-      expect(glassFill, `glass fill has ${node}`).toContain(node);
-      expect(bodyLine, `body line lacks ${node}`).not.toContain(node);
-    }
-  });
-});
-
-// …AND IT HAS TO REACH THE GLASS, which is the bigger half of the same law. The
-// story's peel/cards crossfade takes the WHOLE lens away — core/scene's
-// bodyMaterials() hands applyBodyFade the optical elements too, whenever the
-// dive is not wearing its own transmissive clones — and applyVisibility
-// deliberately leaves glass VISIBLE at bodyFadedOut, so opacity is the only
-// thing that removes it. A glass mesh wears one of three materials over the
-// story (the realistic fill, the ink fill, its edge lines); miss materialOpacity
-// on ANY one of them and the frame keeps a column of mint elements floating
-// where the lens used to be — which is exactly what it did, once
-// (v3-cards-0.35-lens-hidden.png). Three looks, one law, no renderer needed.
-describe("everything a glass mesh can wear", () => {
-  const looks: [string, unknown][] = [
-    ["the realistic fill (mergedGlass)", glassFillOpacity()],
-    ["the ink fill (glassInkMaterial)", glassInkOpacity()],
-    ["its edge lines", inkLineOpacity(true)],
-  ];
-
-  it("reads materialOpacity, so setBodyFade takes the elements with the body", () => {
-    for (const [what, graph] of looks)
-      expect(graphOf(graph).names, what).toContain("MaterialNode:opacity");
-  });
-
-  it("carries the depth-fade factor through without dropping it", () => {
-    // the ink fill's own fade is attached to the material and passed IN, so the
-    // extraction has to keep it in the product rather than quietly defaulting.
-    // Pinned by IDENTITY — the node handed in must be the node in the graph.
-    const fade = float(0.5);
-    expect(graphOf(glassInkOpacity(fade)).nodes).toContain(fade);
+  it("rides the whole ink ramp — the factor the fills mix on", () => {
+    // one envelope for line and fill: the lines carry the raw uniform, with
+    // none of a half-ramp's clamped-sub-div shape.
+    const line = graphOf(inkLineOpacity()).names;
+    for (const node of ["MathNode{sqrt}", "MathNode{clamp}", "OperatorNode[/]"])
+      expect(line, `line lacks ${node}`).not.toContain(node);
   });
 });
 
@@ -205,6 +151,56 @@ beforeAll(() => {
   (globalThis as { document?: unknown }).document ??= {
     documentElement: { classList: { contains: () => false } },
   };
+});
+
+// EVERYTHING A GLASS MESH CAN WEAR — TWO FILLS AND NOTHING ELSE. `transmission
+// > 0` pins a mesh in the transmission pass forever, so the elements cannot
+// blend the way the body does: they crossfade between the realistic material
+// and a flat mint fill at the middle of the ramp, and they grow no line-work at
+// either end. The body fade has to reach both — core/scene's bodyMaterials()
+// hands applyBodyFade the elements whenever the dive is not wearing its own
+// clones, and applyVisibility leaves glass VISIBLE at bodyFadedOut, so opacity
+// is the only thing that removes it. Miss `materialOpacity` on either and the
+// frame keeps a column of mint elements floating where the lens used to be.
+describe("everything a glass mesh can wear", () => {
+  function glassLook() {
+    const mesh = stubMesh();
+    mesh.name = "Element_01";
+    const root = new THREE.Group();
+    root.add(mesh);
+    return { look: createUnified(root), mesh };
+  }
+
+  const looks: [string, unknown][] = [
+    ["the realistic fill (mergedGlass)", glassFillOpacity()],
+    ["the ink fill (glassInkMaterial)", glassInkOpacity()],
+  ];
+
+  it("reads materialOpacity, so setBodyFade takes the elements with the body", () => {
+    for (const [what, graph] of looks)
+      expect(graphOf(graph).names, what).toContain("MaterialNode:opacity");
+  });
+
+  it("carries the depth-fade factor through without dropping it", () => {
+    // the ink fill's own fade is attached to the material and passed IN, so the
+    // extraction has to keep it in the product rather than quietly defaulting.
+    // Pinned by IDENTITY — the node handed in must be the node in the graph.
+    const fade = float(0.5);
+    expect(graphOf(glassInkOpacity(fade)).nodes).toContain(fade);
+  });
+
+  it("swaps ONCE, at the hand-over, and never grows an outline", () => {
+    const { look, mesh } = glassLook();
+    const realistic = asMat(mesh);
+    look.setInk(0.49);
+    expect(asMat(mesh), "below the hand-over").toBe(realistic);
+    look.setInk(0.5);
+    const fill = asMat(mesh);
+    expect(fill, "at the hand-over").not.toBe(realistic);
+    look.setInk(1);
+    expect(asMat(mesh), "above it").toBe(fill);
+    expect(mesh.children.filter((c) => c instanceof THREE.LineSegments)).toHaveLength(0); // prettier-ignore
+  });
 });
 
 describe("the ink twin's parity with the material it replaces", () => {

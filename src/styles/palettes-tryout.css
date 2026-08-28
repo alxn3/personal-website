@@ -1,0 +1,93 @@
+/* PALETTE TRY-OUT — temporary exploration layer (2026-08-27). Four candidate
+   evolutions of the cream/olive/terracotta identity, switchable at runtime via
+   `data-palette` on <html> (src/lib/palette-tryout.ts adds a picker under
+   `?palette`). Every text-bearing token clears WCAG AA on its bg in both
+   themes. DELETE this file (and the picker) once a direction is chosen and
+   folded into global.css. */
+
+/* A — "sharp": the current hues, contrast-boosted. Dark = the G2a values
+   approved in the 2026-07 design exploration. */
+html[data-palette="sharp"] {
+  --text: #211e18;
+  --text-muted: #5d564a;
+  --accent: #4c5a40;
+  --highlight: #a4571f;
+}
+html.dark[data-palette="sharp"] {
+  --bg: #1b1712;
+  --surface: #262019;
+  --text: #f4efe1;
+  --text-muted: #b3aa94;
+  --border: #423a2b;
+  --accent: #b7bc82;
+  --highlight: #e8a35f;
+}
+
+/* B — "ember": the same family run hotter — deeper ember highlight, warmer
+   cream, near-black warm dark stage. */
+html[data-palette="ember"] {
+  --bg: #f8f1e4;
+  --surface: #fffaf0;
+  --text: #1f1a14;
+  --text-muted: #5a5244;
+  --border: #e0d4bd;
+  --accent: #55603f;
+  --accent-soft: #ece5cf;
+  --highlight: #a54c1f;
+}
+html.dark[data-palette="ember"] {
+  --bg: #171310;
+  --surface: #241d16;
+  --text: #f6efe2;
+  --text-muted: #b5a992;
+  --border: #453a2c;
+  --accent: #b9bd85;
+  --accent-soft: #3a37244d;
+  --highlight: #f0a250;
+}
+
+/* C — "field": olive-forward — forest-deep accent carries the structure,
+   terracotta stays the fire; olive-black dark stage. */
+html[data-palette="field"] {
+  --bg: #f4f2e8;
+  --surface: #fbfaf1;
+  --text: #23241c;
+  --text-muted: #59594a;
+  --border: #d8d5c0;
+  --accent: #3f5236;
+  --accent-soft: #e2e5cc;
+  --highlight: #a94e17;
+}
+html.dark[data-palette="field"] {
+  --bg: #181a12;
+  --surface: #23261b;
+  --text: #eef0dd;
+  --text-muted: #a9ac8f;
+  --border: #3a3e2a;
+  --accent: #becb8a;
+  --accent-soft: #3439224d;
+  --highlight: #e79a55;
+}
+
+/* D — "poster": the boldest cut — near-black ink on paper, orange doing all
+   the accent work (the orange/black poster language), olive demoted out. */
+html[data-palette="poster"] {
+  --bg: #faf6ec;
+  --surface: #fffdf6;
+  --text: #171512;
+  --text-muted: #524c40;
+  --border: #d5cdb9;
+  --accent: #8f3d0f;
+  --accent-soft: #f4e3d0;
+  --highlight: #b04a10;
+}
+html.dark[data-palette="poster"] {
+  --bg: #121009;
+  --surface: #1d1912;
+  --text: #f7f1e3;
+  --text-muted: #b8ad95;
+  --border: #443b2a;
+  --accent: #f39a4d;
+  --accent-soft: #45301c4d;
+  --highlight: #ff9e42;
+}

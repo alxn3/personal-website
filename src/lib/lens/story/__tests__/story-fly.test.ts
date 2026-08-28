@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
+import * as THREE from "three/webgpu";
 import { FLY, poseCamX } from "../../optics/fly-core";
-import { smoothstep } from "../../core/math";
+import { clamp01, lerp, smoothstep } from "../../core/math";
+import { CHANNEL_EASE } from "../../core/scene";
+import { sampleStory } from "../camera";
 import {
   STORY_R,
   rangeOf,
@@ -228,6 +231,152 @@ describe("story fly span", () => {
     expect(flyFovBackAt(FOV_BACK[1])).toBe(1);
     expect(FOV_BACK[1]).toBeLessThan(EXIT_END);
     expect(flyFovBackAt(EXIT_END)).toBe(1);
+  });
+
+  // …AND SO DOES THE FLATTEN, for the same reason and behind the same edge. The
+  // ending's ortho blend (story/story.ts the rewrap row's `orthoIn`) is a fov
+  // change too, and while the dive still holds a share of the fov
+  // (`flyFovMixAt`) the two owners would each scale what the other is drawing:
+  // the story chain's fov is lerped TOWARD the dive's after the flatten has
+  // already placed the camera for its own. So the flatten may not open until
+  // that mix is exactly 0 — which is the hand-back's far edge, not its foot.
+  // The pair cannot be checked from story-camera.test.ts: it may not import
+  // this lazy module.
+  it("opens the ending's flatten only once the dive's fov is wholly handed back", () => {
+    const orthoIn = rwR.scene.orthoIn!;
+    const open = atFrac(rwR, orthoIn[0]);
+    expect(flyFovMixAt(open)).toBe(0);
+    expect(open).toBeGreaterThanOrEqual(FOV_BACK[1]);
+    // …and it is still open (not dead weight) by the time the scene parks
+    expect(orthoIn[1]).toBeLessThan(1);
+  });
+
+  // …AND THE SAME PAIRING ON THE CLOCKS THE FRAME IS REALLY DRAWN FROM. The
+  // law above is stated in p and structurally cannot see the defect it exists
+  // for: core/scene samples the camera at the EASED `state.story` while the
+  // driver hands frame() the RAW scroll p, so a backward flick parks the two a
+  // fifth of a scene apart. Inside the flatten `back` pulls the camera to 10x
+  // to match a 3° fov (story/camera.ts), and a fov mix read off the other clock
+  // scales a frame the pose never asked for — the drawn half-height went 12.6x.
+  //
+  // So this drives the REAL frame() against core/scene's own ease and reads
+  // what the frame COMPOSES: |pos| · tan(drawn fov / 2) against the pose's own.
+  // The bound is the transient the story had before the flatten existed
+  // (`back` ≡ 1, measured 1.75x); a mismatch is an order of magnitude over it.
+  it("keeps the drawn frame the size the pose asked for across a flick", () => {
+    const pos = new THREE.Vector3();
+    const up = new THREE.Vector3();
+    const target = new THREE.Vector3();
+    /** the fov the fly last handed core/scene, and how much of it is in force */
+    let fov: number | null = null;
+    let mix = 0;
+    const state: Record<string, number> = {
+      story: 0,
+      zoom: 0,
+      explode: 0,
+      assemble: 0,
+      aperture: 0,
+      apertureTarget: 0,
+      focus: 0,
+      focusTarget: 0,
+    };
+    const scene = {
+      state,
+      worldAxialSpans: () => ({}),
+      setLensDolly: () => {},
+      setStoryFov: (f: number | null, m = 1) => {
+        fov = f;
+        mix = f === null ? 0 : m;
+      },
+      setStoryCentre: () => {},
+      setBodyFade: () => {},
+      setInkMix: () => {},
+      setGlassTransmissive: () => {},
+      setGlassFade: () => {},
+      setGlassElementFade: () => {},
+      setGlassGlint: () => {},
+      setDust: () => {},
+      setRoomLight: () => {},
+      setSkyDim: () => {},
+      enableStarfield: () => Promise.resolve(true),
+      enableWormholePost: () => Promise.resolve(true),
+      warmFly: () => Promise.resolve(),
+    } as unknown as Parameters<typeof createStoryFly>[0];
+    const fly = createStoryFly(scene);
+
+    /** one displayed frame, in the real order: the scroll rAF's frame() write,
+     *  then core/scene's tick — the channel ease, then the camera. Reports the
+     *  frame's half-height AT THE ORBIT TARGET as drawn, against the one the
+     *  pose alone asks for (which the matching identity makes exactly
+     *  `baseLen · tan(fovKey/2)`, flatten or no flatten). */
+    const step = (raw: number) => {
+      fly.frame(raw);
+      state.story = lerp(state.story, raw, CHANNEL_EASE);
+      const sample = sampleStory(clamp01(state.story), pos, up, target);
+      const drawn = mix > 0 ? lerp(sample.fov, fov!, mix) : sample.fov;
+      const half = (f: number) => pos.length() * Math.tan((f * Math.PI) / 360);
+      return {
+        ratio: Math.max(
+          half(drawn) / half(sample.fov),
+          half(sample.fov) / half(drawn),
+        ),
+        // …and the pose's own fov beside the drawn one, for the frames where
+        // the flatten owns the pullback
+        pose: sample.fov,
+        drawn,
+      };
+    };
+
+    /** a gesture, settled at its first p first: how many frames were drawn on a
+     *  FLATTENED pose, the worst size error on one of those, and the worst fov
+     *  disagreement. "Flattened" = the pose's fov is under the one the ending's
+     *  rows author, so its distance has been scaled to match a fov of its own. */
+    const worst = (gesture: number[]) => {
+      state.story = gesture[0];
+      for (let i = 0; i < 200; i++) step(gesture[0]);
+      let ratio = 1;
+      let fovGap = 0;
+      let frames = 0;
+      for (const p of gesture) {
+        const f = step(p);
+        if (f.pose >= rwR.scene.cam.fov) continue;
+        frames++;
+        ratio = Math.max(ratio, f.ratio);
+        fovGap = Math.max(fovGap, Math.abs(f.drawn - f.pose));
+      }
+      return { ratio, fovGap, frames };
+    };
+
+    // the reader's own gesture: parked in the bloom, flicked back into the
+    // rewrap's middle (where the flatten is wide open on the eased clock and
+    // the dive re-enters on the raw one), then held while the ease catches up
+    const back = [0.985, 0.985];
+    const to = atFrac(rwR, 0.42);
+    // the flick CATCHES on the flat park on its way through — the reader's
+    // thumb stopping there is a real gesture, and it is what puts a run of
+    // drawn frames on a flattened pose rather than three of them
+    for (let i = 0; i < 40; i++) back.push(atFrac(rwR, 0.9));
+    for (let i = 1; i <= 4; i++) back.push(0.985 + ((to - 0.985) * i) / 4);
+    for (let i = 0; i < 40; i++) back.push(to);
+    const flick = worst(back);
+    // the gesture really does draw flat frames — a law that never reaches the
+    // state it is about is the blind one this replaces
+    expect(flick.frames).toBeGreaterThan(3);
+    expect(flick.fovGap).toBe(0);
+    expect(flick.ratio).toBe(1);
+
+    // …and the way in, at a REAL fling's speed through the same span — 0.02 of
+    // the track per frame, ≈1.2 p/s at 60 fps. The flat band is only a few
+    // hundredths of p wide, so a fling that fast draws exactly three frames
+    // inside it: the floor is what a fling can reach, not a number the step was
+    // tuned down to clear.
+    const fwd: number[] = [];
+    for (let p = atFrac(rwR, 0.1); p < 0.99; p += 0.02) fwd.push(p);
+    for (let i = 0; i < 40; i++) fwd.push(0.99);
+    const fling = worst(fwd);
+    expect(fling.frames).toBeGreaterThanOrEqual(3);
+    expect(fling.fovGap).toBe(0);
+    expect(fling.ratio).toBe(1);
   });
 
   // THE STAGGERED ONSETS (the trails→reassemble camera work read as very

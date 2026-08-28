@@ -25,7 +25,7 @@ import { CHANNEL_DEFAULTS } from "../../core/scene";
 // registry agree — which is what the checks below pin, in both directions.
 
 const RECIPE_NAMES = Object.keys(makeRecipes(NUM)).sort();
-const NON_RECIPE_CHANNELS = ["zoom", "focus", "aperture", "story"];
+const NON_RECIPE_CHANNELS = ["zoom", "focus", "aperture", "huddle", "story"];
 
 describe("the channel registry and the recipe set are the same list", () => {
   it("every recipe has a registry row", () => {
@@ -36,14 +36,14 @@ describe("the channel registry and the recipe set are the same list", () => {
       ).toBe(true);
   });
 
-  it("every registry row but the mechanism trio and `story` is a recipe", () => {
+  it("every registry row but the mechanism channels and `story` is a recipe", () => {
     const motion = Object.keys(CHANNEL_DEFAULTS)
       .filter((c) => !NON_RECIPE_CHANNELS.includes(c))
       .sort();
     expect(motion).toEqual(RECIPE_NAMES);
   });
 
-  it("the non-recipe rows are exactly the mechanism trio plus `story`", () => {
+  it("the non-recipe rows are exactly the mechanism channels plus `story`", () => {
     // Pins the exemption list itself: a new mechanism channel (or a new
     // non-motion scalar) has to be added here deliberately rather than silently
     // widening the gap the check above allows.

@@ -90,9 +90,14 @@ const STATE_HEAD = [
   "camX",
   "camY",
   "camZ",
+  "tgtX",
+  "tgtY",
+  "tgtZ",
   "fov",
   "dolly",
   "roll",
+  "turn",
+  "tilt",
   "zoom",
   "focus",
   "aper",
@@ -115,9 +120,14 @@ const stateRow = (s: StoryState): string[] => [
   s.camera.pos[0].toFixed(2),
   s.camera.pos[1].toFixed(2),
   s.camera.pos[2].toFixed(2),
+  s.camera.target[0].toFixed(2),
+  s.camera.target[1].toFixed(2),
+  s.camera.target[2].toFixed(2),
   s.camera.fov.toFixed(2),
   s.model.dollyX.toFixed(2),
   s.model.rollX.toFixed(3),
+  s.model.turnY.toFixed(3),
+  s.model.tiltZ.toFixed(3),
   f(s.channels.zoom, 3),
   f(s.channels.focus, 3),
   f(s.channels.aperture, 3),
@@ -197,9 +207,12 @@ ${table(["window", "p0", "p1", "width"], windowRows())}
 
 ## State at every edge
 
-One row per scene edge, caption-band edge and window edge. \`roll\` is radians
-about the optical axis (reveal + peel, one write); \`sweep\` is the sky's turn in
-radians; \`iris\` is who owns focus/aperture there.
+One row per scene edge, caption-band edge and window edge. \`camX/Y/Z\` is the
+orbit OFFSET from \`tgtX/Y/Z\`, not a world position — the camera sits at their
+sum, so a scene with a nonzero target frames from nearer (or further) than
+\`camX/Y/Z\` alone reads. \`roll\` is radians
+about the optical axis (the reveal's) and \`turn\` radians about world +Y (the
+cards scene's, plus the ending's rock), one write with \`tilt\` (which carries the rock's other half); \`sweep\` is the sky's turn in radians; \`iris\` is who owns focus/aperture there.
 
 \`\`\`text
 ${table(STATE_HEAD, states.map(stateRow))}

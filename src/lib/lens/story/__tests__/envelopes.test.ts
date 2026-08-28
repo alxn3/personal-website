@@ -2,22 +2,30 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { clamp01, smoothstep } from "../../core/math";
 import {
+  DIVE_P0,
   RANGES,
   atFrac,
+  holdCentreOf,
   pulse,
   rangeOf,
   windowEdges,
-  type StoryWindow,
 } from "../story";
-import { WINK_SPAN } from "../peelcards";
+import { WINK_SPAN, peelTurnAt } from "../peelcards";
 import {
-  RETURN,
+  DIP_MAX,
+  ROCK,
+  ROCK_MAX,
+  dipAt,
+  rockYAt,
+  rockZAt,
+  uprightAt,
   CHROME_FADE,
   F_STOPS,
   IRIS_HANDBACK,
   IRIS_HANDOVER,
-  ASSEMBLE_PULSE,
   CARDS_APART,
+  EXPLODE_PULSE,
+  INTERIOR_BACK,
   ROSE_PULSE,
   assembleAt,
   bgAt,
@@ -66,53 +74,53 @@ const peR = rangeOf("peel");
 const caR = rangeOf("cards");
 const inR = rangeOf("internals");
 const fR = rangeOf("flythrough");
-const tR = rangeOf("trails");
 const rwR = rangeOf("rewrap");
 const capR = rangeOf("capsOn");
 
-const OLD_RETURN: StoryWindow = [
-  ["rewrap", 0.05],
-  ["rewrap", 0.9],
-];
 const OLD_CHROME_FADE_P0 = atFrac(capR, 0.77);
 const OLD_F_STOPS = ["2.8", "4", "5.6", "8", "11", "16", "22"];
 
 const oldZoom = (p: number) =>
   pulse(p, { rise: ["zoom", 0.15, 0.62], fall: ["peel", 0, 0.4] });
-// RETUNED, per this file's own contract (header): the ending became the pieces
-// flying in to construct the rose, so the explode channel's FALL left `rewrap`
-// (where it was authored off EXPLODE_FALL_F and REVEAL_END_F, both spent) for
-// `capsOn`, overlapping the bloom. The transcription moves with it; the rise,
-// and every other expression below, is still the pre-extraction original.
+// RETUNED, per this file's own contract (header). Twice: first when the ending
+// became the pieces flying in to construct the rose, which moved the explode
+// channel's FALL out of `rewrap` (where it was authored off EXPLODE_FALL_F and
+// REVEAL_END_F, both spent) into `capsOn`; and again when the ending became one
+// long descent — the fall now opens on the last scene's own foot, so the middle
+// pieces leave on the still face-on frame and the stack follows under the
+// camera's turn. The transcription moves with it; the rise, and every other
+// expression below, is still the pre-extraction original.
 const oldExplode = (p: number) =>
   pulse(p, {
     rise: ["trails", 0.05, 0.5],
-    fall: ["capsOn", 0.05, 0.55],
+    fall: ["capsOn", 0, 0.64],
   });
-// RETUNED, same contract: the assemble channel runs TWICE and in opposite
-// directions — the cards scene takes the lens APART on it and the sky chapter
-// puts it back — summed because the two pulses are disjoint and each saturates
-// at its own edges. The trails→RETURN half is still the pre-extraction
-// original, verbatim; the cards half is transcribed at its current windows.
+// RETUNED, same contract: the sky chapter's half of this channel is GONE. Two
+// saturated recipes cannot sum into a rigid parked pose, so the ending is the
+// explode recipe alone and the wrap runs over the cards chapter only — one
+// pulse where there were two. The peel half is transcribed at its current
+// windows, which fill the peel scene: the departure has to PLAY there, and its
+// tail runs into the wink instead of stopping ahead of it.
 const oldAssemble = (p: number) =>
-  pulse(p, { rise: ["cards", 0.04, 0.4], fall: ["cards", 0.64, 0.74] }) +
-  pulse(p, { rise: ["trails", 0.15, 0.8], fall: OLD_RETURN });
+  pulse(p, { rise: ["peel", 0.1, 0.92], fall: ["cards", 0.12, 0.26] });
 const oldPreShut = (p: number) =>
   smoothstep(atFrac(inR, 0.6), atFrac(inR, 0.95), p);
 const oldOwnsIris = (p: number) => p < atFrac(caR, 0.15) - 0.02 || p > inR.p1;
 const oldInkFill = (p: number) =>
   0.5 * smoothstep(atFrac(zR, 0.0), atFrac(zR, 0.5), p) +
-  0.5 * smoothstep(peR.p0, atFrac(peR, 0.35), p) -
-  0.84 * smoothstep(atFrac(tR, 0.1), atFrac(tR, 0.6), p) +
-  0.84 * smoothstep(atFrac(rwR, 0.1), atFrac(rwR, 0.8), p);
+  0.5 * smoothstep(peR.p0, atFrac(peR, 0.35), p);
 const oldShellFade = (p: number) =>
   1 -
   smoothstep(WINK_SPAN[0], WINK_SPAN[1], p) +
   smoothstep(rwR.p0, atFrac(rwR, 0.05), p);
+// RETUNED, per this file's own contract (header): the flythrough's approach
+// grew, and the interior's return is authored to WAIT for the camera's park, so
+// its edges left their old hand-authored fractions for the transit DIVE_P0 is
+// derived from. The wink half is still the pre-extraction original.
 const oldInteriorFade = (p: number) =>
   1 -
   smoothstep(WINK_SPAN[0], WINK_SPAN[1], p) +
-  smoothstep(atFrac(fR, 0.13), atFrac(fR, 0.2), p);
+  smoothstep(atFrac(fR, fR.scene.transit), atFrac(fR, fR.scene.transit + 0.07), p); // prettier-ignore
 const oldSceneIndex = (p: number) => {
   let scn = RANGES.length - 1;
   for (let k = 0; k < RANGES.length; k++) {
@@ -161,26 +169,151 @@ const SWEEP: number[] = (() => {
 // intent that test cannot see: that the seam is a HAND-OFF rather than two
 // windows that merely miss.
 describe("the wrap and the bloom hand over, not merely miss", () => {
-  it("SEQUENCES them — the wrap is spent a scene before the bloom opens", () => {
-    // the owner asked for the pieces to spiral home and THEN bloom, so the two
-    // no longer hand over at one frame: the wrap lands inside the rewrap and
-    // the bloom opens a settle beat after the spiral's own far edge.
+  it("SEQUENCES them — the wrap is a whole chapter clear of the bloom", () => {
+    // the two fold the same wedge, so they may not overlap. The wrap is the
+    // cards chapter's alone now, five scenes ahead of the bloom's foot, and the
+    // ending's own coming-together is the EXPLODE channel — which is what the
+    // bloom has to be sequenced against here.
     const seam = windowEdges(ROSE_PULSE.rise)[0];
-    const wrapEnd = windowEdges(RETURN)[1];
+    const wrapEnd = windowEdges(CARDS_APART.fall)[1];
     expect(assembleAt(seam)).toBe(0);
     expect(wrapEnd).toBeLessThan(seam);
     expect(assembleAt(wrapEnd - 1e-4)).toBeGreaterThan(0);
     expect(roseAt(seam + 1e-3)).toBeGreaterThan(0);
+    // …and the descent's own fall lands a settle beat ahead of it
+    expect(windowEdges(EXPLODE_PULSE.fall)[1]).toBeLessThan(seam);
+    expect(explodeAt(seam)).toBe(0);
+  });
+});
+
+describe("the lens stands up for the internals scene", () => {
+  it("is 0 everywhere the story travels the bore, 1 where it is read", () => {
+    const inR = rangeOf("internals");
+    const flR = rangeOf("flythrough");
+    // every span written along world +X: the peel and cards, and the dive
+    for (const p of [0, 0.2, rangeOf("cards").p0, atFrac(caR, 0.5)])
+      expect(uprightAt(p), `p ${p}`).toBe(0);
+    // …upright well inside the internals camera transit, and held for the hold
+    expect(uprightAt(atFrac(inR, 0.5))).toBe(1);
+    expect(uprightAt(holdCentreOf(inR))).toBe(1);
+    expect(uprightAt(inR.p1)).toBe(1);
+    // …and back on the bore's own axis by the dive's first frame, since
+    // story/fly.ts dollies the model along world +X from there
+    expect(uprightAt(DIVE_P0)).toBe(0);
+    for (let i = 0; i <= 40; i++)
+      expect(uprightAt(DIVE_P0 + ((1 - DIVE_P0) * i) / 40), "past the dive").toBe(0); // prettier-ignore
+    // the tip itself is monotone up and monotone down — one turn each way
+    let prev = -1;
+    for (let i = 0; i <= 100; i++) {
+      const v = uprightAt(atFrac(caR, 0.8) + ((atFrac(inR, 0.3) - atFrac(caR, 0.8)) * i) / 100); // prettier-ignore
+      expect(v).toBeGreaterThanOrEqual(prev);
+      prev = v;
+    }
+    expect(uprightAt(atFrac(flR, 0.08))).toBeGreaterThan(0);
+    expect(uprightAt(atFrac(flR, 0.08))).toBeLessThan(1);
   });
 
-  it("keeps the two WRAPS disjoint — the sum is exact", () => {
-    // assembleAt is CARDS_APART + ASSEMBLE_PULSE; a p that saw both would drive
-    // the channel past 1, and the gate reads a channel rather than a clamp.
-    for (const p of SWEEP) {
-      const cards = pulse(p, CARDS_APART);
-      const tail = pulse(p, ASSEMBLE_PULSE);
-      expect(Math.min(cards, tail), `both wraps live at ${p}`).toBe(0);
+  it("dips the nose across the turn, and NOWHERE else", () => {
+    // the dip is subtracted from the tip's own tilt, so a nonzero value outside
+    // the cards chapter would move the bore off the axis every other span is
+    // written against — the dive's included. THE WHOLE PEEL IS IN THAT LIST:
+    // the peel's bore roll rides the model's `x`, which is a roll about the
+    // bore only while the dip's `z` and the turn's `y` are exactly 0.
+    for (const p of [0, heroR.p1, zR.p1, peR.p0, DIVE_P0, rwR.p0, 1])
+      expect(dipAt(p), `p ${p}`).toBe(0);
+    for (let i = 0; i <= 40; i++)
+      expect(dipAt(atFrac(peR, i / 40)), `peel ${i / 40}`).toBe(0);
+    // it is live where the lens turns, and spent exactly as the lens stands up
+    expect(dipAt(caR.p0)).toBe(0);
+    expect(dipAt(holdCentreOf(caR))).toBe(DIP_MAX);
+    expect(dipAt(atFrac(inR, 0.3))).toBe(0);
+    // monotone back to nothing over the stand-up, so nose and tip are one move
+    let prev = Infinity;
+    for (let i = 0; i <= 100; i++) {
+      const v = dipAt(atFrac(caR, 0.8) + ((atFrac(inR, 0.3) - atFrac(caR, 0.8)) * i) / 100); // prettier-ignore
+      expect(v).toBeLessThanOrEqual(prev);
+      prev = v;
     }
+  });
+});
+
+// The ROCK is a SECOND writer on two of the three axes hero-driver's one
+// setModelOrientation call composes, summed with the cards scene's turn and the
+// tip's tilt rather than blended — so its whole contract is that it is nothing
+// at all outside its own window and leaves at zero rate at both edges. Pinned
+// in dipAt's idiom above, because the generated maps cannot see any of it: they
+// sample one p inside this window, and the rise is already saturated there.
+describe("the spinning-top rock", () => {
+  const [P0, P1] = windowEdges(ROCK);
+  /** how far the bore leans off its authored axis at p, radians */
+  const lean = (p: number) => Math.hypot(rockZAt(p), rockYAt(p));
+
+  it("nutates while the last pieces land, and NOWHERE else", () => {
+    // the driver ADDS these to the turn and the tilt, so a nonzero value
+    // outside the window moves the bore off the axis the hand-off pose, the
+    // bloom and every dive-side span are written against.
+    for (const p of [0, heroR.p1, peR.p0, DIVE_P0, rwR.p0, capR.p0, P0, P1, 1])
+      expect(lean(p), `p ${p}`).toBe(0);
+    expect(lean(P0 - 1e-12)).toBe(0);
+    expect(lean(P1 + 1e-12)).toBe(0);
+    for (const p of SWEEP)
+      if (p <= P0 || p >= P1) expect(lean(p), `p ${p}`).toBe(0);
+    // …and it is live in between, or the window is dead weight
+    expect(lean((P0 + P1) / 2)).toBeGreaterThan(0);
+  });
+
+  it("leans exactly ROCK_MAX at the peak, and never further", () => {
+    let peak = 0;
+    for (let i = 0; i <= 20000; i++)
+      peak = Math.max(peak, lean(P0 + ((P1 - P0) * i) / 20000));
+    expect(peak).toBeCloseTo(ROCK_MAX, 15);
+    for (const p of SWEEP)
+      expect(lean(p), `p ${p}`).toBeLessThanOrEqual(ROCK_MAX + 1e-12);
+  });
+
+  it("rises and damps at zero rate — C1 at BOTH edges", () => {
+    const rate = (p: number, h: number) =>
+      Math.hypot(
+        rockZAt(p + h) - rockZAt(p - h),
+        rockYAt(p + h) - rockYAt(p - h),
+      ) /
+      (2 * h);
+    // the rate vanishes LINEARLY with the distance inside each edge, which is
+    // what "no frame on which the wobble begins as an event" means. A C0 rise
+    // (a linear ramp in place of the entry smoothstep) holds it at the ramp's
+    // own slope instead, and is invisible to every other pin in the suite.
+    for (const eps of [1e-6, 1e-5, 1e-4]) {
+      expect(rate(P0 + eps, eps / 2), `entry at ${eps}`).toBeLessThan(
+        5e4 * eps,
+      );
+      expect(rate(P1 - eps, eps / 2), `damp at ${eps}`).toBeLessThan(5e4 * eps);
+    }
+  });
+
+  it("shares no p with the cards scene's turn — the sum is exact", () => {
+    // the driver writes ONE turn, `peelTurnAt(p) + rockYAt(p)`. Both are a hard
+    // 0 outside their own spans, so that write is a sum of disjoint supports
+    // rather than a blend of two laws over a shared stretch.
+    for (const p of SWEEP)
+      expect(
+        Math.min(Math.abs(peelTurnAt(p)), Math.abs(rockYAt(p))),
+        `both turns live at ${p}`,
+      ).toBe(0);
+  });
+});
+
+// THE RELATIONAL PIN the transcription above cannot give: both edges are
+// authored off the flythrough's transit, so this fails loudly the day the
+// approach is retuned and the return is left behind on a stale fraction.
+describe("the interior comes back on the camera's park", () => {
+  it("opens no earlier than the dive's first frame", () => {
+    expect(INTERIOR_BACK[0]).toBeGreaterThanOrEqual(DIVE_P0);
+    expect(INTERIOR_BACK[1]).toBeGreaterThan(DIVE_P0);
+    expect(INTERIOR_BACK[1]).toBeLessThan(fR.p1);
+    // …so not one mesh has come back while the camera is still swinging on,
+    // and the interior is whole again inside the dive
+    expect(interiorFadeAt(DIVE_P0)).toBe(0);
+    expect(interiorFadeAt(INTERIOR_BACK[1])).toBe(1);
   });
 });
 

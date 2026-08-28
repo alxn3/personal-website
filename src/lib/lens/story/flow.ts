@@ -81,7 +81,13 @@ import {
 import { RANGES, holdCentreOf } from "./story";
 import { COST_SAMPLE_PS, DEFORM_RECIPES } from "./cost";
 import { storyStateAt } from "./state";
-import { assembleKeepScopeAt } from "./envelopes";
+import {
+  ASSEMBLE_KEEP_SCOPE,
+  ENDING_BLOOM,
+  ENDING_CURL,
+  ENDING_RING_PHASE,
+  ENDING_REBEND,
+} from "./envelopes";
 
 const RECIPES = makeRecipes(NUM);
 
@@ -230,13 +236,22 @@ export function liveDeformAt(p: number): LiveRecipe[] {
     live.push({
       recipe: RECIPES[name],
       channel,
-      // THE ONE KNOB THE STORY WRITES: the departure's scope, which is a pure
-      // function of p (story/envelopes.ts) and therefore reportable here.
-      // Everything else rests at the recipe's own defaults.
+      // THE FOUR KNOBS THE STORY WRITES (story/envelopes.ts): the departure's
+      // scope, the ending's spread, its mid-fall curl and its parked ring
+      // phase, all constants. Everything else rests at the recipe's own
+      // defaults.
       knobs:
         name === "assemble"
-          ? { ...RECIPES[name].knobDefaults, keepScope: assembleKeepScopeAt(p) }
-          : RECIPES[name].knobDefaults,
+          ? { ...RECIPES[name].knobDefaults, keepScope: ASSEMBLE_KEEP_SCOPE }
+          : name === "explode"
+            ? {
+                ...RECIPES[name].knobDefaults,
+                bloom: ENDING_BLOOM,
+                curl: ENDING_CURL,
+                ringPhase: ENDING_RING_PHASE,
+                rebend: ENDING_REBEND,
+              }
+            : RECIPES[name].knobDefaults,
     });
   }
   return live;

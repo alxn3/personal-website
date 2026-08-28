@@ -21,16 +21,18 @@ describe("story structure (the ring)", () => {
     expect(STORY.map((s) => s.id)).toEqual(ORDER);
   });
 
-  it("fuses rewrap into capsOn, and that pair ONLY", () => {
-    // A fused pair is one continuous camera move across a scene boundary. The
-    // ending needs one; nothing else does, and a linked head pays for it by
-    // being in motion for its whole range — it cannot park, so it cannot HOLD a
-    // pose. That is why the peel→cards seam, which wants continuity as much as
-    // any boundary in the story, is shaped with transits and waypoints instead:
-    // the peel's nose-up settle is its scene's subject.
-    expect(STORY.filter((s) => s.linkNext).map((s) => s.id)).toEqual([
-      "rewrap",
-    ]);
+  it("fuses NO pair — every boundary is shaped with transits and holds", () => {
+    // A fused pair is one continuous camera move across a scene boundary, and
+    // it costs the head its ability to park: one ease over the pair means no
+    // still frame inside it. The ending is what wanted the fusion and is now
+    // exactly what cannot afford it — it holds for the anticipation beat, then
+    // follows the pieces down — so every seam is shaped with `camHold`,
+    // transits and waypoints instead.
+    expect(STORY.filter((s) => s.linkNext).map((s) => s.id)).toEqual([]);
+    // …and a held move must still have a move left to make.
+    for (const sc of STORY)
+      if (sc.camHold !== undefined)
+        expect(sc.camHold, `${sc.id} camHold`).toBeLessThan(sc.transit);
   });
 
   it("holds the parked pose through the sky chapter (transit 0 must not snap)", () => {

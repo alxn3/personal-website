@@ -7,7 +7,7 @@ import {
   setLensEnvironment,
 } from "./model";
 import { createShading, type ShadingMode } from "../materials/shading";
-import { createUnified } from "../materials/unified";
+import { createUnified, cutInkEdges } from "../materials/unified";
 import { deriveFrames } from "../ops/frames";
 import {
   recipeChannel,
@@ -17,16 +17,10 @@ import {
   setDeformBackend,
   RECIPE_NAMES,
 } from "../ops/host";
-import {
-  uFadeNear0,
-  uFadeNear1,
-  uFadeFar0,
-  uFadeFar1,
-} from "../materials/depthfade";
+import { writeFadeBands } from "../materials/depthfade";
 import { sampleStory, applyStoryFraming } from "../story/camera";
 import { createMechanism, tagMechanismSpins } from "../ops/mechanism";
 import { createCinematics } from "../story/cinematics";
-import { displaceSeatedPoint } from "../ops/cpu";
 import { isAccessory, isOpticalGlass } from "./parts";
 import { clamp01, smoothstep, lerp } from "./math";
 import {
@@ -102,6 +96,9 @@ const CHANNEL_REGISTRY = {
   focus: { default: 0 },
   /** 0 (f/2.8, wide open) .. 1 (f/22, closed down) */
   aperture: { default: 0 },
+  /** 0 (seated anatomy) .. 1 (the bare core drawn axially compact) — the
+   *  story's cards chapter only; /lens never writes it */
+  huddle: { default: 0 },
   /** explode ladder recipe: 0 (assembled) .. 1 (parts spread along the axis) */
   explode: { default: 0, animReset: true, idleZero: true },
   /** reassembly spread: 0 (seated) .. 1 (sheets unwrapped, off the ladder) */
@@ -170,15 +167,6 @@ export interface CameraPose {
 export interface TrackedPoint {
   x: number;
   y: number;
-}
-
-/** Where a model node is DRAWN: the centre and radius of the disc it covers,
- *  in FRAME HEIGHTS from the frame's centre — +x right, +y DOWN. Not pixels,
- *  because the consumers draw INTO the canvas at any size or DPR. */
-export interface TrackedCircle {
-  x: number;
-  y: number;
-  r: number;
 }
 
 /** An ADDITIVE per-part transform offset: position in the part's local frame
@@ -268,11 +256,6 @@ export interface SceneHandle {
       project: (name: string, out: TrackedPoint) => TrackedPoint | null,
     ) => void,
   ) => void;
-  /** …and where a part is actually DRAWN, in FRAME HEIGHTS. Same projection
-   *  with the op deform folded in on the CPU, so it follows a piece the deform
-   *  has thrown clear of its seat. Ink drawn ONTO a part wants this; a DOM
-   *  label wants `project` and its seated anchor. */
-  projectDrawn: (name: string) => TrackedCircle | null;
   /** DEV: motion-path overlay for the canned animations. Dynamically
    *  imported; returns null if the visualizer can't start. */
   enablePathViz: (
@@ -423,13 +406,44 @@ export interface SceneHandle {
    *  between near-identical frames instead of flashing. The caller MUST restore
    *  (`f = 0`) BEFORE unmounting — this is a silent no-op once unmounted. */
   setSkyDim: (f: number, rgb: [number, number, number]) => void;
+  /** THE LIVE FRAME'S VERTICAL HALF-EXTENT, in view-space units per unit of
+   *  depth: `tan(fov/2) / zoom`. View-space overlays (story/petals.ts) size
+   *  themselves off this rather than re-deriving the zoom law below. */
+  frameHalf: () => number;
+  /** the frame's width in units of its own height — camera.aspect, live */
+  frameAspect: () => number;
   destroy: () => void;
 }
+
+/** THE ZOOM LAW: size the lens by the SMALLER viewport dimension, capped at the
+ *  layout width. A perspective camera otherwise scales pixel size purely by
+ *  viewport height, so zoom corrects with (capped min dimension) / height —
+ *  which on any portrait viewport is exactly the ASPECT. Exported so
+ *  story/state.ts can report the framing a real canvas would get. */
+export const frameZoom = (w: number, h: number, maxPx = Infinity): number =>
+  Math.min(w, h, maxPx) / h;
+
+/** …and how much of the story's horizontal lens-park a viewport gets: full on a
+ *  wide screen, off on a phone, where the caption sits under the lens instead
+ *  (story/camera.ts applies the portrait lift in its place). */
+export const parkScaleFor = (w: number, h: number): number =>
+  Math.max(0, Math.min(1, (w / h - 0.8) / 0.7));
 
 // The GLB is exported in real-world millimetres, and glTF export converts
 // Blender's Z-up to Y-up — so a Blender local z on these identity-rotated
 // nodes is a local y here, and +z(front) ↦ +y. This scales mm to world units.
 const MODEL_SCALE = 0.05;
+
+/** The camera's far plane at rest — a FLOOR, see `farFor`. */
+const CAM_FAR = 400;
+
+/** THE FAR PLANE FOR ONE FRAME. The story's ortho flatten parks the camera at
+ *  ten times its own reach and the portrait reach (story/story.ts `Pose.wide`)
+ *  multiplies that again, so a fixed plane clips the whole model away at the
+ *  flat park. Only ever raised above the resting one, so nothing drawn ON the
+ *  camera (the sky) can fall outside it. */
+export const farFor = (dist: number, radius: number): number =>
+  Math.max(CAM_FAR, dist + radius * 8);
 
 export interface SceneOptions {
   /** Multiplier on the default camera distance (>1 pulls back to frame the
@@ -447,17 +461,41 @@ export interface SceneOptions {
  * Load-time model prep. THE ORDER IS A DEPENDENCY CHAIN — do not reorder:
  *   1. deriveFrames      stamps the `_op*` attributes every graph reads
  *   2. tagMechanismSpins tags off-axis pivots as BAKED nodes, not branches
- *   3. createUnified     builds the model's one deform material
- *   4. createShading     layers the bench swapper over it
+ *   3. cutInkEdges       cuts the line-work off those attributes
+ *   4. createUnified     builds the model's one deform material
+ *   5. createShading     layers the bench swapper over it
+ *
+ * 1-3 are pure CPU passes over the parsed model and run in `prepModel` on the
+ * LOAD chain, ahead of this call; 4-5 build TSL graphs and cannot start before
+ * `setDeformBackend()`, so they stay behind the renderer's init.
  */
-function prepareModelMaterials(gltfScene: THREE.Object3D) {
-  const frames = deriveFrames(gltfScene);
-  // createMechanism owns the pivot itself but must wait for the recentre, which
-  // is why the TAG pass is split out and runs up here.
-  tagMechanismSpins(gltfScene);
-  const unified = createUnified(gltfScene);
+function prepareModelMaterials(
+  gltfScene: THREE.Object3D,
+  inkEdges: Map<number, THREE.BufferGeometry>,
+) {
+  const unified = createUnified(gltfScene, inkEdges);
   const shading = createShading(gltfScene, unified);
-  return { unified, shading, frames };
+  return { unified, shading };
+}
+
+/**
+ * Steps 1-3 above, chained onto the model load so they overlap the WebGPU
+ * adapter request instead of queueing behind it. They need no renderer, and
+ * running them EARLIER is safe — the deform graph builders only read what they
+ * write. `createMechanism` owns the lead-screw pivot itself but must wait for
+ * the recentre, which is why the TAG pass is split out and runs here.
+ */
+async function prepModel(gltfScene: THREE.Object3D) {
+  // ONE YIELD FIRST: `renderer.init()` is a CHAIN of GPU round trips, and an
+  // unbroken CPU block starves the callback that issues the next one — the
+  // await then lands after this work instead of under it.
+  await new Promise((r) => setTimeout(r, 0));
+  const frames = deriveFrames(gltfScene);
+  tagMechanismSpins(gltfScene);
+  performance.mark("lens:frames-derived");
+  const inkEdges = cutInkEdges(gltfScene);
+  performance.mark("lens:lines-cut");
+  return { frames, inkEdges };
 }
 
 /**
@@ -466,6 +504,12 @@ function prepareModelMaterials(gltfScene: THREE.Object3D) {
  * uniforms are all MODULE state, so two live scenes would scrub the same
  * numbers and fight. Destroy one before booting another.
  */
+/** The model group's boot roll about Z: it lays the gltf's optical axis (+Y)
+ *  onto world +X, which every span that travels the bore is written against. At
+ *  z = 0 the bore stands UP instead, which is what the story tips it to for the
+ *  internals scene (story/envelopes.ts `uprightAt`). */
+export const MODEL_BORE_X_Z = -Math.PI / 2;
+
 export async function initScene(
   canvas: HTMLCanvasElement,
   opts: SceneOptions = {},
@@ -476,7 +520,9 @@ export async function initScene(
   // behind the WebGPU adapter request is pure added latency. The BODY GLB alone
   // gates the first frame; accessories stream in behind it.
   const withAccessories = opts.accessories ?? !storyMode;
-  const modelPromise = loadLensModel({ accessories: withAccessories });
+  const modelPromise = loadLensModel({ accessories: withAccessories }).then(
+    async (loaded) => ({ ...loaded, ...(await prepModel(loaded.scene)) }),
+  );
   // WebGPU (auto-falls back to WebGL2) — required for the TSL deform graph.
   // high-performance: this is a full-viewport hero, not a widget worth
   // throttling to a dual-GPU machine's integrated chip.
@@ -529,8 +575,9 @@ export async function initScene(
 
   const scene = new THREE.Scene();
   // far=400: the story's ortho holds pull the camera back far enough that a
-  // 100 far plane would clip the lens away.
-  const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 400);
+  // 100 far plane would clip the lens away. It is a FLOOR, not a ceiling — the
+  // story-mode block below raises it to follow the deepest pull-backs.
+  const camera = new THREE.PerspectiveCamera(45, 1, 0.1, CAM_FAR);
   const camDist = opts.cameraDistance ?? 1;
   camera.position.set(3.5 * camDist, 1.6 * camDist, 5 * camDist);
 
@@ -558,12 +605,16 @@ export async function initScene(
 
   // --- real lens model (Blender exterior + optics, GLB) --------------------
   const modelGroup = new THREE.Group();
-  modelGroup.rotation.z = -Math.PI / 2;
+  modelGroup.rotation.z = MODEL_BORE_X_Z;
   modelGroup.scale.setScalar(MODEL_SCALE);
   scene.add(modelGroup);
 
-  const { scene: gltfScene, accessoriesReady: accessoriesLoad } =
-    await modelPromise;
+  const {
+    scene: gltfScene,
+    accessoriesReady: accessoriesLoad,
+    frames,
+    inkEdges,
+  } = await modelPromise;
   // A never-rejecting handle to the accessories load, so every consumer below
   // can `.then` without its own catch: on failure they simply never appear.
   const accessoriesReady = accessoriesLoad.catch((err) => {
@@ -581,7 +632,7 @@ export async function initScene(
   // that axis, so this only re-phases the start angle.
   gltfScene.rotation.y = Math.PI / 2;
 
-  const { unified, shading, frames } = prepareModelMaterials(gltfScene);
+  const { unified, shading } = prepareModelMaterials(gltfScene, inkEdges);
   performance.mark("lens:materials-ready");
   if (import.meta.env.DEV) {
     reportOpsFrames(gltfScene, frames);
@@ -1189,14 +1240,10 @@ export async function initScene(
       postStaleAt = performance.now();
     }
     camera.aspect = w / h;
-    parkScale = Math.max(0, Math.min(1, (w / h - 0.8) / 0.7));
-    // Size the lens by the SMALLER viewport dimension, capped at the layout
-    // width. A perspective camera otherwise scales pixel size purely by
-    // viewport height, so zoom corrects with (capped min dimension) / height.
+    parkScale = parkScaleFor(w, h);
     const rem =
       parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
-    const MAX_PX = 112 * rem; // matches --container-layout
-    camera.zoom = Math.min(w, h, MAX_PX) / h;
+    camera.zoom = frameZoom(w, h, 112 * rem); // 112rem matches --container-layout
     camera.updateProjectionMatrix();
     dirty = true;
   }
@@ -1242,69 +1289,6 @@ export async function initScene(
     out.x = ((trackVec.x + 1) / 2) * cssW;
     out.y = ((1 - trackVec.y) / 2) * cssH;
     return out;
-  }
-
-  // …and the DRAWN disc (projectDrawn): the same cached seated centre plus the
-  // world bounding radius, put through the CPU op field before projection —
-  // which is the whole difference from `project` above.
-  const drawCache = new Map<
-    string,
-    { mesh: THREE.Mesh; local: THREE.Vector3; radius: number } | null
-  >();
-  const drawC = new THREE.Vector3();
-  const drawE = new THREE.Vector3();
-  const drawRight = new THREE.Vector3();
-  function projectDrawn(name: string): TrackedCircle | null {
-    let t = drawCache.get(name);
-    if (t === undefined) {
-      const obj = gltfScene.getObjectByName(name);
-      // the op field is a MESH's, so a group node is followed by its first
-      // mesh
-      let mesh: THREE.Mesh | null = null;
-      obj?.traverse((o) => {
-        if (!mesh && o instanceof THREE.Mesh) mesh = o;
-      });
-      if (!obj || !mesh) {
-        console.warn(`lens scene: no model mesh named "${name}" to draw on`);
-        t = null;
-      } else {
-        const box = new THREE.Box3().setFromObject(obj);
-        const half = box.getSize(new THREE.Vector3()).multiplyScalar(0.5);
-        t = {
-          mesh,
-          local: (mesh as THREE.Mesh).worldToLocal(
-            box.getCenter(new THREE.Vector3()),
-          ),
-          // the LARGEST HALF-EXTENT, not the bounding sphere: a lens element
-          // is a disc, and the sphere around its box is √2 too wide
-          radius: Math.max(half.x, half.y, half.z),
-        };
-      }
-      drawCache.set(name, t);
-    }
-    if (!t) return null;
-    t.mesh.updateWorldMatrix(true, false);
-    drawC.copy(t.local);
-    displaceSeatedPoint(t.mesh, drawC);
-    t.mesh.localToWorld(drawC);
-    // the radius measured ACROSS the screen: one camera-right world offset of
-    // the seated bounding radius, projected alongside the centre
-    drawRight
-      .setFromMatrixColumn(camera.matrixWorld, 0)
-      .multiplyScalar(t.radius);
-    drawE.copy(drawC).add(drawRight);
-    drawC.project(camera);
-    drawE.project(camera);
-    if (drawC.z > 1) return null; // behind the camera
-    // NDC → frame heights from the centre: y is a straight half, x carries the
-    // aspect (see TrackedCircle)
-    const aspect = cssW / cssH;
-    const x = (drawC.x * aspect) / 2;
-    return {
-      x,
-      y: -drawC.y / 2,
-      r: Math.abs((drawE.x * aspect) / 2 - x),
-    };
   }
 
   // Story mode scripts the camera and the hero canvas is pointer-events:none,
@@ -1489,6 +1473,7 @@ export async function initScene(
       zoom: zoomT, // the shared-smoothstep value, NOT the raw eased channel
       focus: focusT,
       aperture: apertureT,
+      huddle: clamp01(state.huddle),
     });
 
     // The op recipe channels: these ARE the deform, one registry channel per
@@ -1567,30 +1552,25 @@ export async function initScene(
         camera.fov = lerp(camera.fov, storyFov, storyFovMix);
         camera.updateProjectionMatrix();
       }
+      // the far plane follows the pull-back (farFor)
+      const far = farFor(camera.position.length(), modelRadius);
+      if (camera.far !== far) {
+        camera.far = far;
+        camera.updateProjectionMatrix();
+      }
     }
 
-    // Depth-fade planes track the live camera distance so the body stays in
-    // the full-opacity middle and only exploded pieces cross one. Widths are in
-    // model radii, so this scales with the scene's shooting distance.
-    {
-      // Distance to the SUBJECT, which is the lens at x = dollyX, not the
-      // origin. TRACKING THE DOLLY IS THE INK'S LICENCE: the ink look folds
-      // this fade into its opacity, and its return ramp opens while the reveal
-      // is still seating — planes centred on the origin would put the parked
-      // lens deep into its own far fade and dissolve its tail.
-      const camDist =
-        storyMode || storyCam
-          ? Math.sqrt(
-              (storyPos.x - dollyX) * (storyPos.x - dollyX) +
-                storyPos.y * storyPos.y +
-                storyPos.z * storyPos.z,
-            )
-          : camera.position.length();
-      uFadeNear1.value = camDist - modelRadius * 1.05;
-      uFadeNear0.value = camDist - modelRadius * 2.3;
-      uFadeFar0.value = camDist + modelRadius * 1.05;
-      uFadeFar1.value = camDist + modelRadius * 2.6;
-    }
+    // Depth-fade planes, from the live camera and the live spread
+    // (materials/depthfade.ts owns the placement). TRACKING THE DOLLY IS THE
+    // INK'S LICENCE: the ink look folds this fade into its opacity and its
+    // return ramp opens while the reveal is still seating, so planes centred on
+    // the origin would put the parked lens deep into its own far fade.
+    writeFadeBands(
+      camera.position,
+      dollyX,
+      modelRadius,
+      Math.max(state.explode, state.assemble),
+    );
 
     // The drawn sky rides ON the camera: parking it on this frame's eye
     // position is what makes near geometry behave like an infinitely distant
@@ -1890,9 +1870,6 @@ export async function initScene(
       // the dive's two darkness ramps: the room, and the glass's reflections
       setRoomLight: applyRoomLight,
       setGlassGlint: applyGlassGlint,
-      // where a node is DRAWN, in frame heights — so an authored landing
-      // circle can be re-measured against the live scene, not a screenshot
-      projectDrawn,
     };
   }
 
@@ -2086,7 +2063,6 @@ export async function initScene(
     onFrame(cb) {
       frameCbs.push(cb);
     },
-    projectDrawn,
     async enablePathViz(onStatus) {
       if (pathViz) return pathViz;
       try {
@@ -2256,6 +2232,12 @@ export async function initScene(
       // of it — the fade rides along, so a flip mid-melt is invisible.
       if (glassTransmissive) reseatGlassTransmissive();
       dirty = true;
+    },
+    frameHalf() {
+      return Math.tan((camera.fov * Math.PI) / 360) / camera.zoom;
+    },
+    frameAspect() {
+      return camera.aspect;
     },
     destroy() {
       destroyed = true;

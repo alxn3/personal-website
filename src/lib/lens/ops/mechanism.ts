@@ -44,6 +44,7 @@ export const MECHANISM: {
   irisCloseDeg: number;
   camPlateDeg: number;
   actuatorGearDeg: number;
+  huddleMm: Record<string, number>;
 } = {
   zoomRingRad: deg(-76.6),
   zoomMm: {
@@ -58,6 +59,18 @@ export const MECHANISM: {
   irisCloseDeg: 25.3,
   camPlateDeg: 12,
   actuatorGearDeg: -92,
+  // THE HUDDLE, mm at channel 1 (+ = frontward): the bare core closes its own
+  // axial air — the mount block and the focus drive step toward the stop, the
+  // rear glass follows, the front pair drops back — so the cards scene turns a
+  // compact lens rather than the strung-out anatomy the departed barrel used
+  // to bridge. NOT a real-lens motion: driven only by the story's huddle
+  // channel, 0 everywhere else, so /lens never sees it.
+  huddleMm: {
+    Grp_MountRear: 26,
+    Grp_FocusDrive: 16,
+    Optics_G4_Focus: 8,
+    Barrel_Inner: -10,
+  },
 };
 
 /** The blades' sweep is linear in the channel, but the drive chain ahead of
@@ -92,6 +105,9 @@ export interface MechanismDrive {
   focus: number;
   /** 0 (f/2.8, wide open) .. 1 (f/22, closed down) */
   aperture: number;
+  /** 0 (seated anatomy) .. 1 (the bare core drawn compact) — the story's
+   *  cards-chapter channel, not a real-lens motion */
+  huddle: number;
 }
 
 /**
@@ -160,16 +176,23 @@ export function createMechanism(root: THREE.Object3D): {
   const irisActuatorGear = driven(node("Iris_ActuatorGear"));
 
   // Every node driven by a position channel, resolved once and summed each
-  // frame. The group empties sit at their parent's origin (geometry is baked in
-  // place), so the sum IS the node's position — no base to add.
-  const posNames = new Set([...Object.keys(MECHANISM.zoomMm), FOCUS_NODE]);
+  // frame ON TOP of the node's own seat: the shipped group empties are
+  // identity, but a holder that carries a transform must keep it (the
+  // shipped-glb guard drives this through a translated empty).
+  const posNames = new Set([
+    ...Object.keys(MECHANISM.zoomMm),
+    ...Object.keys(MECHANISM.huddleMm),
+    FOCUS_NODE,
+  ]);
   const posRiders = [...posNames]
     .map((name) => ({ obj: node(name), name }))
     .filter((e): e is { obj: THREE.Object3D; name: string } => Boolean(e.obj))
     .map(({ obj, name }) => ({
       obj,
+      base: obj.position.clone(),
       zoom: MECHANISM.zoomMm[name] ?? 0,
       focus: name === FOCUS_NODE ? MECHANISM.focusMm : 0,
+      huddle: MECHANISM.huddleMm[name] ?? 0,
     }));
 
   // Focus lead screw: an off-axis rod. Wrap it in a pivot at its own centre so
@@ -198,11 +221,16 @@ export function createMechanism(root: THREE.Object3D): {
     return pivot;
   })();
 
-  function update({ zoom, focus, aperture }: MechanismDrive) {
+  function update({ zoom, focus, aperture, huddle }: MechanismDrive) {
     // Axial slides: zoom extends the barrel/optics groups along the optical
-    // axis (Y in the gltf frame), focus slides L4's empty. Both are model mm.
+    // axis (Y in the gltf frame), focus slides L4's empty, the huddle draws the
+    // bare core compact. All model mm, summed onto the node's own seat.
     for (const r of posRiders)
-      r.obj.position.set(0, zoom * r.zoom + focus * r.focus, 0);
+      r.obj.position.set(
+        r.base.x,
+        r.base.y + zoom * r.zoom + focus * r.focus + huddle * r.huddle,
+        r.base.z,
+      );
 
     turn(ringZoom, zoom * MECHANISM.zoomRingRad);
     // Cam barrel is pinned 1:1 to the zoom ring — same angle, same sign.

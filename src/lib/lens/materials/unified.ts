@@ -21,7 +21,7 @@ import {
 } from "../ops/host";
 import type { TslNode } from "../ops/tsl-types";
 import { depthFadeFactor } from "./depthfade";
-import { isOpticalGlass, isDecal } from "../core/parts";
+import { isOpticalGlass, isDecal, isAccessory } from "../core/parts";
 import { clamp01 } from "../core/math";
 
 // The story's two looks on ONE material: "realistic" (core/model.ts's PBR spec,
@@ -40,8 +40,12 @@ import { clamp01 } from "../core/math";
 //     dive. core/scene's body fade wants the same flag, so it has ONE owner
 //     with two inputs — `writeTransparent`.
 //   - GLASS. `transmission > 0` puts a mesh in the transmission pass forever,
-//     so the elements keep two materials and swap at GLASS_HANDOVER, where both
-//     sides are at zero opacity — which is what makes the cut invisible.
+//     and the backdrop it refracts is copied from the OPAQUE pass alone — so
+//     while the body is transparent (any ink at all, above) a transmissive
+//     element refracts the BACKGROUND and reads as a hole through the lens.
+//     The elements therefore keep two materials and swap at GLASS_HANDOVER,
+//     where both sides are at zero opacity, which is what makes the cut
+//     invisible. It is a plain crossfade of two FILLS: no line-work on glass.
 //
 // THE INK TWIN. At uInk = 1 the blend still emits the whole PBR fragment path
 // and multiplies it by zero, so the body swaps to a MeshBasicNodeMaterial built
@@ -65,7 +69,7 @@ const uInk = uniform(0);
  *  framebuffer copy switches off, and story/cost.ts may not spell it twice. */
 export const GLASS_HANDOVER = 0.5;
 
-/** The elements' cross-fade as the two halves of the ramp. Both are 0 AT the
+/** The elements' crossfade as the two halves of the ramp. Both are 0 AT the
  *  hand-over, which is what makes the material swap invisible. SQUARE-ROOTED
  *  because the halves are SEQUENTIAL — sqrt rises steeply off zero and so keeps
  *  the elements present right up to the swap. Fresh node per material. */
@@ -145,20 +149,40 @@ function inkFill(name: string, light: boolean): number {
   return 0x211d16; // matte body — near-black so the outlines pop
 }
 
-/** Ink edge-line colours: glass gets the green accent; the body lines are warm
- *  white on the dark stage, sepia on the light one. */
-const INK_EDGE = {
-  body: { dark: 0xe4dbc4, light: 0x2f2a20 },
-  glass: { dark: 0xc9e6bb, light: 0x3f6b39 },
-};
+/** Ink edge-line colour: warm white on the dark stage, sepia on the light one. */
+const INK_EDGE = { dark: 0xe4dbc4, light: 0x2f2a20 };
 
-/** EdgesGeometry crease angle for the ink line-work. A READING, like
- *  GLASS_HANDOVER: story/cost.ts cuts at it and may not spell it twice. */
+/** EdgesGeometry crease angle for the ink line-work. A READING, not a knob:
+ *  story/cost.ts cuts at it and may not spell it twice. */
 export const EDGE_THRESHOLD_DEG = 24;
 
 /** Does this mesh wear an ink edge-line — `addLine`'s own skip, as a predicate,
  *  so story/cost.ts can select the same set instead of restating the rule. */
-export const hasInkEdgeLine = (name: string): boolean => !isDecal(name);
+export const hasInkEdgeLine = (name: string): boolean =>
+  !isDecal(name) && !isOpticalGlass(name);
+
+/** Cut every ink edge-line's geometry, keyed by mesh id — `addLine`'s cache,
+ *  filled ahead of it. Pure geometry over the frame attributes, so core/scene
+ *  runs it on the model-load chain (no renderer) and hands the map to
+ *  `createUnified`; anything it misses is still cut on demand. */
+export function cutInkEdges(
+  root: THREE.Object3D,
+): Map<number, THREE.BufferGeometry> {
+  const cut = new Map<number, THREE.BufferGeometry>();
+  root.traverse((o) => {
+    if (!(o instanceof THREE.Mesh) || !hasInkEdgeLine(o.name)) return;
+    // Accessories are framed by their own later pass (core/scene), so cutting
+    // one here would cache an UNFRAMED line for a mesh that goes on to deform.
+    if (isAccessory(o.name)) return;
+    cut.set(
+      o.id,
+      hasOpFrames(o)
+        ? opsEdgeGeometry(o.geometry, EDGE_THRESHOLD_DEG)
+        : new THREE.EdgesGeometry(o.geometry, EDGE_THRESHOLD_DEG),
+    );
+  });
+  return cut;
+}
 
 /** What one mesh wears: for GLASS the merged material plus the ink fill that
  *  cannot merge with transmission; for a BODY mesh its cache key's materials.
@@ -234,19 +258,17 @@ export interface UnifiedLook {
 }
 
 /** The ink edge-lines' opacity graph, its own function so the law is testable
- *  without a renderer. The BODY's lines ride the whole ramp, the factor its
- *  fill mixes on; the GLASS's ride the TOP HALF, the envelope of the fill they
- *  outline, so outline and fill share one edge both ways. Both also ride
- *  `materialOpacity`, the only way the body fade reaches them. */
-export const inkLineOpacity = (glass: boolean, opsPos?: TslNode): TslNode =>
-  float(glass ? 0.7 : 0.9)
+ *  without a renderer. The lines ride the whole ramp, the factor their fill
+ *  mixes on, and `materialOpacity`, the only way the body fade reaches them. */
+export const inkLineOpacity = (opsPos?: TslNode): TslNode =>
+  float(0.9)
     .mul(depthFadeFactor(opsPos))
     .mul(materialOpacity)
-    .mul(glass ? inkTopHalf() : (uInk as any));
+    .mul(uInk as any);
 
-/** The glass elements' two opacity graphs. An opacityNode REPLACES the scalar,
- *  so `materialOpacity` is the only way the body fade reaches a NodeMaterial —
- *  miss it on any one of the glass's three materials and a column of elements
+/** The glass elements' two opacity graphs — the crossfade's two halves. An
+ *  opacityNode REPLACES the scalar, so `materialOpacity` is the only way the
+ *  body fade reaches a NodeMaterial: miss it on either and a column of elements
  *  floats where the lens used to be. `fade` cannot be built here. */
 export const glassFillOpacity = (): TslNode =>
   materialOpacity.mul(inkBottomHalf());
@@ -277,9 +299,12 @@ export const bodyFillOpacity = (fade: TslNode): TslNode =>
  * attach, ONE material per source material × graph variant, plus the ink half.
  * Runs in core/scene's prepareModelMaterials chain AFTER deriveFrames /
  * tagMechanismSpins, whose writes the deform graph reads, and BEFORE
- * createShading.
+ * createShading. `edges` is `cutInkEdges`' output, adopted as the line cache.
  */
-export function createUnified(root: THREE.Object3D): UnifiedLook {
+export function createUnified(
+  root: THREE.Object3D,
+  edges?: Map<number, THREE.BufferGeometry>,
+): UnifiedLook {
   // Site theme, detected here so both pages get the right palette without
   // wiring; toggles arrive via setTheme (the pages own the observer).
   let light = !document.documentElement.classList.contains("dark");
@@ -329,7 +354,7 @@ export function createUnified(root: THREE.Object3D): UnifiedLook {
   const twins = new Set<THREE.Material>();
   const tints: Tint[] = [];
   const inkLines: THREE.LineSegments[] = [];
-  const edgeGeo = new Map<number, THREE.BufferGeometry>();
+  const edgeGeo = edges ?? new Map<number, THREE.BufferGeometry>();
   const created = new Set<THREE.Material>();
 
   const track = <T extends THREE.Material>(m: T): T => {
@@ -453,7 +478,7 @@ export function createUnified(root: THREE.Object3D): UnifiedLook {
 
   /** The elements' ink fill — flat mint, NOT cel-banded and never dissolved by
    *  uInkFill, so the glass stays filled while the body goes to wireframe. The
-   *  SECOND half of the cross-fade: 0 at the hand-over, full at 1. */
+   *  SECOND half of the crossfade: 0 at the hand-over, full at 1. */
   function glassInkMaterial(mesh: THREE.Mesh, key: string, framed: boolean) {
     const hit = glassInk.get(key);
     if (hit) return hit;
@@ -462,8 +487,6 @@ export function createUnified(root: THREE.Object3D): UnifiedLook {
     const m = new THREE.MeshBasicNodeMaterial();
     m.color.setHex(light ? lit : dark);
     const fade = opsFade(m as unknown as THREE.NodeMaterial, mesh, framed);
-    // × the ramp's TOP HALF, so this is at exactly 0 on the frame the swap
-    // puts it on, and × materialOpacity so the body fade reaches it.
     m.opacityNode = glassInkOpacity(fade) as any;
     m.transparent = true;
     m.polygonOffset = true;
@@ -476,27 +499,24 @@ export function createUnified(root: THREE.Object3D): UnifiedLook {
     return track(mat);
   }
 
-  const edgeTint = (glass: boolean) => (glass ? INK_EDGE.glass : INK_EDGE.body);
-
-  function lineMaterial(mesh: THREE.Mesh, glass: boolean, framed: boolean) {
-    const key = `${glass}|${framed}|${opsVariantKey(mesh)}`;
+  function lineMaterial(mesh: THREE.Mesh, framed: boolean) {
+    const key = `${framed}|${opsVariantKey(mesh)}`;
     const hit = lineMats.get(key);
     if (hit) return hit;
     const m = new THREE.LineBasicNodeMaterial();
-    const pair = edgeTint(glass);
-    m.color.setHex(light ? pair.light : pair.dark);
+    m.color.setHex(light ? INK_EDGE.light : INK_EDGE.dark);
     m.transparent = true;
     // Attach the deform first, then share its position node with the fade.
     const opsPos = framed
       ? attachOpsLine(m as unknown as THREE.NodeMaterial, mesh)
       : undefined;
-    m.opacityNode = inkLineOpacity(glass, opsPos);
+    m.opacityNode = inkLineOpacity(opsPos);
     m.alphaTest = 0.02; // faded lines must not depth-clip either
     lineMats.set(key, m);
     tints.push({
       write: (h) => m.color.setHex(h),
-      dark: pair.dark,
-      light: pair.light,
+      dark: INK_EDGE.dark,
+      light: INK_EDGE.light,
     });
     track(m);
     return m;
@@ -542,19 +562,19 @@ export function createUnified(root: THREE.Object3D): UnifiedLook {
 
   /** The elements' realistic material: the plain op material the dive's
    *  transmissive clones are made from, plus the FIRST half of the
-   *  cross-fade. */
+   *  crossfade. */
   function mergedGlass(mesh: THREE.Mesh, key: string, framed: boolean) {
     const hit = merged.get(key);
     if (hit) return hit;
     const m = reclass(source.get(mesh)!);
     if (framed) attachOps(m, mesh);
-    // materialOpacity first, so the dive's clones can write `opacity`, then
-    // out over the ramp's bottom half. The clones inherit this node
-    // harmlessly: the dive runs at uInk 0, where the factor is exactly 1.
+    // materialOpacity first, so the dive's clones can write `opacity`, then out
+    // over the ramp's bottom half. The clones inherit this node harmlessly: the
+    // dive runs at uInk 0, where the factor is exactly 1.
     m.opacityNode = glassFillOpacity() as any;
     // Set once at build, never flipped with the body's: three keys a pipeline
     // on `transparent`, so a flip at the 0-edge would compile a second glass
-    // pipeline on the cross-fade's first frame. Free to leave on.
+    // pipeline on the crossfade's first frame. Free to leave on.
     m.transparent = true;
     const mat = m as unknown as THREE.Material;
     merged.set(key, mat);
@@ -564,7 +584,7 @@ export function createUnified(root: THREE.Object3D): UnifiedLook {
   /** ONE mesh's edge lines. The geometry is cached per mesh — a pure function
    *  of the immutable source geometry, and the ink look's expensive half. */
   function addLine(mesh: THREE.Mesh) {
-    if (!hasInkEdgeLine(mesh.name)) return; // a decal's outline is a rectangle
+    if (!hasInkEdgeLine(mesh.name)) return;
     const framed = hasOpFrames(mesh);
     let geo = edgeGeo.get(mesh.id);
     if (!geo) {
@@ -573,10 +593,7 @@ export function createUnified(root: THREE.Object3D): UnifiedLook {
         : new THREE.EdgesGeometry(mesh.geometry, EDGE_THRESHOLD_DEG);
       edgeGeo.set(mesh.id, geo);
     }
-    const line = new THREE.LineSegments(
-      geo,
-      lineMaterial(mesh, isOpticalGlass(mesh.name), framed),
-    );
+    const line = new THREE.LineSegments(geo, lineMaterial(mesh, framed));
     line.raycast = () => {}; // extras are never pickable
     line.userData.lensExtra = true; // …and never a piece of the model (integrate)
     line.visible = inkOn;

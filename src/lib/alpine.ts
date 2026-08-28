@@ -1,5 +1,6 @@
 import type { Alpine } from "alpinejs";
 import { isDesktop } from "./constants";
+import { initPaletteTryout } from "./palette-tryout";
 
 // @astrojs/alpinejs entrypoint (wired in astro.config.ts)
 
@@ -20,6 +21,7 @@ const flipTheme = (mutate: (root: HTMLElement) => void) => {
 };
 
 export default (Alpine: Alpine) => {
+  initPaletteTryout();
   // $isDesktop() — templates share the same breakpoint constant as this module
   Alpine.magic("isDesktop", () => isDesktop);
 

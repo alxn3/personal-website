@@ -130,7 +130,9 @@ export const THROAT_ALT = 0;
  *  a deep ground. Light stage (paper): dark ink on a warm near-white. */
 export const SKY_INK: { dark: SkyPalette; light: SkyPalette } = {
   dark: {
-    backdrop: 0x0b0d12,
+    // the site's warm-brown ground, taken down to a night sky: the hue of
+    // html.dark's --bg, at the depth the stars need behind them
+    backdrop: 0x16100a,
     star: 0xf2ecd9,
     // the strokes are the stars' own ink, not 0xffffff: pure white beside the
     // cream discs reads as a second, colder light source
@@ -159,10 +161,12 @@ export const SKY_INK: { dark: SkyPalette; light: SkyPalette } = {
 // in a near-black. EVERY STOP PEAKS AT 0xff, so a tint can only take light OUT
 // of a channel.
 
-/** The ramp, cool → warm, as authored sRGB hex. */
+/** The ramp, cool → warm, as authored sRGB hex. THE COOL END IS THE SITE'S
+ *  OLIVE-SAGE, NOT BLUE: a blue-white star is the one mark on the sky that
+ *  cannot sit in a cream/brown/olive scheme. */
 const TEMP_HEX = [
-  0xdceaff, // blue-white
-  0xf0f6ff, // white, faintly cool
+  0xe6ffe0, // sage-white
+  0xf6fff2, // white, faintly sage
   0xffffff, // white — the theme's ink, untinted
   0xfff6ea, // warm white
   0xfff0d8, // yellow

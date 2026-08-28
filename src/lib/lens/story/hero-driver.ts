@@ -19,6 +19,7 @@
 import type { SceneHandle } from "../core/scene";
 import { uInkFill } from "../materials/unified";
 import { recipeKnob } from "../ops/host";
+import { MODEL_BORE_X_Z } from "../core/scene";
 import {
   STORY,
   RANGES,
@@ -31,7 +32,7 @@ import { revealRollAt } from "./reveal";
 import { band, BAND_FEATHER, clamp01, smoothstep } from "../core/math";
 import { isLightTheme } from "../core/theme";
 import { createInternalsAmbient } from "./internals";
-import { createPeelCards, peelRollAt } from "./peelcards";
+import { createPeelCards, peelRollAt, peelTurnAt } from "./peelcards";
 // The envelopes (story/envelopes.ts) are pure functions of p — this file only
 // WRITES them to the scene; it authors none of them.
 import type { Rgb } from "./envelopes";
@@ -39,8 +40,15 @@ import type { Rgb } from "./envelopes";
 // erased import cannot pull them into the homepage's.
 import type { StoryConstellations } from "./constellations";
 import type { StoryTrails } from "./trails";
+import type { StoryPetals } from "./petals";
 import {
-  assembleKeepScopeAt,
+  uprightAt,
+  ASSEMBLE_KEEP_SCOPE,
+  ENDING_BLOOM,
+  ENDING_CURL,
+  ENDING_RING_PHASE,
+  ENDING_REBEND,
+  dipAt,
   bgStopsFor,
   bgTintAt,
   chromeAt,
@@ -48,9 +56,12 @@ import {
   explodeAt,
   fStopOf,
   focalMmAt,
+  huddleAt,
   inkFillAt,
   interiorFadeAt,
   preShutAt,
+  rockYAt,
+  rockZAt,
   sceneIndexAt,
   scrollCueAt,
   shellFadeAt,
@@ -63,8 +74,12 @@ export interface HeroDriver {
   onThemeChange: (light: boolean) => void;
 }
 
-/** the departure's scope knob, taken once — a guarded uniform box */
+/** the four knobs the story writes, taken once — guarded uniform boxes */
 const keepScope = recipeKnob("assemble", "keepScope");
+const bloom = recipeKnob("explode", "bloom");
+const curl = recipeKnob("explode", "curl");
+const ringPhase = recipeKnob("explode", "ringPhase");
+const rebend = recipeKnob("explode", "rebend");
 
 export function startHeroStory(scene: SceneHandle): HeroDriver {
   const track = document.getElementById("lens-track")!;
@@ -269,6 +284,21 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
     return trailsLoad;
   }
 
+  // The bloom's petals (story/petals.ts), lazy and self-driving on the same
+  // terms as the trails. Prefetched a whole scene early, at the rewrap.
+  let petals: StoryPetals | undefined;
+  let petalsLoad: Promise<unknown> | undefined;
+  const petalsPrefetchP = rangeOf("rewrap").p0;
+  function loadPetals() {
+    if (petalsLoad) return petalsLoad;
+    petalsLoad = import("./petals")
+      .then((m) => {
+        petals = m.createStoryPetals(scene);
+      })
+      .catch((err) => console.warn("lens petals: driver failed to load", err));
+    return petalsLoad;
+  }
+
   /** THE BOOT PREWARM, in the order the reader REACHES them and one idle window
    *  each: the card field's window opens first (a scene in), then the dive, then
    *  the sky chapter's ink and its trails. Importing is only half of it — each
@@ -295,6 +325,9 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
     await whenStill();
     await loadTrails();
     trails?.warm();
+    await whenStill();
+    await loadPetals();
+    petals?.warm();
   }
 
   // The two STATICALLY imported story modules (neither pulls in optics/),
@@ -306,15 +339,16 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
 
   // THE MODEL'S ROLL — the one setModelOrientation writer, on the RENDER loop,
   // because the ease outlives the scroll (a write from frame() would freeze the
-  // angle mid-settle). Two terms, disjoint in p, summed because the orientation
-  // is a snap-per-call absolute — and THE TWO-CLOCK LAW is that each rides the
-  // clock its own neighbourhood runs on:
+  // angle mid-settle). Three disjoint AXES, written together because the
+  // orientation is a snap-per-call absolute — and THE TWO-CLOCK LAW is that
+  // each rides the clock its own neighbourhood runs on:
   //
   //   · the reveal's term takes the LIVE EASED channels (scene.state.story /
-  //     .assemble), so spin, wrap and camera cannot come apart on a fling;
-  //   · the peel's term stays on the RAW p, because its whole neighbourhood is
-  //     raw — the card windows, the wink and the wrap below WRAP_EASE_P0 —
-  //     and it settles on screen, so its own ramp has to die into its edge.
+  //     .explode), so spin, spread and camera cannot come apart on a fling;
+  //   · the peel's bore roll and the cards' turn stay on the RAW p, because
+  //     their whole neighbourhood is raw — the card windows, the wink and the
+  //     wrap itself — and both settle on screen, so their ramps have to die
+  //     into their edges.
   //
   // The same callback applies story/envelopes.ts's wrap→bloom hand-over on the
   // values the deform host actually sums.
@@ -322,7 +356,18 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
     const pE = clamp01(scene.state.story);
     writeWrapBloom(lastP);
     scene.setModelOrientation({
-      x: revealRollAt(pE, scene.state.assemble) + peelRollAt(lastP),
+      // the bore: the peel's roll under the departure, then the reveal's own
+      // turn in the sky chapter — disjoint in p
+      x: peelRollAt(lastP) + revealRollAt(pE, scene.state.explode),
+      // the cards scene's clockwise turn about the stage's vertical axis, plus
+      // the ending's rock — two square axes carry the wobble's cone
+      y: peelTurnAt(lastP) + rockYAt(lastP),
+      // …and the TIP: the bore lies on world +X everywhere but the internals
+      // scene, where it stands up (story/envelopes.ts uprightAt), less the
+      // turn's own nose dip and plus the rock's other half. Same writer,
+      // because modelGroup.rotation has one.
+      z:
+        MODEL_BORE_X_Z * (1 - uprightAt(lastP)) - dipAt(lastP) + rockZAt(lastP),
     });
   });
 
@@ -330,9 +375,14 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
    *  the two VALUES only where the law names one (a `null` leaves the channel
    *  to core/scene's ease). */
   function writeWrapBloom(p: number) {
-    const w = wrapBloomWrite(p, scene.state.assemble);
+    const w = wrapBloomWrite(p, {
+      assemble: scene.state.assemble,
+      explode: scene.state.explode,
+    });
     scene.state.assembleTarget = w.assembleTarget;
     if (w.assemble !== null) scene.state.assemble = w.assemble;
+    scene.state.explodeTarget = w.explodeTarget;
+    if (w.explode !== null) scene.state.explode = w.explode;
     scene.state.roseTarget = w.roseTarget;
     if (w.rose !== null) scene.state.rose = w.rose;
   }
@@ -352,13 +402,20 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
       scene.state.focusTarget = 0;
       scene.state.apertureTarget = preShutAt(p);
     }
-    scene.state.explodeTarget = explode;
-    // the wrap and the bloom on this clock, at the raw p
+    // the wrap, the spread and the bloom on this clock, at the raw p
     writeWrapBloom(p);
-    // …and the departure's SCOPE, which is a knob rather than a channel: the
-    // cards chapter takes the outer layers off the mechanism it reveals, the
-    // sky chapter reassembles the whole model (story/envelopes.ts).
-    keepScope.value = assembleKeepScopeAt(p);
+    // the cards chapter's compact core (ops/mechanism.ts huddleMm)
+    scene.state.huddleTarget = huddleAt(p);
+    // …and the departure's SCOPE, a knob rather than a channel: the cards
+    // chapter takes the outer layers off the mechanism it reveals, and the wrap
+    // runs nowhere else on the track (story/envelopes.ts).
+    keepScope.value = ASSEMBLE_KEEP_SCOPE;
+    // …and the ending's own spread, mid-fall curl and parked ring phase, none
+    // of which /lens's inspection control wants (story/envelopes.ts).
+    bloom.value = ENDING_BLOOM;
+    curl.value = ENDING_CURL;
+    ringPhase.value = ENDING_RING_PHASE;
+    rebend.value = ENDING_REBEND;
     // The model's roll is NOT written here — see the scene.onFrame writer above
     // and its two-clock law. The channel targets this function writes are what
     // that writer's gate chases.
@@ -380,9 +437,8 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
     scene.setShellFade(shellFadeAt(p));
     scene.setInteriorFade(interiorFadeAt(p));
 
-    // THE PEEL AND THE CARD FIELD. Must run AFTER the channel writes above,
-    // because it owns the `peel` channel outright and the shell wedges' part
-    // offsets; BEFORE the fly below, which is last for the same reason.
+    // THE CARD FIELD's mount window. AFTER the channel writes above, BEFORE
+    // the fly below, which is last for the same reason.
     peelCards.frame(p);
 
     // per-block progress custom properties, so content-specific effects live in
@@ -420,6 +476,7 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
 
     if (!constLoad && p > constPrefetchP) loadConstellations();
     if (!trailsLoad && p > trailsPrefetchP) loadTrails();
+    if (!petalsLoad && p > petalsPrefetchP) loadPetals();
 
     // HUD + scene rail, DEAD LAST: the readout REPORTS the story, so it has to
     // be composed after every span owner above has written its channels. The

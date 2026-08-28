@@ -21,13 +21,12 @@
 // unmounts the starfield underneath it.
 
 import type { SceneHandle } from "../core/scene";
-import { lerp, smoothstep } from "../core/math";
+import { smoothstep } from "../core/math";
 import { rangeOf, atFrac } from "./story";
 import { TURN_P0, turnAt } from "./reveal";
 import { isLightTheme, watchTheme } from "../core/theme";
 import { uSkySpin } from "../optics/starfield";
 import { createStarTrails, TRAIL_SWEEP_MAX } from "../optics/star-trails";
-import { createCrownArc, CROWN_LOOK } from "../optics/crown-arc";
 
 const tR = rangeOf("trails");
 const rwR = rangeOf("rewrap");
@@ -69,60 +68,6 @@ export const trailEnvAt = (p: number): number =>
   smoothstep(atFrac(tR, 0.02), atFrac(tR, 0.12), p) *
   (1 - smoothstep(atFrac(rwR, 0.02), ENV_END, p));
 
-// ── THE CROWN ───────────────────────────────────────────────────────────────
-// One arc of the field is not a star's (optics/crown-arc.ts): it rides a circle
-// concentric with the field's for the whole scene, then RESOLVES onto the front
-// element's silhouette as the field goes out, holds there alone, and leaves.
-//
-// IT OUTLIVES THE SKY, so it hangs on the SCENE ROOT (addOverlay) rather than
-// the starfield group — which it can do because it is screen space and owns no
-// sky geometry. A crown that died with the sky would be gone before the element
-// it points at was drawn.
-//
-// AND IT TRACKS: the front element's drawn disc grows by more than 2× over the
-// fov hand-back, the reveal overshoot and the camera chain's release, so the
-// target is read every frame through SceneHandle.projectDrawn — deform
-// included, since mid-reassembly the element is drawn well away from the seat
-// its object transform reports.
-
-/** The part the crown is drawn around: the front element, the widest disc in
- *  the frame at the reveal. */
-const CROWN_PART = "Element_01";
-
-/** The resolve, 0 = one more trail, 1 = the lens's edge.
- *
- *  BOTH EDGES ARE PINNED TO THE FIELD'S FADE: it opens where `trailEnvAt`
- *  starts falling, so the crown leaves the family on the frame the family
- *  starts to leave, and lands at 0.75 of that fade's span. It therefore
- *  RESOLVES ACROSS the live hand-off below rather than handing to it at its
- *  foot; the two compose as nested lerps in the driver, and the circles they
- *  blend between are concentric and equal at the hand-off's foot, so the
- *  overlap is continuous. */
-export const crownResolveAt = (p: number): number =>
-  smoothstep(atFrac(rwR, 0.02), atFrac(rwR, 0.215), p);
-
-/** The hand-over from the authored landing circle to the element's own, opening
- *  on the beat the element is DRAWN — earlier it is behind the camera or fully
- *  faded glass, and an arc chasing what nobody can see just wanders the frame.
- *  It parks on `CROWN_LOOK.lens`, which IS the element's disc at this window's
- *  foot, so this and the resolve above are lerps toward the same target. */
-export const crownLiveAt = (p: number): number =>
-  smoothstep(atFrac(rwR, 0.14), atFrac(rwR, 0.22), p);
-
-/** The crown's own envelope: rises with the field, falls LATE and alone. Its
- *  fall must open after the reveal has uncovered the front element and after
- *  both the field (`trailEnvAt`) and the sky (SKY_OUT_END) are gone, so the
- *  last mark of the chapter is one arc lying on a lens you can see. */
-export const crownEnvAt = (p: number): number =>
-  smoothstep(atFrac(tR, 0.02), atFrac(tR, 0.12), p) *
-  (1 - smoothstep(atFrac(rwR, 0.34), atFrac(rwR, 0.48), p));
-
-/** Slack past the crown's own span before it comes off the scene root. It shares
- *  SPAN_P0 with the arcs but outlives them by a fifth of the rewrap scene, which
- *  is why it needs an edge of its own — exported for story/cost.ts, whose crown
- *  column would otherwise re-spell it. */
-export const CROWN_P1 = atFrac(rwR, 0.48) + SPAN_PAD;
-
 /** The drift, radians per second, added to the scrolled sweep while p is inside
  *  the turning part of the scene. Tiny: enough that a parked field is visibly
  *  alive, too little to make a scrub back read as dishonest. */
@@ -141,8 +86,8 @@ export const AMBIENT_MAX = 0.2;
 export const AMBIENT_DECAY = AMBIENT_MAX;
 
 export interface StoryTrails {
-  /** Upload the arcs' vertex buffer and the crown's off the gesture. Idempotent,
-   *  and a no-op once either is mounted for real. */
+  /** Upload the arcs' vertex buffer off the gesture. Idempotent, and a no-op
+   *  once the arcs are mounted for real. */
   warm(): void;
 }
 
@@ -152,11 +97,9 @@ export interface StoryTrails {
  */
 export function createStoryTrails(scene: SceneHandle): StoryTrails {
   const trails = createStarTrails({ light: isLightTheme() });
-  const crown = createCrownArc({ light: isLightTheme() });
 
   watchTheme((l) => {
     trails.setTheme(l);
-    crown.setTheme(l);
     scene.invalidate();
   });
 
@@ -187,32 +130,6 @@ export function createStoryTrails(scene: SceneHandle): StoryTrails {
     const env = trailEnvAt(p);
     trails.setEnvelope(env);
 
-    // THE CROWN, on its own schedule and its own parent — and BEFORE the field's
-    // early return, since it outlives the last trail.
-    const t = crownResolveAt(p);
-    const cEnv = crownEnvAt(p);
-    // WHERE THE ARC IS HEADING: the authored landing circle until the element is
-    // back in front of the camera, then the element's own drawn disc. Asked for
-    // only while the crown is on screen — it walks the op field on the CPU.
-    const live = cEnv > 0 ? scene.projectDrawn(CROWN_PART) : null;
-    const k = live ? crownLiveAt(p) : 0;
-    const lens = CROWN_LOOK.lens;
-    crown.setShape(
-      lerp(CROWN_LOOK.trail.cx, lerp(lens.cx, live ? live.x : 0, k), t),
-      lerp(CROWN_LOOK.trail.cy, lerp(lens.cy, live ? live.y : 0, k), t),
-      lerp(CROWN_LOOK.trail.r, lerp(lens.r, live ? live.r : 0, k), t),
-      // as a trail the head rides the turn and the arc IS the history behind it;
-      // as the lens it is a fixed arc centred on the top of the circle
-      lerp(CROWN_LOOK.phi0 + theta, CROWN_LOOK.phi0 + CROWN_LOOK.span / 2, t),
-      lerp(theta, CROWN_LOOK.span, t),
-      t,
-    );
-    crown.setEnvelope(cEnv);
-    if (cEnv <= 0) {
-      if (crown.object.parent && (p < SPAN_P0 || p > CROWN_P1))
-        scene.removeOverlay(crown.object);
-    } else if (!crown.object.parent) scene.addOverlay(crown.object);
-
     if (env <= 0) {
       // Past the span's edges the mesh comes off the starfield entirely; inside
       // them it stays attached at zero, which costs one draw of fully
@@ -235,10 +152,9 @@ export function createStoryTrails(scene: SceneHandle): StoryTrails {
     warm() {
       if (warmed) return;
       warmed = true;
-      const owed = [trails.object, crown.object].filter((o) => !o.parent);
-      // through the pass as well — the arcs and the crown are worn over the
-      // dive's span, where the pass keys its own pipeline
-      if (owed.length) scene.warmDraw(owed, true);
+      // through the pass as well — the arcs are worn over the dive's span,
+      // where the pass keys its own pipeline
+      if (!trails.object.parent) scene.warmDraw([trails.object], true);
     },
   };
 }

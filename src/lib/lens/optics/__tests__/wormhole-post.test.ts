@@ -25,12 +25,15 @@ function radiusMetric(ndc: THREE.Vector3, aspect: number): number {
 }
 
 /** A camera parked on the dive's own heading: at the origin, looking down world
- *  +X (the exit axis both files stream toward), +Y up. */
+ *  +X (the exit axis both files stream toward), +Y up. Carries core/scene.ts's
+ *  own zoom law — min(w, h)/h, which is the ASPECT on a portrait viewport — so
+ *  the sweep below projects through the projection the page really builds. */
 function diveCamera(fov: number, aspect: number): THREE.PerspectiveCamera {
   const cam = new THREE.PerspectiveCamera(fov, aspect, 0.1, 400);
   cam.position.set(0, 0, 0);
   cam.up.set(0, 1, 0);
   cam.lookAt(1, 0, 0);
+  cam.zoom = Math.min(aspect, 1);
   cam.updateMatrixWorld();
   cam.updateProjectionMatrix();
   return cam;
@@ -48,9 +51,9 @@ describe("wormhole post ring", () => {
     expect(throatAngle(across)).toBeCloseTo(g, 12);
 
     for (const fov of [70, 55, 42]) {
-      for (const aspect of [16 / 9, 16 / 10, 1, 0.5]) {
+      for (const aspect of [16 / 9, 16 / 10, 1, 0.5, 390 / 844]) {
         const cam = diveCamera(fov, aspect);
-        const want = ringSourceRadius(fov);
+        const want = ringSourceRadius(fov, cam.zoom);
         for (const dir of [up, across]) {
           const p = new THREE.Vector3(...dir).multiplyScalar(
             STARFIELD_LOOK.radius,
@@ -58,6 +61,24 @@ describe("wormhole post ring", () => {
           expect(radiusMetric(p.project(cam), aspect)).toBeCloseTo(want, 10);
         }
       }
+    }
+  });
+
+  it("keeps the ring inside the frame's short side on any portrait viewport", () => {
+    // The failure the zoom term fixes: dropped, the band came out 1/aspect times
+    // too big, so on a phone its circle ran off the frame's SIDES and only its
+    // top and bottom were ever drawn — an elliptical ring. With the zoom in, the
+    // ring holds one fraction of the short side at every portrait aspect.
+    for (const [w, h] of [
+      [390, 844],
+      [360, 800],
+      [430, 932],
+      [768, 1024],
+    ]) {
+      const cam = diveCamera(70, w / h);
+      const halfWidth = 0.5 * cam.aspect; // the metric's frame half-width
+      expect(ringSourceRadius(70, cam.zoom)).toBeLessThan(halfWidth);
+      expect(ringSourceRadius(70, cam.zoom) / halfWidth).toBeCloseTo(0.69, 2);
     }
   });
 

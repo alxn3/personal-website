@@ -12,16 +12,17 @@ import {
 } from "../reveal";
 import { trailSweepAt } from "../trails";
 import { TRAIL_SWEEP_MAX } from "../../optics/star-trails";
-import { flyRevealAt } from "../fly";
+import { flyBodyFadeAt, flyRevealAt } from "../fly";
 // THE CHANNELS THEMSELVES, not copies. These used to be hand-rebuilt
 // smoothsteps with the note "rebuilt here rather than imported because the
 // driver is DOM-bound" — which was true until the envelopes moved out of
 // startHeroStory's closure into story/envelopes.ts. The laws below are now
 // pinned against the expressions the hero actually writes.
-import { RETURN, assembleAt, explodeAt } from "../envelopes";
+import { assembleAt, explodeAt, shellFadeAt } from "../envelopes";
 
 const tR = rangeOf("trails");
 const rwR = rangeOf("rewrap");
+const capR = rangeOf("capsOn");
 
 const rate = (f: (p: number) => number, p: number, h = 1e-6) =>
   (f(p + h) - f(p - h)) / (2 * h);
@@ -105,20 +106,44 @@ describe("the reveal's rotation", () => {
     }
   });
 
-  it("ends the roll where the pieces seat — the RETURN's own last frame", () => {
-    // ROLL_P1 is spelled from the story table (envelopes.ts imports reveal.ts,
-    // so reveal.ts cannot read RETURN back); this is the pin that keeps the
-    // two the same frame. The assemble channel lands on exactly 0 there, so
-    // the roll's far edge is a DOUBLE zero — angle spent AND gate closed —
-    // which is what makes the rate land at 0 with it.
-    const [, [endScene, endF]] = RETURN as unknown as [
-      [string, number],
-      [string, number],
-    ];
-    expect(ROLL_P1).toBe(atFrac(rangeOf(endScene), endF));
-    expect(assembleAt(ROLL_P1)).toBe(0);
-    expect(rollTurnAt(ROLL_P1)).toBeCloseTo(1, 12);
-    expect(Math.abs(revealRollAt(ROLL_P1, assembleAt(ROLL_P1)))).toBe(0);
+  it("ends the roll where the REWRAP does — the descent opens on a still model", () => {
+    // THE CARRIER IS THE EXPLODE CHANNEL, which is a saturated 1 across this
+    // whole scene, so the roll's far edge is the TURN's alone: `rollTurnAt`
+    // reaches exactly 1 on the scene boundary and comes off cruise into it
+    // (reveal.ts ROLL_WIND_DOWN), which is what lands the angle AND the rate on
+    // zero without a second factor to do it.
+    expect(ROLL_P1).toBe(rwR.p1);
+    expect(ROLL_P1).toBe(rangeOf("capsOn").p0);
+    expect(rollTurnAt(ROLL_P1)).toBe(1);
+    expect(explodeAt(ROLL_P1)).toBe(1);
+    expect(Math.abs(revealRollAt(ROLL_P1, explodeAt(ROLL_P1)))).toBe(0);
+    // …and it stays exactly 0 for the whole descent, whatever the spread does
+    const capR = rangeOf("capsOn");
+    for (let i = 0; i <= 20; i++) {
+      const p = atFrac(capR, i / 20);
+      expect(Math.abs(revealRollAt(p, explodeAt(p))), `capsOn ${i / 20}`).toBe(
+        0,
+      );
+    }
+  });
+
+  it("keeps the WRAP out of the ending entirely — one recipe holds the cloud", () => {
+    // THE OWNER'S LAW for the ending's third round: the parked pose has to be
+    // RIGID, and it cannot be while two saturated recipes sum their deltas onto
+    // one wedge (ops/host.ts folds them, so the sum of two rigid motions is not
+    // one). The wrap therefore runs over the cards chapter and NOWHERE else:
+    // the assemble channel is a literal 0 for every frame of the ending, so the
+    // cloud and its descent are the explode recipe's alone. Paired with the
+    // explode law below, this is "one recipe, held at full spread".
+    for (let i = 0; i <= 40; i++) {
+      expect(assembleAt(atFrac(rwR, i / 40)), `rewrap ${i / 40}`).toBe(0);
+      expect(assembleAt(atFrac(capR, i / 40)), `capsOn ${i / 40}`).toBe(0);
+    }
+    expect(assembleAt(rwR.p1)).toBe(0);
+    expect(assembleAt(1)).toBe(0);
+    // …and it really does run somewhere: the cards chapter, saturated
+    const cards = rangeOf("cards");
+    expect(assembleAt(atFrac(cards, 0.05))).toBe(1);
   });
 
   it("winds up NEGATIVE, is UNMISTAKABLE while visible, and gives it all back", () => {
@@ -136,7 +161,7 @@ describe("the reveal's rotation", () => {
     // is ~180°), because everything spent before this frame is spent under
     // the body cover and might as well not exist.
     const atOpen = Math.abs(
-      revealRollAt(atFrac(rwR, 0.06), assembleAt(atFrac(rwR, 0.06))),
+      revealRollAt(atFrac(rwR, 0.06), explodeAt(atFrac(rwR, 0.06))),
     );
     expect(atOpen).toBeGreaterThan(Math.PI / 2);
     // …and it is still visibly alive DEEP into the reassembly (the old gate
@@ -145,18 +170,18 @@ describe("the reveal's rotation", () => {
     // angle is given back over a shorter window and more of it is spent by
     // this frame.
     const midAssembly = Math.abs(
-      revealRollAt(atFrac(rwR, 0.6), assembleAt(atFrac(rwR, 0.6))),
+      revealRollAt(atFrac(rwR, 0.6), explodeAt(atFrac(rwR, 0.6))),
     );
     expect(midAssembly).toBeGreaterThan(Math.PI / 12);
     // NOT SPENT AT REVEAL_END ANY MORE — deliberately. The camera chain that
     // releases there leaves at zero rate (story/camera.ts moveS), so a lens
     // still rolling under it is what makes the ending one gesture; the roll's
     // own zero is ROLL_P1 (pinned above).
-    expect(revealRollAt(REVEAL_END, assembleAt(REVEAL_END))).toBeLessThan(0);
+    expect(revealRollAt(REVEAL_END, explodeAt(REVEAL_END))).toBeLessThan(0);
   });
 
-  it("is EXACTLY 0 wherever the wrap is home", () => {
-    // the assemble channel is the second factor, so the whole story before the
+  it("is EXACTLY 0 wherever the model is seated", () => {
+    // the explode channel is the second factor, so the whole story before the
     // teardown — the dive included — is bit-for-bit unrolled whatever the turn
     // is doing. (Math.abs only because −k × 1 × 0 is −0, which is 0 to every
     // arithmetic that reads it and not to Object.is — story/trails.ts's own
@@ -164,33 +189,31 @@ describe("the reveal's rotation", () => {
     for (const p of [0, 0.3, rangeOf("flythrough").p0, 1])
       expect(Math.abs(revealRollAt(p, 0)), `p ${p}`).toBe(0);
     // …and the channel itself is 0 on those frames, so the composed write is
-    for (const p of [0, rangeOf("flythrough").p0, 1])
-      expect(assembleAt(p), `assemble at ${p}`).toBe(0);
+    for (const p of [0, rangeOf("flythrough").p0])
+      expect(explodeAt(p), `explode at ${p}`).toBe(0);
   });
 
-  it("stays 0 through the CARDS scene's wrap, which is not this chapter's", () => {
-    // THE SECOND WRAP. story/envelopes.ts CARDS_WRAP plays the same reassembly
-    // as the cards scene's transition, so the assemble channel is no longer a
-    // proxy for "the sky chapter is running": below TURN_P0 the `1 − rollTurnAt`
-    // factor sits at FULL amplitude, and an ungated law would have spun the
-    // model a fifth of a revolution through that scene. The chapter mask is
-    // what keeps this beat the sky's alone.
+  it("stays 0 through the CARDS scene, which is not this chapter's", () => {
+    // THE CHAPTER MASK. Below TURN_P0 the `1 − rollTurnAt` factor sits at FULL
+    // amplitude, so without the mask the ungated law would spin the model a
+    // fifth of a revolution through the scene where the shell comes apart. The
+    // mask is what keeps this beat the sky's alone.
     const cards = rangeOf("cards");
-    const mid = atFrac(cards, 0.5);
-    expect(assembleAt(mid), "the channel really is live there").toBeGreaterThan(
+    const lit = atFrac(cards, 0.15);
+    expect(assembleAt(lit), "the wrap really is live there").toBeGreaterThan(
       0.5,
     );
     for (let i = 0; i <= 40; i++) {
       const p = atFrac(cards, i / 40);
-      expect(Math.abs(revealRollAt(p, assembleAt(p))), `cards ${i / 40}`).toBe(
+      expect(Math.abs(revealRollAt(p, explodeAt(p))), `cards ${i / 40}`).toBe(
         0,
       );
     }
-    // …and the mask's own edge is free: the tail wrap's channel is still
-    // exactly 0 where it lifts, so the hard step multiplies zero by zero
+    // …and the mask's own edge is free: the explode channel's rise opens INSIDE
+    // the trails scene, so the hard step multiplies zero by zero
     const trails = rangeOf("trails");
-    expect(assembleAt(trails.p0)).toBe(0);
-    expect(Math.abs(revealRollAt(trails.p0, assembleAt(trails.p0)))).toBe(0);
+    expect(explodeAt(trails.p0)).toBe(0);
+    expect(Math.abs(revealRollAt(trails.p0, explodeAt(trails.p0)))).toBe(0);
   });
 
   it("holds the pieces at FULL EXPLOSION for the WHOLE reveal, and past it", () => {
@@ -214,14 +237,28 @@ describe("the reveal's rotation", () => {
     );
   });
 
+  it("is FREE over the trails scene because nothing there is drawn", () => {
+    // WHAT MAKES THE CARRIER SWAPPABLE. The roll rides the SPREAD channel, and
+    // the spread's rise opens earlier and steeper inside the trails scene than
+    // the wrap's used to — up to 146° of difference at trails-local 0.40. That
+    // is invisible only because the model is not on screen there, so the
+    // coupling is stated: a change that lifts the body cover earlier is a
+    // change to the wind-up, and fails here first.
+    for (let i = 0; i <= 40; i++) {
+      const p = atFrac(tR, i / 40);
+      expect(flyBodyFadeAt(p), `body cover at trails ${i / 40}`).toBe(0);
+      expect(flyRevealAt(p), `reveal at trails ${i / 40}`).toBe(0);
+      expect(shellFadeAt(p), `shell at trails ${i / 40}`).toBe(0);
+    }
+  });
+
   it("advances monotonically and lands at zero RATE — no snap anywhere", () => {
     // C1 by construction (both factors are C1, and a product of C1 functions
-    // is C1) — and unlike the explode-gated version there is no seam inside
-    // the visible window at all: the gate (assembleAt) is one smoothstep fall
-    // across the whole stretch. Walked for monotonicity from the cover's lift
-    // to the seat, and pinned at the far edge, where the double zero (turn
-    // spent AND channel home) lands the rate itself at 0.
-    const roll = (p: number) => revealRollAt(p, assembleAt(p));
+    // is C1), and there is no seam inside the visible window at all: the gate
+    // (explodeAt) is a saturated 1 across the whole of it. Walked for
+    // monotonicity from the cover's lift to the seat, and pinned at the far
+    // edge, where `rollTurnAt`'s own wind-down lands the rate at 0.
+    const roll = (p: number) => revealRollAt(p, explodeAt(p));
     let prev = roll(atFrac(rwR, 0.02));
     for (let i = 1; i <= 900; i++) {
       const p = atFrac(rwR, 0.02) + ((ROLL_P1 - atFrac(rwR, 0.02)) * i) / 900;

@@ -482,16 +482,14 @@ describe("which shipped recipes use during", () => {
         i.kind === "group" && (i.progress !== undefined || carries(i.items)),
     );
 
-  it("(l) exactly two do — `peel` and `rose`, whose staggers ARE their windows", () => {
-    // The rest are inert, so their goldens cannot move through this machinery
-    // at all. `peel` is the exception on purpose (ops/recipes states why: both
-    // of the gate's stagger inputs are degenerate on the peel's cast), and
-    // `rose` is the same idiom keyed on whorl = rank01^ROSE_WHORL_EXP — raw
-    // rank is NOT a usable wave key on this cast (every visible petal sits at
-    // rank 0.875…1; the exponent spreads that band and folds the interior
-    // hardware toward the heart) — each window is the thing to keep honest:
-    // (l′) and (l″) below.
-    const DURING_RECIPES = ["peel", "rose"];
+  it("(l) three do — `peel`, `rose` and `explode`, whose staggers ARE windows", () => {
+    // `assemble` is the only inert one, so its goldens cannot move through this
+    // machinery at all. `peel` is the exception on purpose (ops/recipes states
+    // why: both of the gate's stagger inputs are degenerate on the peel's
+    // cast), `rose` is the same idiom keyed on whorl = rank01^ROSE_WHORL_EXP,
+    // and `explode` keys three WAVES on quantized rank so the ending is built
+    // core-first. Each window is the thing to keep honest: (l′) and (l″) below.
+    const DURING_RECIPES = ["peel", "rose", "explode"];
     for (const recipe of Object.values(RECIPES))
       expect(
         carries(recipe.build(ctxAt(0.5), recipe.knobDefaults)),

@@ -9,11 +9,12 @@
 // Every window is a named constant so story/state.ts and the STORY-MAP can
 // report its edges without a second copy of them.
 
-import { clamp01, smoothstep } from "../core/math";
+import { clamp01, deg, smoothstep } from "../core/math";
 import {
+  DIVE_P0,
   RANGES,
   atFrac,
-  pulse,
+  pulseFn,
   rangeOf,
   windowEdges,
   type StoryWindow,
@@ -27,7 +28,6 @@ const peR = rangeOf("peel");
 const caR = rangeOf("cards");
 const inR = rangeOf("internals");
 const fR = rangeOf("flythrough");
-const tR = rangeOf("trails");
 const rwR = rangeOf("rewrap");
 const capR = rangeOf("capsOn");
 
@@ -41,51 +41,145 @@ export const ZOOM_PULSE: { rise: StoryWindow; fall: StoryWindow } = {
   fall: ["peel", 0, 0.4],
 };
 
-/** The assemble channel's fall — the pieces' SHAPE, spent inside the rewrap so
- *  the ending is left to the spiral alone. It must be spent before the rose
- *  rises (the host sums each recipe's delta, so a bloom over a half-unwrapped
- *  shell is two unwrap laws on one wedge); the pieces' RADIUS is `CONSTRUCT`,
- *  which now follows it rather than overlapping the bloom. */
-export const RETURN: StoryWindow = [
-  ["rewrap", 0.05],
-  ["rewrap", 0.9],
-];
-
-/** THE SPIRAL, as fractions of `capsOn` — THE knob for the ending's pacing. The
- *  explode recipe's orbit turns each piece as its radius falls and its gate
- *  staggers the arrivals by layer and by phase, so the read is one piece home
- *  after another. It is SEQUENCED with the bloom, not overlapped: the tip lands
- *  a settle beat before ROSE_PULSE's foot. */
-export const CONSTRUCT: [number, number] = [0.05, 0.55];
+/** THE DESCENT — THE knob for the ending's pacing. It opens on the last
+ *  scene's own foot (the explode channel is exactly 1 for every frame of the
+ *  rewrap, so the reveal is pure rotation at a constant radius) and it is the
+ *  ending's LONG beat: the middle pieces leave on the still face-on frame, the
+ *  camera's quarter-turn runs over the middle of it, and the last pieces land
+ *  inside the rock, a settle beat before ROSE_PULSE's foot. */
+export const CONSTRUCT: StoryWindow = ["capsOn", 0, 0.64];
 
 export const EXPLODE_PULSE: { rise: StoryWindow; fall: StoryWindow } = {
   rise: ["trails", 0.05, 0.5],
-  fall: ["capsOn", CONSTRUCT[0], CONSTRUCT[1]],
+  fall: CONSTRUCT,
 };
 
-export const ASSEMBLE_PULSE: { rise: StoryWindow; fall: StoryWindow } = {
-  rise: ["trails", 0.15, 0.8],
-  fall: RETURN,
-};
-
-/** The cards scene takes the OUTER LAYERS apart on the assemble channel — the
+/** The DEPARTURE: the outer layers come apart on the assemble channel — the
  *  sky chapter's reassembly reversed (rising IS coming apart), scoped off the
  *  mechanism by `ASSEMBLE_KEEP_SCOPE` so the internals are revealed in place.
  *  The layer order is the recipe's gate stagger, not this window's.
  *
- *  THE RISE OPENS INSIDE THE CURL'S OWN RELEASE (peelcards PEEL_RELEASE): the
- *  two unwrap chains CROSSFADE rather than sequence, so no frame sits at rest
- *  between them and the curl reads as the departure's first moment. Their sum
- *  is what must stay bounded, not their product — pinned in
- *  __tests__/channel-ease.test.ts.
+ *  IT IS THE REASSEMBLY RUN BACKWARDS AND NOTHING ELSE: the same recipe, the
+ *  same gate, the same per-piece flight the sky chapter flies home on, played
+ *  from 0 to 1 instead of 1 to 0. No second chain rides along with it, and the
+ *  sticker peel is not in the story at all.
  *
- *  THE FALL waits until every piece the departure moves is winked away
- *  (peelcards WINK_SPAN), which is what makes it invisible now that the body
- *  fade no longer covers the scene. */
+ *  IT IS THE PEEL SCENE AND IT FILLS IT: the rise opens under the camera's
+ *  swing to the rear and runs to where the bore roll is spent, so every piece
+ *  the departure moves flies its whole flight IN FRAME and the deepest ranks
+ *  are still travelling where the wink's first casts go (peelcards WINK_SPAN)
+ *  — the two overlap, they do not queue. No piece is taken before its OWN
+ *  flight is over (story/__tests__/piece-flow.test.ts pins the per-piece
+ *  margin). THE FALL waits until every piece the departure moves is gone,
+ *  which is what makes it invisible now that the body fade no longer covers
+ *  it. */
 export const CARDS_APART: { rise: StoryWindow; fall: StoryWindow } = {
-  rise: ["cards", 0.04, 0.4],
-  fall: ["cards", 0.64, 0.74],
+  rise: ["peel", 0.1, 0.92],
+  fall: ["cards", 0.12, 0.26],
 };
+
+/** THE LENS STANDS UP for the internals scene: 0 = the bore lies along world
+ *  +X, the pose every other scene is written against; 1 = it points at +Y.
+ *
+ *  IT TIPS ON THE CARDS' TAIL, under the field's own dissolve, so the scene
+ *  hands over already turning, and it is upright well inside the internals
+ *  camera transit — the camera's move and the lens' are one gesture.
+ *
+ *  AND IT COMES BACK DOWN OVER THE DIVE'S APPROACH, because the fly-through is
+ *  written along world +X: the model dollies down its own bore, and the sky and
+ *  the wormhole take their axis from it. The approach transit is where the
+ *  camera swings onto that axis anyway, so the two moves are the same beat. It
+ *  lands INSIDE that transit rather than on its edge, so the bore is exactly on
+ *  the dive's axis before story/fly.ts's first frame rather than to a float. */
+export const UPRIGHT: { rise: StoryWindow; fall: StoryWindow } = {
+  rise: [
+    ["cards", 0.8],
+    ["internals", 0.3],
+  ],
+  fall: ["flythrough", 0, 0.2],
+};
+
+/** the tip, 0..1 — a pulse like the mechanism channels, and 0 at both ends of
+ *  the track so no other span sees the model off its authored axis */
+export const uprightAt = pulseFn(UPRIGHT);
+
+/** THE NOSE DIP: the bore sits a little BELOW horizontal across the cards
+ *  scene, so story/peelcards.ts's turn about world +Y sweeps a cone rather than
+ *  reading as a flat spin. Its fall IS the tip's rise, so the dip is spent
+ *  exactly as the lens stands up and no span outside the pair sees it.
+ *
+ *  IT OPENS WITH THE TURN, not in the peel: the driver folds the dip into the
+ *  same `z` the tip writes, and the peel's bore roll is applied on top of that
+ *  `z` — a dipped bore under that roll would precess instead of rolling in
+ *  place. Keeping the dip inside the cards scene keeps the two disjoint. */
+export const DIP: { rise: StoryWindow; fall: StoryWindow } = {
+  rise: ["cards", 0, 0.3],
+  fall: UPRIGHT.rise,
+};
+
+/** THE HUDDLE: the bare core draws axially compact for the cards chapter —
+ *  with the barrel gone the keep-set's seated anatomy has real air between the
+ *  glass, the stop and the mount, and the turn would show a strung-out chain
+ *  where the sketch shows a lens. It opens with the turn (the peel's departing
+ *  pieces fly from SEATED positions, so it may not start before the scene
+ *  boundary) and its release IS the stand-up: the fall is UPRIGHT's own rise,
+ *  so stretching into the internals stack and tipping vertical read as one
+ *  hand-over gesture, spent well before anything the dive returns. */
+export const HUDDLE: { rise: StoryWindow; fall: StoryWindow } = {
+  rise: ["cards", 0.02, 0.16],
+  fall: UPRIGHT.rise,
+};
+
+/** the huddle at p, 0..1 — 0 at both ends of the track */
+export const huddleAt = pulseFn(HUDDLE);
+
+/** how far the nose dips, radians */
+export const DIP_MAX = deg(15);
+
+const dipFracAt = pulseFn(DIP);
+
+/** the dip at p, radians, ≥ 0 — hero-driver SUBTRACTS it from the tip's own
+ *  `MODEL_BORE_X_Z * (1 − uprightAt(p))`, and it is exactly 0 outside the
+ *  window, so every other span's tilt is untouched to the bit. */
+export const dipAt = (p: number): number => DIP_MAX * dipFracAt(p);
+
+/** THE SPINNING-TOP ROCK: the standing lens nutates about the bore while the
+ *  last pieces land, and damps to dead still before the bloom opens. It is the
+ *  ending's only model motion — the descent's own camera turn is the camera's.
+ *
+ *  A CONE, not a tilt: the driver adds `rockZAt` to the model's tilt and
+ *  `rockYAt` to its turn, two axes square to the bore, so the bore itself walks
+ *  a circle at the rate below. Both are EXACTLY 0 outside the window and C1 at
+ *  both edges (the envelope's rise and its damping each leave at zero rate), so
+ *  no other span sees the model off its authored axis and the bloom opens on a
+ *  frame that is still to the bit. */
+export const ROCK: StoryWindow = ["capsOn", 0.44, 0.7];
+
+/** how far the bore leans at the wobble's peak, radians */
+export const ROCK_MAX = deg(9);
+
+/** turns of precession across the window */
+const ROCK_TURNS = 1.75;
+
+const [ROCK_P0, ROCK_P1] = windowEdges(ROCK);
+const ROCK_SPAN = ROCK_P1 - ROCK_P0;
+const ROCK_RATE = 2 * Math.PI * ROCK_TURNS;
+
+/** the lean at p, radians ≥ 0 — up off zero rate, then damped out */
+const rockLeanAt = (p: number): number => {
+  const u = clamp01((p - ROCK_P0) / ROCK_SPAN);
+  return ROCK_MAX * smoothstep(0, 0.18, u) * (1 - smoothstep(0.3, 1, u));
+};
+
+/** where the lean points at p, radians round the bore */
+const rockPhaseAt = (p: number): number =>
+  ROCK_RATE * clamp01((p - ROCK_P0) / ROCK_SPAN);
+
+export const rockZAt = (p: number): number =>
+  rockLeanAt(p) * Math.cos(rockPhaseAt(p));
+
+export const rockYAt = (p: number): number =>
+  rockLeanAt(p) * Math.sin(rockPhaseAt(p));
 
 /** The bloom — the one channel with no fall; the story ends inside it. Its foot
  *  is the SPIRAL'S far edge plus a settle beat: the pieces are home and still
@@ -93,42 +187,89 @@ export const CARDS_APART: { rise: StoryWindow; fall: StoryWindow } = {
  *  fold the same wedge) — authored in p, ENFORCED on the eased channel by
  *  `wrapBloomWrite`. */
 export const ROSE_PULSE: { rise: StoryWindow } = {
-  rise: ["capsOn", 0.62, 0.95],
+  rise: ["capsOn", 0.72, 0.96],
 };
 
-export const zoomAt = (p: number): number => pulse(p, ZOOM_PULSE);
-export const explodeAt = (p: number): number => pulse(p, EXPLODE_PULSE);
+export const zoomAt = pulseFn(ZOOM_PULSE);
+export const explodeAt = pulseFn(EXPLODE_PULSE);
 
-/** The assemble channel runs TWICE, in opposite directions — the cards scene
- *  takes the lens apart on it, the sky chapter puts it back. The SUM is exact
- *  because the two pulses are disjoint in p and each saturates at its own
- *  edges; anything added here must keep that, since overlapping pulses would
- *  drive the channel past 1 and the gate reads a channel, not a clamp. */
-export const assembleAt = (p: number): number =>
-  pulse(p, CARDS_APART) + pulse(p, ASSEMBLE_PULSE);
-export const roseAt = (p: number): number => pulse(p, ROSE_PULSE);
+/** THE ASSEMBLE CHANNEL RUNS ONCE ON THE TRACK — the cards scene's departure,
+ *  and nothing else. IT IS NOT IN THE ENDING: the host SUMS each recipe's
+ *  delta, so two saturated recipes cannot compose into a rigid pose, and the
+ *  wrap's park terms are meridian TRANSLATIONS that carry a wedge off the ring
+ *  it lands on. The ending's cloud and its descent are the EXPLODE recipe
+ *  alone, which is what lets the flat opening frame sit every piece on its own
+ *  arc, untilted and evenly spaced.
+ *
+ *  IT IS ALSO ON THE RAW CLOCK, all of it: that whole neighbourhood — the card
+ *  windows, the wink, the peel's own roll — is written value-and-target off the
+ *  raw scroll, so its sequencing holds on the values the shader reads. The
+ *  channel that outlives the scroll in the ending is the SPREAD, and that one
+ *  is core/scene's ease from end to end. */
+export const assembleAt = pulseFn(CARDS_APART);
+export const roseAt = pulseFn(ROSE_PULSE);
 
-/** Where the channel's two clocks meet. Below it the wrap is RAW (value and
- *  target both written), so the cards chapter's sequencing holds on the values
- *  the shader reads; above it the ease is the point, so the sky chapter's
- *  reassembly outlives the scroll. The seam sits where both clocks read 0. */
-export const WRAP_EASE_P0 = windowEdges(ASSEMBLE_PULSE.rise)[0];
+/** THE ENDING'S SPREAD (ops/recipes.ts `explode.bloom`): how far up its own
+ *  meridian each piece slides at full channel, in its own seat radii. A knob
+ *  rather than the recipe's default because the two readers frame the cloud from
+ *  very different distances — the story's camera parks 30 world units out and
+ *  wants the whole barrel opened into rings, /lens orbits the lens itself and
+ *  wants an exploded view that stays on screen. The recipe's own default is
+ *  /lens's; this is the story's.
+ *
+ *  A CONSTANT, not an envelope: the spread's PACING is the explode channel's
+ *  (EXPLODE_PULSE), and a knob that moved with p would be a second clock on the
+ *  same motion. */
+export const ENDING_BLOOM = 4.5;
 
-/** The departure's scope knob (ops/recipes.ts `assemble.keepScope`): 1 across
- *  the cards chapter, so the wrap and the ladder leave the keep-set alone, and
- *  0 from the sky chapter's own rise on, where the whole model reassembles. It
- *  steps in the dead band between the two pulses, where the channel is 0 and
- *  the knob moves nothing. */
-export const assembleKeepScopeAt = (p: number): number =>
-  p < WRAP_EASE_P0 ? 1 : 0;
+/** THE MID-FALL CURL (ops/recipes.ts `explode.curl`): how far off its seated
+ *  radius a shell wedge opens on the way down, as a coil factor beyond 1. The
+ *  wrap beat, back on the descent alone — the recipe's window is the piece's own
+ *  flight, so the curl is exactly 0 at the park and exactly 0 at each piece's
+ *  seat, and the only thing it changes is the shape in the air.
+ *
+ *  A STORY knob at the recipe's 0 default, like `ENDING_BLOOM`: /lens's exploded
+ *  view is an inspection control and its parts stay at their authored shape. */
+export const ENDING_CURL = 4.5;
 
-/** The eased wrap's floor, below which the driver writes an exact 0 so the
- *  bloom may open. Perceptual, not numerical: the assemble gate has every piece
- *  seated well above it, so this truncates no drawn motion. The wait it costs
- *  is bounded in __tests__/channel-ease.test.ts. */
+/** THE RING PHASE (ops/recipes.ts `explode.ringPhase`): turns of parked azimuth
+ *  per model-mm of a piece's ladder station. Every shell is cut on the SAME
+ *  meridians, so a park pose that only slides each piece out along its own
+ *  leaves all the seams on one set of radial lines and the cloud reads as a
+ *  five-armed pinwheel. One turn per ladder GROUP breaks that: the ring keeps
+ *  its even spacing (the station is per group) and its gaps land where no
+ *  neighbour's do, so the figure reads as the trails' broken concentric circles.
+ *
+ *  A STORY knob at the recipe's 0 default, like `ENDING_BLOOM` and
+ *  `ENDING_CURL`: /lens's exploded view is an inspection control and keeps each
+ *  piece square to its own seat meridian. */
+export const ENDING_RING_PHASE = 0.0325;
+
+/** THE PARKED REBEND (ops/recipes.ts `explode.rebend`): 1 = each parked wedge
+ *  is re-bent, at constant arc length, to the radius of the ring the spread
+ *  has carried it to — the mandala's arcs ARE arcs of the circles they sit on
+ *  — and it relaxes back to its own curvature as it flies home, matching its
+ *  current ring the whole way down. Exactly the seat's shape at the seat.
+ *
+ *  A STORY knob at the recipe's 0 default, like the rest of the ENDING_*
+ *  family: /lens's exploded view keeps every piece's authored shape. */
+export const ENDING_REBEND = 1;
+
+/** The departure's scope knob (ops/recipes.ts `assemble.keepScope`), 1 for the
+ *  whole story: the wrap runs over the cards chapter and nowhere else now, and
+ *  there it must reveal the mechanism in place, so there is no second scope to
+ *  step to. A CONSTANT rather than a step, because the eased channel outlives
+ *  its target — a step anywhere on the track would move the keep-set under a
+ *  tail that is still live. /lens keeps the recipe's own 0 default. */
+export const ASSEMBLE_KEEP_SCOPE = 1;
+
+/** The eased fold's floor, below which the bloom may open. Perceptual, not
+ *  numerical: the gate has every piece within a fifth of a percent of its seat
+ *  above it, so this truncates no drawn motion. The wait it costs is bounded in
+ *  __tests__/channel-ease.test.ts. */
 export const WRAP_SPENT = 2e-3;
 
-/** What the driver writes for the wrap and the bloom on one frame — the pair's
+/** What the driver writes for the fold and the bloom on one frame — the pair's
  *  whole law as a pure function, so the values the shader reads are testable
  *  without a DOM. `null` means "leave the ease alone". */
 export interface WrapBloomWrite {
@@ -136,6 +277,10 @@ export interface WrapBloomWrite {
   assembleTarget: number;
   /** the wrap channel's value, or null to leave core/scene's ease alone */
   assemble: number | null;
+  /** the spread channel's target, always written */
+  explodeTarget: number;
+  /** the spread channel's value, or null */
+  explode: number | null;
   /** the bloom's target, always written */
   roseTarget: number;
   /** the bloom's value, or null */
@@ -143,25 +288,28 @@ export interface WrapBloomWrite {
 }
 export const wrapBloomWrite = (
   p: number,
-  /** the LIVE eased wrap channel, as the deform host is about to read it */
-  wrapNow: number,
+  /** the LIVE eased channels the deform host is about to read. BOTH fold the
+   *  same wedge, so the bloom waits on whichever is still moving: the wrap in
+   *  the cards chapter, the spread through the whole ending. */
+  fold: { assemble: number; explode: number },
 ): WrapBloomWrite => {
-  const target = assembleAt(p);
-  const assemble =
-    p < WRAP_EASE_P0
-      ? // the cards chapter: raw, on the peel's own clock
-        target
-      : // the sky chapter: eased, but spent HARD once it is under the floor
-        target === 0 && wrapNow < WRAP_SPENT
-        ? 0
-        : null;
-  const wrap = assemble ?? wrapNow;
+  const wrapTarget = assembleAt(p);
+  const spreadTarget = explodeAt(p);
+  // THE SPREAD IS SPENT HARD once it is under the floor, because the ease never
+  // reaches 0 on its own and the bloom's exclusion has to be exact rather than
+  // asymptotic. It is the ending's own coming-together, so it is the one the
+  // flower actually waits on.
+  const explode = spreadTarget === 0 && fold.explode < WRAP_SPENT ? 0 : null;
   const rose = roseAt(p);
+  const live = Math.max(wrapTarget, explode ?? fold.explode);
   return {
-    assembleTarget: target,
-    assemble,
-    // the bloom waits for the WRAP to be spent, not for p to pass its foot…
-    roseTarget: wrap > 0 ? 0 : rose,
+    assembleTarget: wrapTarget,
+    // RAW, on the cards chapter's own clock — see the note above assembleAt
+    assemble: wrapTarget,
+    explodeTarget: spreadTarget,
+    explode,
+    // the bloom waits for the fold to be SPENT, not for p to pass its foot…
+    roseTarget: live > 0 ? 0 : rose,
     // …and is held shut below that foot, so the exclusion is symmetric
     rose: rose === 0 ? 0 : null,
   };
@@ -197,23 +345,16 @@ export const driverOwnsIris = (p: number): boolean =>
 
 // --- the look ----------------------------------------------------------------
 
-/** Ink fill: wireframe → half through zoom → full at the peel → back toward
- *  wireframe for the teardown → full again for the ending. The last two ramps
- *  are the same magnitude in opposite directions, so the level returns exactly
- *  to where the peel left it. */
+/** Ink fill: wireframe → half through zoom → full at the peel, and full for the
+ *  rest of the story. THE FILLS MAY NOT DIP BELOW THE EDGE LINES: the lines are
+ *  drawn at a flat alpha (materials/unified.ts `inkLineOpacity`) and only the
+ *  fills ride this level, so any dip draws the pieces as hollow outlines. */
 export const INK_HALF: [number, number] = [atFrac(zR, 0.0), atFrac(zR, 0.5)];
 export const INK_FULL: [number, number] = [peR.p0, atFrac(peR, 0.35)];
-export const INK_DROP: [number, number] = [atFrac(tR, 0.1), atFrac(tR, 0.6)];
-export const INK_RESTORE: [number, number] = [
-  atFrac(rwR, 0.1),
-  atFrac(rwR, 0.8),
-];
 
 export const inkFillAt = (p: number): number =>
   0.5 * smoothstep(INK_HALF[0], INK_HALF[1], p) +
-  0.5 * smoothstep(INK_FULL[0], INK_FULL[1], p) -
-  0.84 * smoothstep(INK_DROP[0], INK_DROP[1], p) +
-  0.84 * smoothstep(INK_RESTORE[0], INK_RESTORE[1], p);
+  0.5 * smoothstep(INK_FULL[0], INK_FULL[1], p);
 
 /** The shell's way back, at the rewrap's first frames — behind the opaque sky
  *  backdrop story/fly.ts still holds, so the pop is unseen. */
@@ -228,12 +369,15 @@ export const shellFadeAt = (p: number): number =>
   smoothstep(WINK_SPAN[0], WINK_SPAN[1], p) +
   smoothstep(SHELL_BACK[0], SHELL_BACK[1], p);
 
-/** The interior's return waits for the camera to park ON the bore. Earlier and
- *  the approach swing shows the arriving pieces in profile with no shell to
- *  hide them; from the park on, every one is masked behind the barrel. */
+/** The interior's return waits for the camera to park ON the bore: it opens AT
+ *  DIVE_P0 and completes just inside the dive. Earlier and the approach swing
+ *  shows the arriving pieces in profile with no shell to hide them; from the
+ *  park on, every one is masked behind the barrel. Both edges ride the
+ *  flythrough's transit — the number DIVE_P0 itself is built from — so a hold
+ *  retune moves the return with the park. */
 export const INTERIOR_BACK: [number, number] = [
-  atFrac(fR, 0.13),
-  atFrac(fR, 0.2),
+  DIVE_P0,
+  atFrac(fR, fR.scene.transit + 0.07),
 ];
 
 /** Cladding + rest-cast leave on the shell's window but return over the

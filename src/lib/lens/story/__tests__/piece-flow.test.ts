@@ -2,13 +2,26 @@ import { describe, expect, it } from "vitest";
 import { readFileSync, writeFileSync } from "node:fs";
 import * as THREE from "three/webgpu";
 import { NUM } from "../../ops/algebra";
-import { deriveFrames } from "../../ops/frames";
 import { pieceField, type LiveRecipe } from "../../ops/cpu";
+import { shippedModel } from "./shipped-model";
+import { PART_CLASS } from "../../ops/ops";
 import { makeRecipes } from "../../ops/recipes";
 import { CHANNEL_DEFAULTS } from "../../core/scene";
-import { RANGES, windowEdges } from "../story";
+import { RANGES, atFrac, rangeOf, windowEdges } from "../story";
 import { DEFORM_RECIPES } from "../cost";
-import { CARDS_APART, ROSE_PULSE, assembleKeepScopeAt } from "../envelopes";
+import {
+  CARDS_APART,
+  ROCK,
+  ROSE_PULSE,
+  ASSEMBLE_KEEP_SCOPE,
+  ENDING_BLOOM,
+  ENDING_CURL,
+  ENDING_RING_PHASE,
+  ENDING_REBEND,
+  interiorFadeAt,
+  shellFadeAt,
+} from "../envelopes";
+import { makeWinkScatter } from "../../core/visibility";
 import { isPeelKeep } from "../../core/parts";
 import { storyStateAt } from "../state";
 import {
@@ -46,132 +59,13 @@ import {
 // driven at `storyStateAt(p)`'s channels, over the frames `ops/frames.ts`
 // derives from the SHIPPED GLB. Nothing about the model is tabulated here.
 //
-// THE MODEL IS READ FOR REAL. The GLB's vertices are plain float32 accessors in
-// the BIN chunk, so this file slices them straight out and rebuilds the shipped
-// node graph — names, parenting, transforms, positions and indices — then runs
-// the real `deriveFrames` over it. That is the same measurement pass the browser
-// runs at load, on the same bytes, so the roster here IS the browser's roster
-// (spot-checked below against the measured ranks core/parts.ts quotes from the
-// live model).
+// THE MODEL IS READ FOR REAL — `./shipped-model.ts` rebuilds the shipped node
+// graph off the GLB's own bytes and runs the real `deriveFrames` over it, so the
+// roster here IS the browser's roster (spot-checked below against the measured
+// ranks core/parts.ts quotes from the live model).
 // ============================================================================
 
 const MAP_URL = new URL("../../PIECE-FLOW.md", import.meta.url);
-const MODEL = "public/models/lens_web_segmented.glb";
-
-// ── the shipped model, read and framed in node ──────────────────────────────
-
-interface Gltf {
-  nodes: {
-    name: string;
-    mesh?: number;
-    children?: number[];
-    translation?: number[];
-    rotation?: number[];
-    scale?: number[];
-  }[];
-  meshes: {
-    primitives: { attributes: Record<string, number>; indices: number }[];
-  }[];
-  accessors: {
-    bufferView: number;
-    byteOffset?: number;
-    componentType: number;
-    count: number;
-    type: string;
-  }[];
-  bufferViews: {
-    byteOffset?: number;
-    byteLength: number;
-    byteStride?: number;
-  }[];
-  scenes: { nodes: number[] }[];
-}
-
-/** The glTF JSON chunk and the BIN chunk of a .glb — ops/__tests__'s idiom,
- *  keeping the binary this time. */
-function glb(path: string): { json: Gltf; bin: Buffer } {
-  const buf = readFileSync(path);
-  let off = 12;
-  let json: Gltf | null = null;
-  let bin: Buffer = Buffer.alloc(0);
-  while (off < buf.length) {
-    const len = buf.readUInt32LE(off);
-    const type = buf.readUInt32LE(off + 4);
-    if (type === 0x4e4f534a)
-      json = JSON.parse(buf.subarray(off + 8, off + 8 + len).toString("utf8"));
-    if (type === 0x004e4942) bin = buf.subarray(off + 8, off + 8 + len);
-    off += 8 + len;
-  }
-  return { json: json!, bin };
-}
-
-/** glTF `componentType` → the typed array that reads it. The shipped files use
- *  5126 for POSITION and 5123 for indices; the other two are here so a re-export
- *  that widens an index buffer past 65535 reads correctly instead of silently
- *  mis-slicing the BIN chunk. */
-const COMPONENT = {
-  5121: Uint8Array,
-  5123: Uint16Array,
-  5125: Uint32Array,
-  5126: Float32Array,
-} as const;
-
-const PER_ELEMENT: Record<string, number> = { SCALAR: 1, VEC3: 3 };
-
-/** One accessor as a typed array over the BIN chunk. The bytes are COPIED, not
- *  viewed: a bufferView's offset in the file need not be aligned to the
- *  component size, and a misaligned typed-array view over the shared buffer
- *  throws. Interleaved bufferViews (`byteStride`) would need a strided gather
- *  and these exports are tightly packed, so that case is refused loudly. */
-function accessor(json: Gltf, bin: Buffer, i: number) {
-  const a = json.accessors[i];
-  const bv = json.bufferViews[a.bufferView];
-  const Ctor = COMPONENT[a.componentType as keyof typeof COMPONENT];
-  if (!Ctor) throw new Error(`accessor ${i}: componentType ${a.componentType}`);
-  if (bv.byteStride !== undefined)
-    throw new Error(`accessor ${i}: interleaved bufferView is not supported`);
-  const n = a.count * PER_ELEMENT[a.type];
-  const at = (bv.byteOffset ?? 0) + (a.byteOffset ?? 0);
-  const bytes = new Uint8Array(
-    bin.subarray(at, at + n * Ctor.BYTES_PER_ELEMENT),
-  );
-  return new Ctor(bytes.buffer);
-}
-
-/** The shipped node graph with REAL geometry — the browser's scene, minus the
- *  materials nothing here reads. */
-function shippedModel(): THREE.Object3D {
-  const { json, bin } = glb(MODEL);
-  const geos = json.meshes.map((m) => {
-    const prim = m.primitives[0];
-    const geo = new THREE.BufferGeometry();
-    const pos = accessor(json, bin, prim.attributes.POSITION);
-    geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
-    geo.setIndex(
-      new THREE.BufferAttribute(accessor(json, bin, prim.indices), 1),
-    );
-    return geo;
-  });
-  const objs = json.nodes.map((n) => {
-    const o =
-      n.mesh !== undefined
-        ? new THREE.Mesh(geos[n.mesh])
-        : new THREE.Object3D();
-    o.name = n.name;
-    if (n.translation) o.position.fromArray(n.translation);
-    if (n.rotation) o.quaternion.fromArray(n.rotation);
-    if (n.scale) o.scale.fromArray(n.scale);
-    return o;
-  });
-  json.nodes.forEach((n, i) => {
-    for (const c of n.children ?? []) objs[i].add(objs[c]);
-  });
-  const root = new THREE.Object3D();
-  root.name = "lens";
-  for (const i of json.scenes[0].nodes) root.add(objs[i]);
-  deriveFrames(root);
-  return root;
-}
 
 const root = shippedModel();
 const table: PieceTable = buildPieceTable(root);
@@ -274,9 +168,9 @@ so a wave that retunes a recipe fails the suite with the new table in the diff.
 
 **Roster.** \`lens_web_segmented.glb\` — ${meshes} mesh nodes, ${table.pieces.length} pieces: ONE PIECE PER DISTINCT LANE TUPLE, which is how the deform itself reads the model. Six meshes carry more than one tuple (an adopted feature is framed island by island so each screw snaps to its own host wedge) — and islands that snapped to the SAME wedge inherit identical lanes and are therefore one piece, so a mesh's pieces are its distinct FRAMES, not its islands. By cast: ${roster}. A piece IS its derived frame (\`ops/frames.ts\`'s \`_op*\` lanes); the casts are core/visibility.ts's own wink bands.
 
-**Deform set.** The hero pins \`${DEFORM_RECIPES.join(" / ")}\` and drives them off the story's channels; every knob rests at its recipe's \`knobDefaults\`. Nothing moves outside p ∈ [${w0.toFixed(4)}, ${w1.toFixed(4)}] — the op channels' own live span, scanned at 1/2000 and snapped outward by a step. Every piece is exactly on its seat outside it.
+**Deform set.** The hero pins \`${DEFORM_RECIPES.join(" / ")}\` and drives them off the story's channels; every knob rests at its recipe's \`knobDefaults\` but the three the story writes (\`assemble.keepScope\`, \`explode.bloom\`, \`explode.curl\` — story/envelopes.ts). Nothing moves outside p ∈ [${w0.toFixed(4)}, ${w1.toFixed(4)}] — the op channels' own live span, scanned at 1/2000 and snapped outward by a step. Every piece is exactly on its seat outside it.
 
-**The dimensions.** \`dTheta\`/\`dR\`/\`dX\` are the piece frame's displacement from its seat — round the bore (rad), out from the axis (mm), along the axis (mm). \`roll\` is the piece turning IN PLACE about the bore (a rigid revolution reads 0: the local frame is carried with it). \`bend\` and \`curl\` are the two halves of "how did its shape change", and neither implies the other: \`bend\` is AXIAL — the relative rotation of the piece's two ends, how much one has turned against the other, unsigned, 0 for any rigid motion (and a true 0.000 through the peel, cards and internals, which move a piece's two ends alike) — while \`curl\` is CIRCUMFERENTIAL and SIGNED: how much more its arcs curve than they do at their seat, positive curled tighter, negative flattened, which is what a wedge peeling off the barrel does. \`stretch\` and \`stretch X\` are its size round the bore and along it: 1 is rigid, and they are separate readings off separate probe pairs (\`stretch X\` is a ratio of the piece's OWN axial extent, so it runs to 100× on a 0.093mm shim the ops spread by a millimetre — as the render does). \`travel\` is the straight-line distance from the seat. There is no rigid half any more: story/peelcards.ts's per-piece offsets went with the cards scene's old drift departure, so every motion in the story is a deform channel and this table is all of it.
+**The dimensions.** \`dTheta\`/\`dR\`/\`dX\` are the piece frame's displacement from its seat — round the bore (rad), out from the axis (mm), along the axis (mm). \`roll\` is the piece turning IN PLACE about the bore (a rigid revolution reads 0: the local frame is carried with it). \`bend\` and \`curl\` are the two halves of "how did its shape change", and neither implies the other: \`bend\` is AXIAL — the relative rotation of the piece's two ends, how much one has turned against the other, unsigned, 0 for any rigid motion (and a true 0.000 through the peel and internals, which move a piece's two ends alike) — while \`curl\` is CIRCUMFERENTIAL and SIGNED: how much more its arcs curve than they do at their seat, positive curled tighter, negative flattened, which is what a wedge peeling off the barrel does. \`stretch\` and \`stretch X\` are its size round the bore and along it: 1 is rigid, and they are separate readings off separate probe pairs (\`stretch X\` is a ratio of the piece's OWN axial extent, so it runs to 100× on a 0.093mm shim the ops spread by a millimetre — as the render does). \`travel\` is the straight-line distance from the seat. There is no rigid half any more: story/peelcards.ts's per-piece offsets went with the cards scene's old drift departure, so every motion in the story is a deform channel and this table is all of it.
 
 **What it is not.** The AUTHORED pose at \`p\`: every residual \`story/state.ts\`
 declares (ease lag, phase clocks, mount latches) applies. It carries no
@@ -493,8 +387,8 @@ describe("the pipeline under the probes is the goldens' pipeline", () => {
     const rows: [number, [number, number, number]][] = [
       [0.25, [0.7, 10, -20]],
       [0.5, [0.7, 10, -20]],
-      [0.75, [0.498889433073101, 13.618614084656754, -19.86985185321251]],
-      [1, [-0.2997399815328021, 38.90598908216705, -19]],
+      [0.75, [0.7, 10, -20]],
+      [1, [-0.8393314555380286, 18.622324745329713, 81]],
     ];
     for (const [channel, g] of rows) {
       const live = [
@@ -510,13 +404,14 @@ describe("the pipeline under the probes is the goldens' pipeline", () => {
   it("reproduces assemble's pinned rows for the rank-1 piece", () => {
     // GOLDEN.assemble, PIECES[2] (t0 −1.2, R 21, rank01 1) × PROBES[2]
     // (frac 0.5, yN 0, off 0) × the four channels — the overrun-free middle of
-    // the sheet, on the piece the gate's rank stagger releases last
+    // the sheet, on the piece the gate's staggers release FIRST (outermost
+    // rank, latest phase), so it is spent by a quarter of the channel
     const lanes = lanesOf(-1.2, 21, 1, 0.82, -3.25);
     const rows: [number, [number, number, number]][] = [
-      [0.25, [-1.192257449585948, 30.623591717577295, -0.9798290250356197]],
-      [0.5, [-2.645185686121488, 66.50099716874664, -1.3]],
-      [0.75, [-2.645185686121488, 66.50099716874664, -1.3]],
-      [1, [-2.645185686121488, 66.50099716874664, -1.3]],
+      [0.25, [-2.380550661654163, 59.94469078376348, -1.267620924078974]],
+      [0.5, [-2.645185686121488, 66.50099716874665, -1.3]],
+      [0.75, [-2.645185686121488, 66.50099716874665, -1.3]],
+      [1, [-2.645185686121488, 66.50099716874665, -1.3]],
     ];
     for (const [channel, g] of rows) {
       const live = [
@@ -625,24 +520,21 @@ describe("the state at rest, and the state's own algebra", () => {
     }
     expect(bent, "the ops turn one end against the other").toBeGreaterThan(0);
     expect(stretched, "the ops stretch along the bore").toBeGreaterThan(0);
-    // …and `bend`'s complement is NOT the same reading: the peel flattens the
-    // shell wedges circumferentially while doing the same thing to both of a
-    // piece's ends, so exactly here `curl` must be non-zero where `bend` is 0.
-    // (v1's single-plane column read −0.201…1.046 over this cast — the sanity
-    // reference for the magnitude, not a pinned value.)
-    const peeling = RANGES.find((r) => r.scene.id === "peel")!;
-    const pPeel = FLOW_SAMPLE_PS.filter(
-      (p) => p > peeling.p0 && p < peeling.p1,
-    );
-    const wedges = table.pieces.filter((r) => r.cast === "wedges");
-    const curls = pPeel.flatMap((p) => {
-      const live = liveDeformAt(p);
-      return wedges.map((r) => pieceStateAt(p, r.key, table, live));
-    });
-    expect(Math.max(...curls.map((s) => Math.abs(s.curl)))).toBeGreaterThan(
-      0.5,
-    );
-    expect(Math.max(...curls.map((s) => s.bend))).toBe(0);
+    // …and `bend`'s complement is NOT the same reading: the departure flattens
+    // the extras circumferentially while doing the same thing to both of a
+    // piece's ends, so exactly there `curl` must be non-zero where `bend` is 0.
+    // …and `bend`'s complement is NOT the same reading: a piece can flatten
+    // circumferentially while its two ends stay parallel, so somewhere on the
+    // grid `curl` is large where `bend` is EXACTLY 0.
+    let flat = 0;
+    for (const q of FLOW_SAMPLE_PS) {
+      const lv = liveDeformAt(q);
+      for (const row of table.pieces) {
+        const st = pieceStateAt(q, row.key, table, lv);
+        if (st.bend === 0) flat = Math.max(flat, Math.abs(st.curl));
+      }
+    }
+    expect(flat, "curl without bend").toBeGreaterThan(0.5);
     // and the two ends really are at the piece's own extremes: the seat's
     // axial reading is their midpoint, which is the frame's own `axial`
     for (const key of ["Barrel_Base_Seg0", "Shim_Ring_02_Seg3", "Element_01"]) {
@@ -654,12 +546,10 @@ describe("the state at rest, and the state's own algebra", () => {
 
   it("reports no circumferential stretch for a body of revolution", () => {
     // story/flow.ts `ringFramed`: an axisymmetric frame's span is the convention
-    // 2π, so its circumferential probes are a RING SAMPLE and their separation
-    // answers to the ring's rigid motion. Measured on `Cam_Followers`, whose raw
-    // girth ratio reads 3.9500 at p=0.6935 (a dilation, radius ×3.9500) and
-    // 1.0000 at p=0.2833333 (a lateral carry, radius ×3.7884) — two rigid motions,
-    // two different answers, so nothing built on the frame's radius can correct
-    // it. The flat 1 below MEANS "not measured", and the map says so.
+    // 2π, so its circumferential probes are a RING SAMPLE whose separation
+    // answers to the ring's own rigid motion — a dilation and a lateral carry
+    // give different ratios, so nothing built on the frame's radius corrects it.
+    // The flat 1 below MEANS "not measured", and the map says so.
     const axi = table.pieces.filter((r) => r.lanes.axi >= 0.5);
     expect(axi.map((r) => r.key).sort()).toEqual([
       "Cam_Followers",
@@ -675,105 +565,452 @@ describe("the state at rest, and the state's own algebra", () => {
         ).toBe(1);
     }
     // …while a piece with a MEASURED span still reports one. Pinned at the
-    // sample grid's OWN extreme rather than at a hand-picked p.
+    // sample grid's OWN extreme rather than at a hand-picked p. It sits in the
+    // PEEL again: the wrap left the rewrap for the descent, so the ending's
+    // chapter no longer holds the story's sharpest squeeze.
     const measured = FLOW_SAMPLE_PS.map((q) => ({
       p: q,
       stretch: pieceStateAt(q, "Ring_Focus_Seg4", table).stretch,
     }));
     const worst = measured.reduce((a, b) => (b.stretch < a.stretch ? b : a));
-    expect(worst.p).toBeCloseTo(0.1791837, 6);
-    expect(worst.stretch).toBeCloseTo(0.7677, 3);
+    expect(worst.p).toBeCloseTo(0.1821086, 6);
+    expect(worst.stretch).toBeCloseTo(0.915, 3);
   });
 
-  // ── the composed-displacement probe ──
-  // The piece's own seated corners and mid-points, in its local frame: enough
-  // to catch a fold, which moves the sheet's ends furthest.
   const ALL = makeRecipes(NUM);
-  type Pt = [number, number, number];
-  const probePoints = (l: (typeof table.pieces)[number]["lanes"]): Pt[] => {
-    const pts: Pt[] = [];
-    for (const th of [l.t0 - l.halfSpan, l.t0, l.t0 + l.halfSpan])
-      for (const y of [l.yMin, (l.yMin + l.yMax) / 2, l.yMax])
-        pts.push([l.R * Math.cos(th), y, l.R * Math.sin(th)]);
-    return pts;
-  };
-  const maxDisp = (
-    l: (typeof table.pieces)[number]["lanes"],
-    live: LiveRecipe[],
-    pts: Pt[],
-  ): number => {
-    if (live.length === 0) return 0;
-    const field = pieceField(l, live);
-    const out: Pt = [0, 0, 0];
-    let m = 0;
-    for (const q of pts) {
-      const d = field(q[0], q[1], q[2], out);
-      m = Math.max(m, Math.hypot(d[0], d[1], d[2]));
-    }
-    return m;
-  };
-  /** ONE chain live at the channel the story gives it at p, nothing else */
-  const soloAt = (name: "peel" | "assemble", p: number): LiveRecipe[] => {
-    const channel = storyStateAt(p).channels[name];
-    if (channel < 1e-6) return [];
-    const knobs =
-      name === "assemble"
-        ? { ...ALL.assemble.knobDefaults, keepScope: assembleKeepScopeAt(p) }
-        : ALL[name].knobDefaults;
-    return [{ recipe: ALL[name], channel, knobs }];
-  };
 
-  it("NEVER DOUBLE-FOLDS A WEDGE across the curl → departure hand-off", () => {
-    // THE REAL GUARD ON THE CROSSFADE. The channel-sum law
-    // (__tests__/channel-ease.test.ts) says the hand-off is smooth; it says
-    // nothing about what the two chains do to a PIECE, since the host sums
-    // their displacements rather than their channels. So this measures the
-    // composed displacement against the largest either chain reaches ALONE on
-    // the same piece: a doubled fold would show as a ratio near 2.
-    // the chapter's own grid, plus a dense sweep of the hand-off itself — the
-    // crossfade is 0.03 of the track and the shared grid lands one sample in it
-    const [rise0, rise1] = windowEdges(CARDS_APART.rise);
-    const dense = Array.from(
-      { length: 41 },
-      (_, i) => rise0 + ((rise1 - rise0) * i) / 40,
-    );
-    const ps = [
-      ...FLOW_SAMPLE_PS.filter((q) => q >= RANGES[2].p0 && q <= RANGES[3].p1),
-      ...dense,
+  it("PARKS THE PIECES IN A SCATTERED CLOUD — not a tower, not a ring", () => {
+    // The ending's parked pose (channel 1). Every piece is lifted up the
+    // optical axis — the direction the ending's camera renders as screen-up —
+    // AND pushed off its own seat meridian and radius by its own amount, so the
+    // cloud reads as loose parts rather than as the lens stretched.
+    const live = [
+      { recipe: ALL.explode, channel: 1, knobs: ALL.explode.knobDefaults },
     ];
-    expect(ps.length).toBeGreaterThan(40);
-    // the frames the crossfade actually runs on — both chains live at once
-    const crossed = new Set(
-      ps.filter((q) => {
-        const c = storyStateAt(q).channels;
-        return c.peel > 0.01 && c.assemble > 0.01;
-      }),
-    );
-    expect(crossed.size, "the hand-off is sampled at all").toBeGreaterThan(1);
-
-    let worst = { ratio: 0, key: "", p: 0 };
-    let handoff = 0;
+    const up: number[] = [];
+    const lat: number[] = [];
+    const flat: number[] = []; // the pieces nothing pushes sideways
     for (const row of table.pieces) {
-      const probes = probePoints(row.lanes);
-      // the piece's own single-chain ceiling over the whole chapter
-      let alone = 0;
-      for (const q of ps)
-        for (const name of ["peel", "assemble"] as const)
-          alone = Math.max(alone, maxDisp(row.lanes, soloAt(name, q), probes));
-      if (alone < 1e-9) continue; // a piece neither chain touches
-      for (const q of ps) {
-        const ratio = maxDisp(row.lanes, liveDeformAt(q), probes) / alone;
-        if (ratio > worst.ratio) worst = { ratio, key: row.key, p: q };
-        if (crossed.has(q)) handoff = Math.max(handoff, ratio);
+      const l = row.lanes;
+      const q: [number, number, number] = [
+        l.R * Math.cos(l.t0),
+        (l.yMin + l.yMax) / 2,
+        l.R * Math.sin(l.t0),
+      ];
+      const out: [number, number, number] = [0, 0, 0];
+      const d = pieceField(l, live)(q[0], q[1], q[2], out);
+      up.push(d[1]);
+      lat.push(Math.hypot(d[0], d[2]));
+      if (lat[lat.length - 1] === 0) flat.push(l.partClass);
+    }
+    const med = (xs: number[]) =>
+      [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
+    // every piece is held clear of its seat…
+    expect(Math.min(...up), "the lowest piece still hovers").toBeGreaterThan(
+      30,
+    );
+    // …a typical one by a good fraction of the lens' own radius sideways…
+    expect(med(lat), "the cloud is dispersed").toBeGreaterThan(20);
+    expect(
+      med(lat.map((v, i) => v / up[i])),
+      "…and visibly so",
+    ).toBeGreaterThan(0.1);
+    // …but the rise still dominates everywhere, so it stays a cloud ABOVE the
+    // lens rather than a ring around it
+    expect(
+      Math.max(...lat.map((v, i) => v / up[i])),
+      "up beats lateral, everywhere",
+    ).toBeLessThan(1);
+    // THE ONE EXEMPTION, and nothing else: the optical column keeps its line
+    // (ops/house.ts selNotOptical), so glass and the iris mechanism are the only
+    // pieces the dispersal leaves on their seat axis.
+    expect([...new Set(flat)].sort()).toEqual([PART_CLASS.glass, PART_CLASS.iris]); // prettier-ignore
+    expect(flat).toHaveLength(28);
+  });
+
+  it("PARKS RIGID: no piece is bent, stretched or turned out of its arc", () => {
+    // THE OWNER'S LAW for the opening frame, and the reason the wrap left the
+    // ending: ops/host.ts SUMS each live recipe's delta off the same seated
+    // vertex, so two saturated recipes never compose into a rigid motion — the
+    // pieces came out flattened (curl −0.45), stretched to 2.4× their own girth
+    // and rolled up to 29° out of tangential. The ending is the explode recipe
+    // alone, and everything in it that reaches the park or the seat is a
+    // rotation about the bore or a translation.
+    //
+    // AT THE PARK (0) AND ONCE EVERY PIECE IS SEATED (0.64, 0.7 — the last
+    // arrival is capsOn-local 0.586) that is exact to 9 dp. IN BETWEEN, the
+    // mid-fall curl is alive and only IT moves: `coil` re-radiuses the wedge at
+    // constant arc length, so the piece keeps its length, its arc's own
+    // straightness and its square-to-tangential facing, and its girth CHORDS
+    // open by under 3 %. The curl itself is the next test's subject.
+    // …and only up to the BLOOM's own foot: the rose recipe is a fold, and
+    // folding is what it is for (story/envelopes.ts ROSE_PULSE opens at 0.72).
+    // THE COUNTERFACTUAL CARRIES THE OLD EXACTNESS: with the rebend held at 0
+    // the whole span is the rigid state above, to 9 dp — so everything the
+    // rebend must NOT touch stays pinned as hard as it ever was.
+    const noRebend = (live: LiveRecipe[]): LiveRecipe[] =>
+      live.map((l) =>
+        l.recipe.name === "explode"
+          ? { ...l, knobs: { ...l.knobs, rebend: 0 } }
+          : l,
+      );
+    for (const f of [0, 0.15, 0.3, 0.5, 0.64, 0.7]) {
+      const p = atFrac(rangeOf("capsOn"), f);
+      const live = noRebend(liveDeformAt(p));
+      const inFlight = f > 0 && f < 0.64;
+      for (const row of table.pieces) {
+        const st = pieceStateAt(p, row.key, table, live);
+        expect(st.stretch, `${row.key} girth at capsOn ${f}`).toBeCloseTo(1, inFlight ? 1 : 9); // prettier-ignore
+        expect(st.stretchAxial, `${row.key} length at capsOn ${f}`).toBeCloseTo(1, 9); // prettier-ignore
+        expect(st.bend, `${row.key} bend at capsOn ${f}`).toBeCloseTo(0, 9);
+        expect(st.roll, `${row.key} roll at capsOn ${f}`).toBeCloseTo(0, 9);
+        if (!inFlight)
+          expect(st.curl, `${row.key} curl at capsOn ${f}`).toBeCloseTo(0, 9);
       }
     }
-    // MEASURED over 194 pieces × 61 samples: 1.178, on Ring_Zoom_Seg0 a third
-    // of the way through the hand-off. A wedge is carried up to a fifth further
-    // than either chain alone would take it — a bulge, nowhere near the ~2 a
-    // doubled fold would read as, which is what this bound is for. Narrow
-    // PEEL_RELEASE's overlap with the rise to bring it down.
-    expect(worst.ratio, `${worst.key} @${worst.p}`).toBeLessThan(1.25);
-    expect(handoff, "the hand-off's own worst frame").toBeLessThan(1.25);
+
+    // …AND THE REBEND IS THE PARK'S ONLY BEND (owner, iter8 round 3): a parked
+    // wedge lies ON its ring — re-bent, at constant arc length, to the circle
+    // the slide carried it to — so against the counterfactual the ONLY deltas
+    // are the bend itself: the curl OPENS (negative), the girth CHORDS open a
+    // few percent, and nothing else moves — not the travel, not the turn, not
+    // the length, not the facing. Non-sheet pieces are bitwise the same state.
+    const park = atFrac(rangeOf("capsOn"), 0);
+    const on = liveDeformAt(park);
+    const off = noRebend(liveDeformAt(park));
+    let bent = 0;
+    for (const row of table.pieces) {
+      const a = pieceStateAt(park, row.key, table, on);
+      const b = pieceStateAt(park, row.key, table, off);
+      expect(a.dRadius, `${row.key} travel`).toBeCloseTo(b.dRadius, 9);
+      expect(a.dTheta, `${row.key} turn`).toBeCloseTo(b.dTheta, 9);
+      expect(a.stretchAxial, `${row.key} length`).toBeCloseTo(b.stretchAxial, 9); // prettier-ignore
+      expect(a.bend, `${row.key} bend`).toBeCloseTo(b.bend, 9);
+      expect(a.roll, `${row.key} roll`).toBeCloseTo(b.roll, 9);
+      if (Math.abs(a.curl - b.curl) < 1e-9) {
+        expect(a.stretch, `${row.key} girth`).toBeCloseTo(b.stretch, 9);
+        continue;
+      }
+      bent++;
+      // …and the bend cast is THIN SHELLS ONLY: a kept-class solid (bracket,
+      // plate, board) must never bend — coil strains walls by |off|/R and the
+      // mechanism's deep sections measured 2× girth before the bar
+      expect(row.lanes.partClass, `${row.key} is not kept`).not.toBe(PART_CLASS.kept); // prettier-ignore
+      expect(a.curl, `${row.key} opens`).toBeLessThan(b.curl);
+      expect(a.stretch, `${row.key} chord`).toBeGreaterThanOrEqual(b.stretch - 1e-9); // prettier-ignore
+      expect(a.stretch, `${row.key} chord bound`).toBeLessThan(1.06);
+    }
+    expect(bent, "thin shells bent to their ring").toBeGreaterThan(100);
+  });
+
+  it("CURLS SHUT ON THE WAY DOWN — and only on the way down", () => {
+    // THE WRAP BEAT, back on the descent alone: a shell wedge opens off its
+    // seated radius as it leaves and shuts back onto it as it lands, so the
+    // pieces visibly curl closed around the glass. The window is the piece's
+    // OWN flight (ops/recipes.ts `curl`, through `coil`'s own `× flight`), which
+    // is what lets the beat exist without costing either end.
+    //
+    // BOTH ENDS ARE BITWISE, not "to 9 dp": the whole term is a factor of
+    // exactly 1 at flight 1 and at flight 0, so the drawn field with the story's
+    // curl and the drawn field WITHOUT it are the same floats — at the park, and
+    // at every sample where a piece is already on its seat, whatever the channel
+    // is doing to the pieces still in the air.
+    const capR = rangeOf("capsOn");
+    const N = 40;
+    const off = (live: LiveRecipe[]): LiveRecipe[] =>
+      live.map((l) =>
+        l.recipe.name === "explode"
+          ? { ...l, knobs: { ...l.knobs, curl: 0 } }
+          : l,
+      );
+    let parkDiff = 0;
+    let seatDiff = 0;
+    let seated = 0;
+    let deepest = 0;
+    for (let i = 0; i <= N; i++) {
+      const f = i / N;
+      const p = atFrac(capR, f);
+      const live = liveDeformAt(p);
+      const bare = off(live);
+      for (const row of table.pieces) {
+        const l = row.lanes;
+        const q: [number, number, number] = [
+          l.R * Math.cos(l.t0),
+          (l.yMin + l.yMax) / 2,
+          l.R * Math.sin(l.t0),
+        ];
+        const a = pieceField(l, live)(q[0], q[1], q[2], [0, 0, 0]);
+        const b = pieceField(l, bare)(q[0], q[1], q[2], [0, 0, 0]);
+        const same = a.every((v, k) => Object.is(v, b[k]));
+        if (f === 0 && !same) parkDiff++;
+        // "seated" measured on the CURL-FREE build, so the pin cannot be
+        // satisfied by the curl moving the arrival
+        if (f > 0 && pieceStateAt(p, row.key, table, bare).travel === 0) {
+          seated++;
+          if (!same) seatDiff++;
+        }
+        // the fall's own span only — the bloom past 0.72 is the rose's fold
+        if (f <= 0.6)
+          deepest = Math.min(
+            deepest,
+            pieceStateAt(p, row.key, table, live).curl,
+          );
+      }
+    }
+    expect(parkDiff, "pieces the curl moves at the park").toBe(0);
+    expect(seated, "seated (piece, sample) pairs checked").toBeGreaterThan(
+      2000,
+    );
+    expect(seatDiff, "pieces the curl moves at their seat").toBe(0);
+    // …and ALIVE in between: the wedge opens (curl < 0 — less turn than its
+    // seated arc), by a good fraction of that arc's own ~0.63 rad
+    expect(deepest, "how far open the fall gets").toBeLessThan(-0.1);
+  });
+
+  it("PARKS EVEN: one ring, one radius, one angle for every piece on it", () => {
+    // …and the pose is UNIFORM WITHIN A RING. Both per-piece scatter terms ride
+    // the flight window (ops/recipes.ts `disperse`), so at the park the only
+    // radial term is `bloom` and the only angular ones are `spin` and the ring
+    // phase — and the phase keys on the ladder station, which a shell's wedges
+    // and everything adopted onto them all share. Stated on the piece's OWN
+    // seat rather than on a ring's spread, which is the stronger form: every
+    // piece the opening touches sits at EXACTLY `1 + bloom` of its own seat
+    // radius, so a ring is one circle and the model is a set of concentric ones.
+    //
+    // THE RING IS ASSERTED AS THE MODEL'S OWN FAMILY, not as the lane the phase
+    // reads: the `<Part>_SegN` wedges cut from one tube are what has to stay
+    // evenly spaced, and grouping them by NAME says so independently of how the
+    // recipe finds them.
+    const park = rangeOf("capsOn").p0;
+    const live = liveDeformAt(park);
+    let opened = 0;
+    let still = 0;
+    const turns = new Map<string, number>();
+    for (const row of table.pieces) {
+      const st = pieceStateAt(park, row.key, table, live);
+      const seat = st.radius - st.dRadius;
+      // ONE turn per RING — hoisted above the radial exemption below, so a body
+      // of revolution (which `spread`'s own `axi` exemption holds on its line
+      // but `orbit` still turns) is in this half of the law rather than skipped
+      // by it.
+      const ring = row.name.replace(/_Seg\d+$/, "");
+      const seen = turns.get(ring);
+      if (seen === undefined) turns.set(ring, st.dTheta);
+      else expect(st.dTheta, `${row.key} turn`).toBeCloseTo(seen, 9);
+      // the optical column and the bodies of revolution keep their line
+      // (ops/house.ts selNotOptical, and `spread`'s own axi exemption)
+      if (Math.abs(st.dRadius) < 1e-6) {
+        still++;
+        continue;
+      }
+      opened++;
+      expect(st.radius / seat, `${row.key} radius`).toBeCloseTo(
+        1 + ENDING_BLOOM,
+        9,
+      );
+    }
+    expect(opened, "pieces opened onto their ring").toBeGreaterThan(150);
+    expect(still, "pieces held on the axis").toBeGreaterThan(20);
+    // …AND THE RINGS DO NOT SHARE ONE. At ring phase 0 every turn is the same
+    // number and the seams stay stacked; here they are spread round the whole
+    // circle, which is the pinwheel's cure (the arm law below measures it).
+    const spread = [...turns.values()].filter((t) => t !== 0);
+    expect(new Set(spread.map((t) => t.toFixed(6))).size, "distinct ring turns") //
+      .toBeGreaterThan(15);
+    expect(Math.max(...spread) - Math.min(...spread), "spread round the bore") //
+      .toBeGreaterThan(4);
+  });
+
+  it("PARKS AS BROKEN CONCENTRIC CIRCLES — no arms", () => {
+    // THE FIGURE ITSELF, measured the way the reader sees it: face-on down the
+    // bore, which is what the ending's ortho opening frames. Every shell is cut
+    // on the SAME meridians, so a park that only slides each piece out along its
+    // own leaves every ring's gaps on one set of radial lines — a five-armed
+    // pinwheel where the sketch asks for the star trails' broken concentric
+    // circles. The reading is the angular COVERAGE profile of the parked cloud
+    // (how many rings are drawn at each azimuth) and its strongest harmonic:
+    // arms ARE a harmonic at the cut count, and nothing else in this figure is.
+    const park = rangeOf("capsOn").p0;
+    const live = liveDeformAt(park);
+    const BINS = 360;
+    const bare = live.map((l) =>
+      l.recipe.name === "explode"
+        ? { ...l, knobs: { ...l.knobs, ringPhase: 0 } }
+        : l,
+    );
+    /** the strongest angular harmonic of the coverage, as a share of its mean */
+    const arms = (set: LiveRecipe[]): { peak: number; at: number } => {
+      const seen = Array.from({ length: BINS }, () => new Set<number>());
+      for (const row of table.pieces) {
+        const l = row.lanes;
+        const field = pieceField(l, set);
+        const y = (l.yMin + l.yMax) / 2;
+        for (let i = 0; i <= 24; i++) {
+          const th = l.t0 + l.halfSpan * (i / 12 - 1);
+          const q = [l.R * Math.cos(th), y, l.R * Math.sin(th)] as const;
+          const d = field(q[0], q[1], q[2], [0, 0, 0]);
+          const [x, z] = [q[0] + d[0], q[2] + d[2]];
+          const r = Math.hypot(x, z);
+          // the pieces the opening puts on a ring — the column it holds on the
+          // axis draws no arc and carries no seam
+          if (r < 1.5 * l.R) continue;
+          const b = Math.round((Math.atan2(z, x) / (Math.PI * 2)) * BINS);
+          seen[((b % BINS) + BINS) % BINS].add(Math.round(r));
+        }
+      }
+      const prof = seen.map((s) => s.size);
+      const mean = prof.reduce((a, b) => a + b, 0) / BINS;
+      let peak = 0;
+      let at = 0;
+      for (let m = 2; m <= 12; m++) {
+        let re = 0;
+        let im = 0;
+        prof.forEach((v, i) => {
+          const a = (2 * Math.PI * m * i) / BINS;
+          re += v * Math.cos(a);
+          im += v * Math.sin(a);
+        });
+        const amp = (2 * Math.hypot(re, im)) / BINS / mean;
+        if (amp > peak) [peak, at] = [amp, m];
+      }
+      return { peak, at };
+    };
+    // WITHOUT the phase this is the bug, and it is a big clean signal: the model
+    // is cut in five, so the arms are the fifth harmonic at nearly the mean.
+    const off = arms(bare);
+    expect(off.at, "the arm count is the cut count").toBe(5);
+    expect(off.peak, "the pinwheel").toBeGreaterThan(0.9);
+    // …and with it there is no arm structure left at any count.
+    expect(arms(live).peak, "arms with the ring phase").toBeLessThan(0.35);
+  });
+
+  it("DISPERSES IN FLIGHT — the evenness is the POSE's, not the motion's", () => {
+    // The other half of the pair, and what stops the fix from being "delete the
+    // scatter": the descent still has to read as individual pieces flying in.
+    // The bump peaks mid-fall, so a ring that is one circle at the park is a
+    // scatter of radii and angles while it is coming down.
+    const capR = rangeOf("capsOn");
+    const ring = table.pieces.filter((r) => /^Barrel_Inner_Seg\d$/.test(r.key));
+    expect(ring).toHaveLength(5);
+    const spreadAt = (p: number) => {
+      const live = liveDeformAt(p);
+      const st = ring.map((r) => pieceStateAt(p, r.key, table, live));
+      // each piece's own opening, in its own seat radii — the ring's five
+      // pieces are not seated at identical radii, so an absolute spread would
+      // read the model's own variation as scatter
+      const rad = st.map((s) => s.dRadius / (s.radius - s.dRadius));
+      const th = st.map((s) => s.dTheta);
+      return {
+        radius: Math.max(...rad) - Math.min(...rad),
+        theta: Math.max(...th) - Math.min(...th),
+      };
+    };
+    // SCANNED, not sampled at one p: the ring's five pieces share a `during`
+    // slot keyed on their own rank, so they leave the park together and late —
+    // this looks for the worst spread anywhere on the way down.
+    let worstR = 0;
+    let worstT = 0;
+    for (let i = 0; i <= 60; i++) {
+      const w = spreadAt(atFrac(capR, i / 60));
+      worstR = Math.max(worstR, w.radius);
+      worstT = Math.max(worstT, w.theta);
+    }
+    expect(worstR, "mid-fall radii scatter").toBeGreaterThan(0.1);
+    expect(worstT, "mid-fall angular scatter").toBeGreaterThan(0.3);
+    // …spent at BOTH ends — the seat here being CONSTRUCT's own far edge,
+    // before the bloom's fold opens on top of it
+    const home = spreadAt(atFrac(capR, 0.7));
+    expect(home.radius).toBeCloseTo(0, 9);
+    expect(home.theta).toBeCloseTo(0, 9);
+  });
+
+  it("DESCENDS INSIDE-OUT, evenly, and is home before the bloom", () => {
+    // No waves: one continuous order that winds the piece's own meridian into
+    // its rank, so consecutive landings go AROUND the bore as they go outward.
+    // Measured off the CPU mirror — a key that bunched would show as a hole or
+    // a crowd here.
+    const cap = RANGES[RANGES.length - 1];
+    const N = 200;
+    const local = (p: number) => (p - cap.p0) / (cap.p1 - cap.p0);
+    const ps = Array.from(
+      { length: N + 1 },
+      (_, i) => cap.p0 + ((cap.p1 - cap.p0) * i) / N,
+    );
+    const seats = table.pieces.map((row) => {
+      for (const p of ps)
+        if (pieceStateAt(p, row.key, table).travel < 0.05)
+          return { rank: row.lanes.rank01, t: local(p) };
+      return { rank: row.lanes.rank01, t: 1 };
+    });
+    const ts = seats.map((s) => s.t).sort((a, b) => a - b);
+
+    // EVENLY SPACED: no silent stretch inside the descent
+    let hole = 0;
+    for (let i = 1; i < ts.length; i++)
+      hole = Math.max(hole, ts[i] - ts[i - 1]);
+    expect(hole, "the worst gap between arrivals").toBeLessThan(0.05);
+
+    // INSIDE-OUT: the radial bins' medians climb. Pieces sharing a rank layer
+    // are at one radius, so the gate's phase grain may reorder them inside a
+    // bin — the ORDER is radial, not per-piece.
+    const bins: number[][] = Array.from({ length: 10 }, () => []);
+    for (const s of seats) bins[Math.min(9, Math.floor(s.rank * 10))].push(s.t);
+    const meds = bins
+      .filter((b) => b.length)
+      .map((b) => b.sort((x, y) => x - y)[Math.floor(b.length / 2)]);
+    let drops = 0;
+    for (let i = 1; i < meds.length; i++) if (meds[i] < meds[i - 1]) drops++;
+    expect(drops, "the build runs outward").toBe(0);
+    expect(meds[meds.length - 1] - meds[0], "and it is a sequence").toBeGreaterThan(0.2); // prettier-ignore
+
+    // …AND IT WINDS: inside a narrow rank band, where the radial run is nearly
+    // constant, arrival still tracks the piece's own meridian — which is the
+    // staircase turning as it climbs. At EXPLODE_WIND 0 these collapse to noise.
+    // The inner half of rank01 is ONE band: the order exponent compresses it
+    // into the key's first eighth, so splitting it further leaves too few
+    // distinct arrival steps for a correlation to mean anything.
+    const ang = (row: (typeof table.pieces)[number]) =>
+      row.lanes.t0 / (Math.PI * 2) + 0.5;
+    const corr = (xs: number[], ys: number[]) => {
+      const n = xs.length;
+      const mx = xs.reduce((a, b) => a + b, 0) / n;
+      const my = ys.reduce((a, b) => a + b, 0) / n;
+      let sxy = 0;
+      let sxx = 0;
+      let syy = 0;
+      for (let i = 0; i < n; i++) {
+        sxy += (xs[i] - mx) * (ys[i] - my);
+        sxx += (xs[i] - mx) ** 2;
+        syy += (ys[i] - my) ** 2;
+      }
+      return sxy / Math.sqrt(sxx * syy);
+    };
+    for (const [lo, hi] of [
+      [0, 0.5],
+      [0.5, 0.8],
+      [0.8, 0.9],
+      [0.9, 1.01],
+    ]) {
+      const band = table.pieces
+        .map((row, i) => ({
+          ang: ang(row),
+          t: seats[i].t,
+          rank: seats[i].rank,
+        }))
+        .filter((x) => x.rank >= lo && x.rank < hi);
+      expect(band.length, `band ${lo}–${hi} is populated`).toBeGreaterThan(4);
+      expect(
+        corr(
+          band.map((b) => b.ang),
+          band.map((b) => b.t),
+        ),
+        `band ${lo}–${hi} winds`,
+      ).toBeGreaterThan(0.4);
+    }
+
+    // …and the whole cast is seated before the bloom's foot
+    const seam = (windowEdges(ROSE_PULSE.rise)[0] - cap.p0) / (cap.p1 - cap.p0);
+    expect(ts[ts.length - 1]).toBeLessThan(seam);
   });
 
   it("never moves the mechanism the cards scene REVEALS", () => {
@@ -799,6 +1036,82 @@ describe("the state at rest, and the state's own algebra", () => {
     // is a scope and not a dead channel
     const shell = pieceStateAt(windowEdges(CARDS_APART.rise)[1], "Barrel_Base_Seg0", table); // prettier-ignore
     expect(shell.travel).toBeGreaterThan(10);
+  });
+
+  it("NEVER TAKES A PIECE BEFORE ITS OWN FLIGHT IS OVER — and never queues behind it", () => {
+    // THE PEEL'S TWO FAILURES, both measured off the shipped model, because the
+    // name → rank map only exists here:
+    //
+    //   · a wink that opens on a piece still in flight cuts the departure off
+    //     screen mid-throw (every mesh's own margin, below);
+    //   · a wink that waits for the LAST mover leaves a stretch of the band
+    //     whose only motion is the whole-model bore roll — a near in-plane
+    //     image spin from the parked rear camera (the relay gap, below).
+    //
+    // So the wink's bands (core/visibility.ts) and the gate's rank order have
+    // to interleave: outer casts go while the deep ranks are still travelling.
+    const peel = RANGES[2];
+    const N = 400;
+    const local = (p: number) => (p - peel.p0) / (peel.p1 - peel.p0);
+    const ps = Array.from(
+      { length: N + 1 },
+      (_, i) => peel.p0 + ((peel.p1 - peel.p0) * i) / N,
+    );
+    // per MESH, the last sample at which any of its pieces is still travelling
+    const EPS = 1e-3; // mm per step — the motion foot, not the window's foot
+    const doneAt = new Map<string, number>();
+    let firstMove = 1;
+    let lastMove = 0;
+    for (const row of table.pieces) {
+      let prevTravel = pieceStateAt(ps[0], row.key, table).travel;
+      for (let i = 1; i <= N; i++) {
+        const t = pieceStateAt(ps[i], row.key, table).travel;
+        if (Math.abs(t - prevTravel) > EPS) {
+          doneAt.set(row.name, local(ps[i]));
+          firstMove = Math.min(firstMove, local(ps[i - 1]));
+          lastMove = Math.max(lastMove, local(ps[i]));
+        }
+        prevTravel = t;
+      }
+    }
+    expect(doneAt.size, "the departure moves a real cast").toBeGreaterThan(100);
+
+    // every wink-governed top-level mesh, in the traversal order core/scene
+    // captures the thresholds in
+    const wink = makeWinkScatter();
+    const gates: { name: string; shell: boolean; threshold: number }[] = [];
+    root.traverse((o) => {
+      if (!(o instanceof THREE.Mesh) || o.parent instanceof THREE.Mesh) return;
+      const w = wink(o.name);
+      if (w) gates.push({ name: o.name, shell: w.channel === "shell", threshold: w.threshold }); // prettier-ignore
+    });
+    /** where a mesh leaves the visibility pass: `level <= threshold` */
+    const goneLocalOf = (g: (typeof gates)[number]) => {
+      for (const p of ps)
+        if ((g.shell ? shellFadeAt(p) : interiorFadeAt(p)) <= g.threshold)
+          return local(p);
+      return 1;
+    };
+
+    let tightest = { name: "", margin: Infinity };
+    let goneFirst = 1;
+    for (const g of gates) {
+      const gone = goneLocalOf(g);
+      goneFirst = Math.min(goneFirst, gone);
+      const done = doneAt.get(g.name);
+      if (done === undefined) continue; // the departure never moves it
+      if (gone - done < tightest.margin)
+        tightest = { name: g.name, margin: gone - done };
+    }
+    // NO PIECE IS CUT OFF MID-THROW — with room, since the wink's scatter and
+    // the gate's rank order are independent and a re-export moves both
+    expect(tightest.margin, `tightest: ${tightest.name}`).toBeGreaterThan(0.03);
+    // …AND NOTHING QUEUES: the first cast goes while the last ranks are still
+    // coming out, so no stretch of the band is carried by the bore roll alone
+    expect(goneFirst - lastMove, "the roll-only stretch").toBeLessThan(0.02);
+    // the departure itself still fills the band it was widened to fill
+    expect(firstMove).toBeLessThan(0.25);
+    expect(lastMove).toBeGreaterThan(0.7);
   });
 
   it("throws on a piece that is not in the table", () => {
@@ -849,15 +1162,23 @@ describe("the flow of one piece", () => {
     expect(at(capsOn.p0).travel).toBeGreaterThan(10);
     expect(at(seam).travel).toBe(0);
 
-    // THE SETTLE IS A BEAT, NOT A SCENE: the seated stretch inside caps-on is a
-    // fiftieth of the track, and it ends where the bloom starts.
+    // THE SETTLE IS A BEAT, NOT A SCENE, and it is not dead air: the wedge
+    // lands INTO the rock (story/envelopes.ts ROCK) and the still frame between
+    // the wobble damping out and the bloom's foot is a breath.
     const seated = flow.samples.filter(
       (s) => s.p >= capsOn.p0 && s.travel === 0,
     );
-    const span =
-      Math.max(...seated.map((s) => s.p)) - Math.min(...seated.map((s) => s.p));
+    const home = Math.min(...seated.map((s) => s.p));
+    const span = Math.max(...seated.map((s) => s.p)) - home;
+    const rockEnd = windowEdges(ROCK)[1];
     expect(span).toBeGreaterThan(0);
-    expect(span).toBeLessThan(0.03);
+    expect(span).toBeLessThan(0.045);
+    expect(home).toBeLessThan(rockEnd);
+    // the breath is bounded on BOTH sides: the wobble must be spent BEFORE the
+    // bloom's foot (a rock running through the bloom would satisfy the upper
+    // bound alone), and the still frame it leaves is short
+    expect(rockEnd).toBeLessThanOrEqual(seam);
+    expect(seam - rockEnd).toBeLessThan(0.01);
     expect(Math.max(...seated.map((s) => s.p))).toBeLessThanOrEqual(seam);
 
     // …and the bloom is what takes it off the seat again — never the wrap: the
@@ -932,12 +1253,14 @@ describe("the flow module's coverage", () => {
       expect([...seen], c).not.toContain(c);
   });
 
-  it("takes every knob at its default but the ONE the story writes", () => {
-    // The hero drives exactly one knob — the departure's keep-scope, a pure
-    // function of p — and this instrument reads the same law, so the offline
-    // evaluation stays exact rather than a settled approximation. Any OTHER
-    // knob reached for from the story path would silently invalidate every
-    // number in the map, so the source is pinned to that one call.
+  it("takes every knob at its default but the FIVE the story writes", () => {
+    // The hero drives exactly five knobs — the departure's keep-scope, the
+    // ending's spread, its mid-fall curl, its parked ring phase and its parked
+    // rebend, all
+    // constants — and this instrument reads the same law, so the offline evaluation stays exact rather than a
+    // settled approximation. Any OTHER knob reached for from the story path
+    // would silently invalidate every number in the map, so the source is
+    // pinned to those calls.
     const src = [
       readFileSync(new URL("../hero-driver.ts", import.meta.url), "utf8"),
       readFileSync(
@@ -945,15 +1268,33 @@ describe("the flow module's coverage", () => {
         "utf8",
       ),
     ].join("\n");
-    expect(src.match(/recipeKnob\(/g) ?? []).toHaveLength(1);
+    expect(src.match(/recipeKnob\(/g) ?? []).toHaveLength(5);
     expect(src).toContain('recipeKnob("assemble", "keepScope")');
+    expect(src).toContain('recipeKnob("explode", "rebend")');
+    expect(src).toContain('recipeKnob("explode", "bloom")');
+    expect(src).toContain('recipeKnob("explode", "curl")');
+    expect(src).toContain('recipeKnob("explode", "ringPhase")');
     for (const p of FLOW_SAMPLE_PS)
       for (const l of liveDeformAt(p)) {
-        const { keepScope, ...rest } = l.knobs as Record<string, number>;
+        const knobs = l.knobs as Record<string, number>;
         const dflt = l.recipe.knobDefaults as Record<string, number>;
-        if (l.recipe.name === "assemble")
-          expect(keepScope).toBe(assembleKeepScopeAt(p));
-        for (const [k, v] of Object.entries(rest)) expect(v).toBe(dflt[k]);
+        // NAMED PER RECIPE, not destructured: `curl` is a knob on three of the
+        // four, and only the explode's is the story's.
+        const written: Record<string, number> =
+          l.recipe.name === "assemble"
+            ? { keepScope: ASSEMBLE_KEEP_SCOPE }
+            : l.recipe.name === "explode"
+              ? {
+                  bloom: ENDING_BLOOM,
+                  curl: ENDING_CURL,
+                  ringPhase: ENDING_RING_PHASE,
+                  rebend: ENDING_REBEND,
+                }
+              : {};
+        for (const [k, v] of Object.entries(written))
+          expect(knobs[k], `${l.recipe.name}.${k}`).toBe(v);
+        for (const [k, v] of Object.entries(knobs))
+          if (!(k in written)) expect(v, `${l.recipe.name}.${k}`).toBe(dflt[k]);
       }
   });
 

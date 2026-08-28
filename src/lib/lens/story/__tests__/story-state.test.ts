@@ -14,13 +14,14 @@ import {
   inkFillAt,
   interiorFadeAt,
   preShutAt,
+  rockYAt,
   sceneIndexAt,
   scrollCueAt,
   shellFadeAt,
   zoomAt,
 } from "../envelopes";
 import { revealRollAt, turnAt } from "../reveal";
-import { peelRollAt, peelValueAt } from "../peelcards";
+import { peelRollAt, peelTurnAt } from "../peelcards";
 import { internalsEnvAt } from "../internals";
 import {
   EXIT_END,
@@ -77,7 +78,8 @@ describe("storyStateAt agrees with the modules that own each law", () => {
       expect(s.channels.zoom, `zoom ${p}`).toBe(zoomAt(p));
       expect(s.channels.explode, `explode ${p}`).toBe(explodeAt(p));
       expect(s.channels.assemble, `assemble ${p}`).toBe(assembleAt(p));
-      expect(s.channels.peel, `peel ${p}`).toBe(peelValueAt(p));
+      // the sticker peel is /lens's: the story has no writer for it
+      expect(s.channels.peel, `peel ${p}`).toBe(0);
       expect(s.channels.story, `story ${p}`).toBe(p);
       expect(s.hud.focalMm, `focal ${p}`).toBe(focalMmAt(zoomAt(p)));
     }
@@ -116,19 +118,21 @@ describe("storyStateAt agrees with the modules that own each law", () => {
   });
 
   it("reports the model's placement — the ONE orientation the driver writes", () => {
-    // hero-driver composes exactly this sum in its single setModelOrientation
-    // call; the two terms are disjoint in p, and the report keeps them separate
-    // as well as summed so the map can show which one is live.
+    // hero-driver writes exactly these three axes in its single
+    // setModelOrientation call; they are disjoint in p but for the ending's
+    // rock, which rides two of them at once, and the report keeps them separate
+    // so the map can show which one is live.
     for (const p of PS) {
       const s = storyStateAt(p);
-      // the roll's gate is the ASSEMBLE channel (story/reveal.ts ROLL_P1 —
-      // the spin lives through the whole visible reassembly)
+      // the roll's gate is the EXPLODE channel (story/reveal.ts — the spin
+      // lives through the whole visible reveal, at a constant radius)
       expect(s.model.revealRoll, `revealRoll ${p}`).toBe(
-        revealRollAt(p, assembleAt(p)),
+        revealRollAt(p, explodeAt(p)),
       );
       expect(s.model.peelRoll, `peelRoll ${p}`).toBe(peelRollAt(p));
+      expect(s.model.turnY, `turnY ${p}`).toBe(peelTurnAt(p) + rockYAt(p));
       expect(s.model.rollX, `rollX ${p}`).toBe(
-        revealRollAt(p, assembleAt(p)) + peelRollAt(p),
+        peelRollAt(p) + revealRollAt(p, explodeAt(p)),
       );
       expect(s.model.dollyX, `dolly ${p}`).toBe(flyDollyAt(p));
     }

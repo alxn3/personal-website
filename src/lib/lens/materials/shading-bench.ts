@@ -87,7 +87,7 @@ const TECHNICAL_PALETTES: Partial<Record<BenchMode, TechnicalPalette>> = {
     edgeThresholdDeg: 40,
     fill(name: string, light: boolean): number {
       if (light) {
-        if (isOpticalGlass(name)) return 0x6fa863; // ink's mint — uniform
+        if (isOpticalGlass(name)) return 0x6fa863; // one mint for every element
         if (isDecal(name)) return 0x3f3a2f; // printed text goes dark on cream
         if (/^Iris_Blade|Ring_/.test(name)) return 0x4a4f5e; // ink's slate bands
         if (/^(Mount_|Focus_|PCB_)/.test(name)) return 0x7c766a; // muted metal

@@ -356,8 +356,8 @@ describe("sky", () => {
       expect(Math.min(...t), `stop ${k} stays a star`).toBeGreaterThan(0.4);
     }
     // both ends of the ramp are real colour, and the middle is untinted white
-    expect(STAR_TINTS[0][2]).toBe(1); // the cool end keeps its blue
-    expect(STAR_TINTS[0][0]).toBeLessThan(0.9);
+    expect(STAR_TINTS[0][1]).toBe(1); // the cool end is the site's sage
+    expect(STAR_TINTS[0][2]).toBeLessThan(0.9);
     expect(STAR_TINTS[STAR_TINTS.length - 1][0]).toBe(1); // …the warm end its red
     expect(STAR_TINTS[STAR_TINTS.length - 1][2]).toBeLessThan(0.9);
     expect(STAR_TINTS.some((t) => t[0] === 1 && t[1] === 1 && t[2] === 1)).toBe(

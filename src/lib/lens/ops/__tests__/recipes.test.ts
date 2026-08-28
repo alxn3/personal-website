@@ -3,7 +3,7 @@ import { NUM } from "../algebra";
 import { atPolar, polarOf } from "./fixture-state";
 import { gate } from "../gate";
 import { fixtureGateAt } from "./fixture-gate";
-import { makeRecipes, type Recipe } from "../recipes";
+import { EXPLODE_HOVER_RANK, makeRecipes, type Recipe } from "../recipes";
 import {
   group,
   ladder,
@@ -16,6 +16,7 @@ import {
   validatePipeline,
   PART_CLASS,
   type OpCtx,
+  type Progress,
   type OpItem,
   type PieceFrame,
   type VertexState,
@@ -596,20 +597,28 @@ describe("assemble at channel 1", () => {
       { name: "a glass element", over: { partClass: PART_CLASS.glass } },
       { name: "an iris blade", over: { partClass: PART_CLASS.iris } },
     ];
-    for (const { name, over } of KEPT)
-      for (const p of PIECES)
-        for (const v of VERTS) {
-          const r = runAt(recipe, p, v, 1, over, { keepScope: 1 });
-          expect(
-            dist(xz(r.out), xz(r.seated)),
-            `${name}: not thrown`,
-          ).toBeCloseTo(0, 9);
-          expect(
-            r.out.axial - r.seated.axial,
-            `${name}: not laddered`,
-          ).toBeCloseTo(0, 9);
-          expect(r.out.rot, `${name}: normals untouched`).toBeCloseTo(0, 9);
-        }
+    // THE KNOB SET the story ships: the scope the cards chapter writes.
+    const CARDS: { label: string; knobs: Record<string, number> }[] = [
+      { label: "scope", knobs: { keepScope: 1 } },
+    ];
+    for (const { label, knobs: over2 } of CARDS)
+      for (const { name, over } of KEPT)
+        for (const p of PIECES)
+          for (const v of VERTS) {
+            const r = runAt(recipe, p, v, 1, over, over2);
+            expect(
+              dist(xz(r.out), xz(r.seated)),
+              `${name} (${label}): not thrown`,
+            ).toBeCloseTo(0, 9);
+            expect(
+              r.out.axial - r.seated.axial,
+              `${name} (${label}): not laddered`,
+            ).toBeCloseTo(0, 9);
+            expect(
+              r.out.rot,
+              `${name} (${label}): normals untouched`,
+            ).toBeCloseTo(0, 9);
+          }
 
     // …and it is a SCOPE, not a kill switch: a wedge still gets the whole
     // composition at the same knob value…
@@ -667,14 +676,10 @@ describe("explode's default selection", () => {
   const knobs = recipe.knobDefaults;
   const CHANNELS = [0, 0.2, 0.5, 0.8, 1];
 
-  it("(e) an ACCESSORY is untouched at every channel — no dilation, no ladder", () => {
-    // Accessories come OFF; they never rode the teardown. The dilation is the
-    // dangerous one: every accessory is axisymmetric, and `spread` falls back
-    // to a per-VERTEX dilation there (the ring inflates in place rather than
-    // translating), so an unexcluded hood swells by dilate·R ≈ 118mm on a
-    // 49mm-radius piece. Both the bare class and the axisymmetric case are
-    // probed, and the ladder is checked too: the head selector scopes the
-    // WHOLE pipeline, not just the radial group.
+  it("(e) an ACCESSORY is untouched at every channel — no orbit, no ladder", () => {
+    // Accessories come OFF; they never rode the teardown. Both the bare class
+    // and the axisymmetric case are probed, and the ladder is checked too: the
+    // head selector scopes the WHOLE pipeline, not just the spin group.
     const ACCESSORIES: { name: string; over: Partial<OpCtx<number>> }[] = [
       { name: "an accessory ring", over: { partClass: PART_CLASS.accessory } },
       {
@@ -709,10 +714,13 @@ describe("explode's default selection", () => {
     }
   });
 
-  it("(e′) GLASS and the iris MECHANISM ride the axial ladder ALONE", () => {
-    // The classic moved the optical column and the blade pack on the rig ladder
-    // only — they never dilated radially, which is what keeps the elements
-    // reading as one column while the shells fly out around them.
+  it("(e′) GLASS and the iris MECHANISM take the ladder and the HOVER only", () => {
+    // The optical column and the blade pack never turn round the bore — that
+    // is what keeps the elements reading as one column while the shells swirl
+    // around them. They DO ride the hover: the parked pose is a cloud held
+    // above the lens and the glass is part of it, so their whole displacement
+    // is axial — the rung plus the rise — with x and z exactly untouched (an
+    // orbit would move them).
     const OPTICS: { name: string; over: Partial<OpCtx<number>> }[] = [
       { name: "a glass element", over: { partClass: PART_CLASS.glass } },
       {
@@ -726,14 +734,30 @@ describe("explode's default selection", () => {
         for (const p of PIECES) {
           for (const v of VERTS) {
             const r = runAt(recipe, p, v, channel, over);
+            // the ladder and the hover sit inside the ORDER slot, so the
+            // flight they scale by is the gate re-run at that slot's own clock
+            // — read off the recipe's own `during`, never a copy of its numbers
+            const scope = r.items[1] as { progress?: Progress<number> };
+            const from = scope.progress!.from as number;
+            const to = scope.progress!.to as number;
+            const q = Math.min(1, Math.max(0, (channel - from) / (to - from)));
+            const slotFlight = r.ctx.gateAt(q).flight;
             expect(
-              dist(xz(r.out), xz(r.seated)),
-              `${name} @ ${channel}: no radial motion`,
+              r.out.x - r.seated.x,
+              `${name} @ ${channel}: no dilation, no orbit`,
             ).toBeCloseTo(0, 9);
             expect(
+              r.out.z - r.seated.z,
+              `${name} @ ${channel}: no dilation, no orbit (z)`,
+            ).toBeCloseTo(0, 9);
+            // the whole displacement is axial: the rung plus the hover's rise,
+            // both scaled by the slot's own flight
+            const hoverRise =
+              knobs.hover * (1 + EXPLODE_HOVER_RANK * p.rank01) * slotFlight;
+            expect(
               r.out.axial - r.seated.axial,
-              `${name} @ ${channel}: rides the rung`,
-            ).toBeCloseTo(p.rung * knobs.axialGain * r.flight, 9);
+              `${name} @ ${channel}: the rung and the rise`,
+            ).toBeCloseTo(p.rung * knobs.axialGain * slotFlight + hoverRise, 9);
             expect(r.out.rot, `${name} @ ${channel}: no spin`).toBeCloseTo(
               0,
               9,
@@ -744,14 +768,17 @@ describe("explode's default selection", () => {
     }
   });
 
-  it("(e″) structure still gets the whole teardown — radial AND axial", () => {
+  it("(e″) structure still gets the whole teardown — the spin AND the axial", () => {
     for (const p of PIECES) {
       for (const v of VERTS) {
         const r = runAt(recipe, p, v, 1);
-        // sep alone is 0.55·R; the dilate adds 2.4·R more.
+        // the spin carries the piece round the bore
         expect(dist(xz(r.out), xz(r.seated))).toBeGreaterThan(1);
+        // axially: the rung plus the hover's rise, like everything else
         expect(r.out.axial - r.seated.axial).toBeCloseTo(
-          p.rung * knobs.axialGain * r.flight,
+          (p.rung * knobs.axialGain +
+            knobs.hover * (1 + EXPLODE_HOVER_RANK * p.rank01)) *
+            r.flight,
           9,
         );
         // the spin is the only op here that turns a normal

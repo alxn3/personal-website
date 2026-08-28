@@ -160,16 +160,19 @@ const EDGE_KEEP = 0.98;
 /** Where the sprite band lands on an undistorted frame, in the shader's
  *  aspect-corrected radius metric (frame half-height = 0.5 at any aspect): the
  *  starfield authors its ring as an ANGLE off the exit axis, and a rectilinear
- *  camera puts an angle γ at tan γ / tan(fov/2) of the way to the top of the
- *  frame. Read from the LIVE camera every frame in `sync`, so a fov ramp cannot
- *  slide the two halves of the ring apart.
+ *  camera puts an angle γ at zoom·tan γ / tan(fov/2) of the way to the top of
+ *  the frame. Both the fov AND the zoom are read from the LIVE camera every
+ *  frame in `sync`: three's PerspectiveCamera divides its half-height by `zoom`,
+ *  and core/scene.ts drives zoom from min(w, h)/h — so on a PORTRAIT viewport
+ *  the zoom IS the aspect, and dropping it put this band at 1/aspect times its
+ *  true radius, off the frame's sides, leaving an elliptical ring.
  *
  *  IT ASSUMES THE EXIT AXIS IS THE OPTICAL ONE: a single radius describes the
  *  γ-cone only when the throat is at the frame's centre. The story is safe, but
  *  the /lens dive drives uWormhole while its camera still carries the park's
  *  elevation, so its ring is approximate for those first frames. */
-export const ringSourceRadius = (fovDeg: number): number =>
-  (0.5 * Math.tan(STARFIELD_LOOK.ringCentreRad)) /
+export const ringSourceRadius = (fovDeg: number, zoom = 1): number =>
+  (0.5 * zoom * Math.tan(STARFIELD_LOOK.ringCentreRad)) /
   Math.tan((fovDeg * Math.PI) / 360);
 
 /** The ring's SHAPE knobs, defaults for the uniforms below (all live on
@@ -376,9 +379,9 @@ export function createWormholePost(
     // one rather than snapping the funnel across the frame
     uAspect.value = cam.aspect;
     // the ring follows the sprites every frame — the band's radius is where
-    // starfield.ts's ring band projects at THIS fov, so the two halves of the
-    // Einstein ring cannot drift apart under a fov ramp
-    uRingRadius.value = ringSourceRadius(cam.fov);
+    // starfield.ts's ring band projects at THIS fov and zoom, so the two halves
+    // of the Einstein ring cannot drift apart under a fov ramp or a viewport
+    uRingRadius.value = ringSourceRadius(cam.fov, cam.zoom);
     // the NEAREST corner, so the circular profile dies at the corner circle
     // — see the header's shape note
     let rEdge = Infinity;

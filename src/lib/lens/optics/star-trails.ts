@@ -86,10 +86,6 @@ export const TRAIL_LOOK = {
   core: 0.4,
 };
 
-// The crown arc is NOT one of these: it is authored screen-space ink with its
-// own mesh (optics/crown-arc.ts), driven alongside these by story/trails.ts.
-// This file draws the sky's own record and nothing else.
-
 /** The arc law on the CPU — the exact expression the vertex graph evaluates, so
  *  a test can hold it. At s = 0 it is the star's current direction; at s = 1
  *  with sweep = spin, where the turn started. */

@@ -165,10 +165,10 @@ describe("shipped lens_web_segmented.glb", () => {
   });
 
   it("seats every node at identity — no rotation anywhere (§9)", () => {
-    // Not load-bearing: the aperture drive composes onto whatever seat a node
-    // carries. It IS the contract N.12 chose, though, and a rotation
-    // reappearing is worth learning about deliberately rather than visually.
     expect(g.nodes.filter((n) => !isIdentity(n.rotation)).map((n) => n.name)) //
+      .toEqual([]);
+    // …and no node hides one in a baked TRS matrix, which `rotation` cannot see
+    expect(g.nodes.filter((n) => n.matrix !== undefined).map((n) => n.name)) //
       .toEqual([]);
   });
 
@@ -679,7 +679,7 @@ describe("the aperture drive composes onto a node's seat", () => {
     const { root, blades } = build("node-seat", FAN);
     const mech = createMechanism(root);
     for (const aperture of [0, 0.37, 1]) {
-      mech.update({ zoom: 0, focus: 0, aperture });
+      mech.update({ zoom: 0, focus: 0, aperture, huddle: 0 });
       const closeRad = (MECHANISM.irisCloseDeg * aperture * Math.PI) / 180;
       blades.forEach((b, i) => {
         expect(
@@ -700,9 +700,9 @@ describe("the aperture drive composes onto a node's seat", () => {
     // the wrong way; composing quaternions cannot.
     const { root, blades } = build("node-seat", FAN);
     const mech = createMechanism(root);
-    mech.update({ zoom: 0, focus: 0, aperture: 0 });
+    mech.update({ zoom: 0, focus: 0, aperture: 0, huddle: 0 });
     const rest = blades.map(seatOf);
-    mech.update({ zoom: 0, focus: 0, aperture: 1 });
+    mech.update({ zoom: 0, focus: 0, aperture: 1, huddle: 0 });
     const deltas = blades.map((b, i) => wrap(seatOf(b) - rest[i]));
     for (const [i, d] of deltas.entries())
       expect(d, `blade 0${i + 1} sweep`).toBeCloseTo(deltas[0], 6);
@@ -716,7 +716,7 @@ describe("the aperture drive composes onto a node's seat", () => {
     // What the shipped file actually does today (§9).
     const { root, blades } = build("baked", new Array(7).fill(0));
     const mech = createMechanism(root);
-    mech.update({ zoom: 0, focus: 0, aperture: 1 });
+    mech.update({ zoom: 0, focus: 0, aperture: 1, huddle: 0 });
     const closeRad = (MECHANISM.irisCloseDeg * Math.PI) / 180;
     for (const b of blades) expect(seatOf(b)).toBeCloseTo(wrap(closeRad), 6);
   });
@@ -769,6 +769,48 @@ describe("a seat may live in the vertices or on the node", () => {
     } finally {
       recipeChannel("explode").value = 0;
     }
+  });
+});
+
+describe("the huddle drive — the cards chapter's compact core", () => {
+  const rig = () => {
+    const root = new THREE.Object3D();
+    for (const name of ["Grp_MountRear", "Grp_FocusDrive", "Barrel_Inner"]) {
+      const g = new THREE.Object3D();
+      g.name = name;
+      const m = new THREE.Mesh(bladeGeo());
+      m.name = `${name}_child`;
+      g.add(m);
+      root.add(g);
+    }
+    return root;
+  };
+
+  it("at channel 0 every rider sits EXACTLY on its seat — /lens never moves", () => {
+    const root = rig();
+    const mech = createMechanism(root);
+    mech.update({ zoom: 0, focus: 0, aperture: 0, huddle: 0 });
+    for (const n of ["Grp_MountRear", "Grp_FocusDrive", "Barrel_Inner"])
+      expect(root.getObjectByName(n)!.position.y, n).toBe(0);
+  });
+
+  it("draws the core compact by its own mm table, composing with zoom", () => {
+    const root = rig();
+    const mech = createMechanism(root);
+    mech.update({ zoom: 0, focus: 0, aperture: 0, huddle: 1 });
+    const mm = MECHANISM.huddleMm;
+    expect(root.getObjectByName("Grp_MountRear")!.position.y).toBeCloseTo(mm.Grp_MountRear, 9); // prettier-ignore
+    expect(root.getObjectByName("Grp_FocusDrive")!.position.y).toBeCloseTo(mm.Grp_FocusDrive, 9); // prettier-ignore
+    // the mount steps FRONTWARD (toward the stop) and the front pair drops
+    // BACK — the two signs that make it a huddle rather than a slide
+    expect(mm.Grp_MountRear).toBeGreaterThan(0);
+    expect(mm.Barrel_Inner).toBeLessThan(0);
+    // …and the sum with zoom is a sum, not an overwrite
+    mech.update({ zoom: 1, focus: 0, aperture: 0, huddle: 1 });
+    expect(root.getObjectByName("Barrel_Inner")!.position.y).toBeCloseTo(
+      MECHANISM.zoomMm.Barrel_Inner + mm.Barrel_Inner,
+      9,
+    );
   });
 });
 
@@ -856,7 +898,7 @@ describe("the lead screw's pivot, now that it has a real parent", () => {
   it("spins the screw about its OWN axis, not the lens's", () => {
     const { root, screw } = rig("Grp_FocusDrive", new THREE.Vector3());
     const mech = createMechanism(root);
-    mech.update({ zoom: 0, focus: 0, aperture: 0 });
+    mech.update({ zoom: 0, focus: 0, aperture: 0, huddle: 0 });
     const rest = verts(root, screw);
     const centre = (v: number[]) => {
       const c = [0, 0, 0];
@@ -864,7 +906,7 @@ describe("the lead screw's pivot, now that it has a real parent", () => {
         for (const k of [0, 1, 2]) c[k] += (v[i + k] * 3) / v.length;
       return c;
     };
-    mech.update({ zoom: 0, focus: 1, aperture: 0 });
+    mech.update({ zoom: 0, focus: 1, aperture: 0, huddle: 0 });
     const spun = verts(root, screw);
     // the rod really turned…
     let max = 0;
@@ -887,8 +929,8 @@ describe("the lead screw's pivot, now that it has a real parent", () => {
     const mechFlat = createMechanism(flat.root);
     const mechNested = createMechanism(nested.root);
     for (const focus of [0, 0.4, 1]) {
-      mechFlat.update({ zoom: 0, focus, aperture: 0 });
-      mechNested.update({ zoom: 0, focus, aperture: 0 });
+      mechFlat.update({ zoom: 0, focus, aperture: 0, huddle: 0 });
+      mechNested.update({ zoom: 0, focus, aperture: 0, huddle: 0 });
       const a = verts(flat.root, flat.screw);
       const b = verts(nested.root, nested.screw);
       for (let i = 0; i < a.length; i++)

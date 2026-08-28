@@ -700,7 +700,7 @@ export function approach<S>(axialMm: Sc<S>, pitchMm: number = 0): OpItem<S> {
 // multiplies ctx.wrapDir into `rad` at the call site, so a rotation with
 // nothing to do with the wrap does not inherit its convention.
 export function orbit<S>(
-  rad: Sc<S>,
+  rad: Live<S>,
   opts: { about?: "axis" | "frame" } = {},
 ): OpItem<S> {
   return {
@@ -708,7 +708,9 @@ export function orbit<S>(
     name: "orbit",
     run: (v, f, w, ctx) => {
       const A = ctx.A;
-      const a = A.mul(A.mul(ctx.flight, rad), w);
+      // LIVE, so an angle may read the ctx the walk hands it — a `during`
+      // scope's own flight rather than the one it was built under.
+      const a = A.mul(A.mul(ctx.flight, liveOf(rad, ctx)), w);
       const ca = A.cos(a);
       const sa = A.sin(a);
       if (opts.about === "frame") {
@@ -776,13 +778,13 @@ export function swirl<S>(
 // with a re-export. The direction falls back PER VERTEX to the vertex's own
 // meridian, so the ring DILATES in place — and a dilation has no net
 // translation, so the FRAME's displacement carries the (1 − axi) factor.
-export function spread<S>(frac: Sc<S>): OpItem<S> {
+export function spread<S>(frac: Live<S>): OpItem<S> {
   return {
     kind: "transform",
     name: "spread",
     run: (v, f, w, ctx) => {
       const A = ctx.A;
-      const D = A.mul(A.mul(A.mul(ctx.flight, frac), ctx.R), w);
+      const D = A.mul(A.mul(A.mul(ctx.flight, liveOf(frac, ctx)), ctx.R), w);
       // The piece's own meridian, and — for an axisymmetric piece, which has no
       // meridian — the VERTEX's own. axi is a 0/1 flag, so the mix selects a
       // direction rather than interpolating two.
@@ -804,6 +806,24 @@ export function spread<S>(frac: Sc<S>): OpItem<S> {
           x: A.add(f.x, A.mul(Df, n.x)),
           z: A.add(f.z, A.mul(Df, n.z)),
         },
+      };
+    },
+  };
+}
+
+// RISE: a rigid translation along the optical axis, scaled by `flight` like
+// every other transform here. Axial like the ladder, so it stays invariant
+// under rotation about the bore.
+export function rise<S>(amount: Live<S>): OpItem<S> {
+  return {
+    kind: "transform",
+    name: "rise",
+    run: (v, f, w, ctx) => {
+      const A = ctx.A;
+      const ey = A.mul(A.mul(ctx.flight, w), liveOf(amount, ctx));
+      return {
+        v: { ...v, axial: A.add(v.axial, ey) },
+        f: { ...f, axial: A.add(f.axial, ey) },
       };
     },
   };
@@ -1137,14 +1157,15 @@ export function crease<S>(rad: Live<S>, width: Live<S>): OpItem<S> {
 // COIL: map the seated radius R toward R·factor at CONSTANT arc length, so the
 // wedge-local angle opens ∝ 1/factor. factor = 1 at flight = 0 ⇒ exact
 // identity. Reads the SEATED phi (ctx), not the live meridian, which earlier
-// ops moved.
-export function coil<S>(factor: Sc<S>): OpItem<S> {
+// ops moved. LIVE, so a factor that itself reads the gate can vanish at BOTH
+// channel ends rather than only at the seated one.
+export function coil<S>(factor: Live<S>): OpItem<S> {
   return {
     kind: "modifier",
     name: "coil",
     run: (v, ctx) => {
       const A = ctx.A;
-      const coilF = A.mix(1, factor, ctx.flight);
+      const coilF = A.mix(1, liveOf(factor, ctx), ctx.flight);
       const open = A.sub(A.div(ctx.phi, coilF), ctx.phi);
       const grown = pushOut(A, v, A.mul(ctx.R, A.sub(coilF, 1)));
       return {

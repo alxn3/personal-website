@@ -136,6 +136,9 @@ describe("recipeKnob — the clamp at the uniform boundary", () => {
   it("clamps a listed knob to its limits and rejects non-finite writes", () => {
     const stagger = recipeKnob("assemble", "stagger");
     const [lo, hi] = KNOB_LIMITS.assemble!.stagger;
+    // the BOX alone is the subject here — the joint cap (below) would otherwise
+    // eat the partner's own default out of the ceiling
+    recipeKnob("assemble", "partStagger").value = 0;
     stagger.value = 5;
     expect(stagger.value).toBe(hi);
     stagger.value = -3;
@@ -218,13 +221,13 @@ describe("recipeKnob — the clamp at the uniform boundary", () => {
     // silly POSE and stays reachable — but NaN is not a pose: the idle gate
     // multiplies it by zero and NaN · 0 = NaN, which kills the SEATED render
     // (the one thing no knob is allowed to touch).
-    const dilate = recipeKnob("explode", "dilate");
-    dilate.value = 50;
-    expect(dilate.value).toBe(50);
-    dilate.value = NaN;
-    expect(dilate.value).toBe(50);
-    dilate.value = Number.POSITIVE_INFINITY;
-    expect(dilate.value).toBe(50);
+    const hover = recipeKnob("explode", "hover");
+    hover.value = 50;
+    expect(hover.value).toBe(50);
+    hover.value = NaN;
+    expect(hover.value).toBe(50);
+    hover.value = Number.POSITIVE_INFINITY;
+    expect(hover.value).toBe(50);
   });
 
   it("hands back the SAME box every call, for every knob", () => {
@@ -254,12 +257,12 @@ describe("recipeKnob — the clamp at the uniform boundary", () => {
   it("resetRecipeKnobs restores every knob, joint pair included", () => {
     const stagger = recipeKnob("assemble", "stagger");
     const partStagger = recipeKnob("assemble", "partStagger");
-    const dilate = recipeKnob("explode", "dilate");
+    const hover = recipeKnob("explode", "hover");
     // the meridian preset: the joint pair parked far from its defaults, plus an
     // unlimited knob a slider dragged
     stagger.value = 0.06;
     partStagger.value = 0.78;
-    dilate.value = 50;
+    hover.value = 50;
 
     resetRecipeKnobs();
 

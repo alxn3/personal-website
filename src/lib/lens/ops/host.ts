@@ -305,6 +305,10 @@ export const KNOB_LIMITS: Partial<
     // a selector weight: outside [0, 1] it would invert or over-scale the scope
     keepScope: [0, 1],
   },
+  // explode's curl is a COIL FACTOR the op divides the wedge's own angle by
+  // (ops.ts coil), so the floor is load-bearing: it keeps the factor at or above
+  // 1 and the divisor away from 0.
+  explode: { curl: [0, 8] },
   // peel's knob is a `during` width, not a gate window: 1 − stagger is how much
   // of the channel each piece gets, so the ceiling guards a denominator.
   peel: { stagger: [0, 0.85] },
