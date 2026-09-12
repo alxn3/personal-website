@@ -3,15 +3,13 @@ import { band, lerp, smoothstep } from "./math";
 // Type-only — erased at build, so no runtime cycle with the orchestrator.
 import type { SceneState } from "./scene";
 
-// Look-swap transitions: short rAF choreographies that make a shading change
-// read as one gesture. Each drives EXISTING objects/channels (never a new
-// shader graph) toward a hidden/peak moment, where scene.swapShading fires the
-// material rebuild, then eases home.
+// Look-swap transitions: short rAF choreographies that drive existing
+// objects/channels toward a hidden/peak moment, where scene.swapShading fires
+// the material rebuild, then ease home.
 //
-// CONTRACT PER RUN: snapshot what you drive at creation and restore it
-// bit-exactly in finish(), but ONLY where your write is still the last one
-// (compare against the value you last wrote), so a slider that grabbed the
-// channel mid-burst is never clobbered.
+// Contract per run: snapshot what you drive at creation and restore it in
+// finish(), but only where your write is still the last one (compare against
+// the value you last wrote), so a mid-burst slider is never clobbered.
 
 export type TransitionName = "twist" | "blink" | "molt" | "punch";
 
@@ -53,7 +51,7 @@ export type TransitionFactory = (
 // velocity peaks exactly at t=0.5 — the swap hides inside the fastest motion.
 const smoother = (t: number) => t * t * t * (t * (t * 6 - 15) + 10);
 
-// Pulse with a held plateau: rises 0→0.4, HOLDS 0.4→0.6 (the swap beat sits
+// Pulse with a held plateau: rises 0→0.4, holds 0.4→0.6 (the swap beat sits
 // fully inside the hold), falls 0.6→1. Built on math.ts band().
 const holdPulse = (t: number) => band(t, 0, 1, 0.4);
 
@@ -90,7 +88,7 @@ export const TRANSITIONS: Record<TransitionName, TransitionFactory> = {
     };
   },
 
-  // THE lens-native cut: the real iris geometry snaps closed, the swap fires
+  // The lens-native cut: the real iris geometry snaps closed, the swap fires
   // at the fully-stopped-down beat, then it reopens — a camera blink.
   blink(ctx, opts) {
     const s = ctx.state;
@@ -115,9 +113,7 @@ export const TRANSITIONS: Record<TransitionName, TransitionFactory> = {
 
   // The lens sheds its skin into the new look: a pulse into the `peel`
   // channel's staggered unroll, swap at the apex, then it re-rolls. Must stay
-  // on `peel`, whose unroll is scoped to the shell cast — `assemble`'s
-  // unscoped ladder translates the whole model and moves the framing under
-  // the swap.
+  // on `peel` — `assemble`'s unscoped ladder would move the framing.
   molt(ctx, opts) {
     const s = ctx.state;
     const prior = s.peel;

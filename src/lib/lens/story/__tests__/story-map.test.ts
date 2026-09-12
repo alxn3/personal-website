@@ -10,20 +10,15 @@ import {
 import { CHANNEL_DEFAULTS } from "../../core/scene";
 
 // ============================================================================
-// THE STORY-MAP — src/lib/lens/STORY-MAP.md, rendered from storyStateAt.
-//
-// It is a GENERATED artifact, checked in so it can be read (and diffed) without
-// running anything, and asserted here so it can never rot: a duration change in
-// story/story.ts or a retuned window fails this test with the new table in the
-// diff, which is exactly the signal — "this refactor moved the story".
+// THE STORY-MAP — src/lib/lens/STORY-MAP.md, rendered from storyStateAt and
+// asserted byte-for-byte, so a duration or window change fails here with the
+// new table in the diff.
 //
 // TO REGENERATE, after a deliberate change:
 //   LENS_STORY_MAP=1 npx vitest run src/lib/lens/story/__tests__/story-map.test.ts
-// and review the diff. Same idiom as optics/__tests__/trace-goldens.test.ts.
 //
-// ONE CODE PATH. The renderer below is pure presentation — every number comes
-// out of storyStateAt, which is itself a composition of the drivers' own
-// functions. There is no second model of the story anywhere in this file.
+// The renderer below is pure presentation — every number comes out of
+// storyStateAt; there is no second model of the story in this file.
 // ============================================================================
 
 const MAP_URL = new URL("../../STORY-MAP.md", import.meta.url);
@@ -58,7 +53,6 @@ const sceneRows = () =>
     r.scene.transit.toFixed(4),
     [
       r.scene.rail ? "rail" : "",
-      r.scene.linkNext ? "linkNext" : "",
       r.scene.camHold === undefined ? "" : `camHold ${r.scene.camHold}`,
     ]
       .filter(Boolean)
@@ -157,23 +151,13 @@ function render(): string {
 
 # STORY-MAP
 
-The hero story's pose and flow at every interesting scroll position \`p\`,
-rendered from \`story/state.ts\`'s \`storyStateAt(p)\` — which is itself nothing
-but a composition of the functions the drivers call, so every number here is the
-story's own. Regenerate with
+Pose, channels and open windows at every scene, band and window edge, rendered
+from \`story/state.ts\`'s \`storyStateAt(p)\`. These are the AUTHORED values at
+\`p\`: the live frame eases \`story\` toward them, the internals rack and the
+card orbit run on phase clocks, and \`—\` means the value is not a function of
+\`p\` alone. Regenerate (the test pins the file byte-for-byte):
 
     LENS_STORY_MAP=1 npx vitest run src/lib/lens/story/__tests__/story-map.test.ts
-
-and \`story/__tests__/story-map.test.ts\` asserts the checked-in file matches, so
-this cannot silently rot: a duration or window change fails the suite with the
-new table in the diff.
-
-**What it is not.** These are the AUTHORED values at \`p\` — what the drivers
-would write on a frame handed exactly this position, with every lazy module
-loaded. The live frame lags them (core/scene eases \`story\` toward
-\`storyTarget\`), the internals rack/breath and the card orbit run on a phase
-clock rather than on \`p\`, and a \`—\` means the value is genuinely not a
-function of \`p\` alone. \`story/state.ts\`'s header has the full residual.
 
 Track: ${RANGES.length} scenes, ${TOTAL_HOLD.toFixed(2)} screenfuls of hold.
 
@@ -197,9 +181,7 @@ ${table(["band", "a", "b", "flags"], bandRows())}
 
 ## Windows
 
-Every ramp whose EDGES its owning module exports, in absolute story \`p\`. A
-window authored as literals inside its own expression is deliberately absent —
-listing it here would be a second copy of numbers this map does not own.
+Every ramp whose edges its owning module exports, in absolute story \`p\`.
 
 \`\`\`text
 ${table(["window", "p0", "p1", "width"], windowRows())}
@@ -208,11 +190,10 @@ ${table(["window", "p0", "p1", "width"], windowRows())}
 ## State at every edge
 
 One row per scene edge, caption-band edge and window edge. \`camX/Y/Z\` is the
-orbit OFFSET from \`tgtX/Y/Z\`, not a world position — the camera sits at their
-sum, so a scene with a nonzero target frames from nearer (or further) than
-\`camX/Y/Z\` alone reads. \`roll\` is radians
-about the optical axis (the reveal's) and \`turn\` radians about world +Y (the
-cards scene's, plus the ending's rock), one write with \`tilt\` (which carries the rock's other half); \`sweep\` is the sky's turn in radians; \`iris\` is who owns focus/aperture there.
+orbit OFFSET from \`tgtX/Y/Z\` (the camera sits at their sum). \`roll\` is
+radians about the optical axis, \`turn\` radians about world +Y, \`tilt\` the
+rock's other half; \`sweep\` is the sky's turn in radians; \`iris\` is who owns
+focus/aperture there.
 
 \`\`\`text
 ${table(STATE_HEAD, states.map(stateRow))}
@@ -237,18 +218,14 @@ describe("STORY-MAP", () => {
   });
 
   it("regenerates to itself — the render is a pure function of the story", () => {
-    // the generator and storyStateAt share ONE code path, so a second render in
-    // the same process must be byte-identical; a Date, a Math.random or an
-    // insertion-ordered Set leaking into the table would show here
+    // a Date, a Math.random or an insertion-ordered Set in the table shows here
     expect(render()).toBe(render());
   });
 });
 
 describe("the state module's coverage", () => {
   it("reports every channel in the registry", () => {
-    // the same derived-list discipline the one-registry law uses: a channel
-    // added to core/scene's CHANNEL_REGISTRY must appear here, or the map is
-    // quietly reporting a story it no longer describes.
+    // a channel added to CHANNEL_REGISTRY must appear in the map too
     expect(Object.keys(storyStateAt(0.5).channels).sort()).toEqual(
       Object.keys(CHANNEL_DEFAULTS).sort(),
     );

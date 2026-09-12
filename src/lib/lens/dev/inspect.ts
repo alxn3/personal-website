@@ -3,24 +3,13 @@ import { vec4 } from "three/tsl";
 import { displaceInto, opsStateKey } from "./ops-cpu";
 import { isGraphGroup } from "../core/parts";
 
-// DEV ONLY — dynamically imported, so none of it reaches a visitor's bundle.
-// The /lens "Inspect" toggle: hover a piece to read the GLB node name under the
-// pointer, click to copy it. Read-only where the MODEL is concerned — a CPU
-// raycast, one DOM tooltip, one overlay mesh. Listeners exist only while the
-// toggle is on.
-//
-// IT DOES NOT RAYCAST THE MODEL. The shell deform runs IN-SHADER, so every
-// mesh's CPU geometry stays SEATED and picking an exploded lens off it would
-// name whatever sits at the piece's parking spot. Each mesh instead gets a
-// PICKING PROXY — same indices and triangle order, positions re-evaluated on
-// the CPU (dev/ops-cpu.ts) at the live channel values — so a piece is picked
-// where it is DRAWN. The proxy stays in MESH-LOCAL space and is driven by the
-// source's own matrixWorld, so the mechanism's object motion is applied once,
-// by the matrix chain, not twice. Rebuilds are lazy — see `maybeRebuild`.
-//
-// The hover highlight reuses that same pair. It is a separate overlay mesh
-// because the shading caches SHARE one material across dozens of meshes, so
-// tinting the hovered mesh's would tint every mesh wearing it.
+// Dev only — dynamically imported. The /lens "Inspect" toggle: hover a piece to
+// read its GLB node name, click to copy. Read-only; listeners exist only while
+// on. It does not raycast the model (the deform runs in-shader, CPU geometry
+// stays seated): each mesh gets a picking proxy with the same indices and
+// positions re-evaluated on the CPU (dev/ops-cpu.ts) at live channels, in
+// mesh-local space under the source's matrixWorld. The hover highlight is a
+// separate overlay mesh because the shading caches share one material.
 
 /** Tooltip chrome, in the same tokens the floating controls card uses, so it
  *  reads correctly in both themes without a colour of its own. */
@@ -33,13 +22,12 @@ const DRAG_PX = 5;
 const CURSOR_GAP = 14;
 const COPIED_MS = 1200;
 /** How long the op state must hold still before the proxies are re-evaluated.
- *  Channels GLIDE toward their target, so rebuilding per frame would burn the
- *  main thread; a name lookup mid-move need not be frame-accurate. */
+ *  Channels glide toward their target, so rebuilding per frame would burn the
+ *  main thread. */
 const SETTLE_MS = 200;
 
-/** The site's `--highlight` terracotta. ONE value for both themes — it reads
- *  on either backdrop, and a CSS custom property is not visible to the scene
- *  without plumbing a reader in. */
+/** The site's `--highlight` terracotta. One value for both themes — it reads on
+ *  either backdrop. */
 const HIGHLIGHT_HEX = 0xd18a5d;
 const HIGHLIGHT_OPACITY = 0.35;
 
@@ -50,9 +38,9 @@ export interface InspectContext {
   camera: THREE.Camera;
   /** Pointer target, and (through its offset parent) the tooltip's frame. */
   canvas: HTMLCanvasElement;
-  /** Where the hover-highlight overlay is parented while shown. The SCENE, not
+  /** Where the hover-highlight overlay is parented while shown. The scene, not
    *  the model — every pass that traverses the GLB would otherwise pick the
-   *  overlay up as if it were a piece of the lens. */
+   *  overlay up as a piece of the lens. */
   scene: THREE.Object3D;
   /** The scene renders on demand, so a highlight appearing/moving/clearing
    *  needs a repaint requested explicitly. */
@@ -65,11 +53,10 @@ export interface Inspector {
 }
 
 /** `[hit name, part name]` for a picked node: the nearest named node at or
- *  above the hit, and the TOPMOST named ancestor below the model root. Topmost
- *  is the same grouping `ops/frames.ts` derives the explode ladder from, so the
- *  second name is the sub-assembly a request would talk about. Empty when the
- *  hit IS the root. `Grp_*` graph empties are skipped for the same reason
- *  `groupOf` skips them: they own no rung and name no sub-assembly. */
+ *  above the hit, and the topmost named ancestor below the model root — the
+ *  same grouping `ops/frames.ts` derives the explode ladder from. Empty when the
+ *  hit is the root. `Grp_*` graph empties are skipped: they own no rung and name
+ *  no sub-assembly. */
 function namesOf(obj: THREE.Object3D, root: THREE.Object3D): [string, string] {
   const chain: string[] = [];
   for (let o: THREE.Object3D | null = obj; o && o !== root; o = o.parent)
@@ -79,7 +66,7 @@ function namesOf(obj: THREE.Object3D, root: THREE.Object3D): [string, string] {
 }
 
 /** Visible all the way up — the isolate/occluder logic hides whole branches by
- *  flipping a PARENT's flag, which a per-mesh `.visible` test would miss. */
+ *  flipping a parent's flag, which a per-mesh `.visible` test would miss. */
 function shown(obj: THREE.Object3D): boolean {
   for (let o: THREE.Object3D | null = obj; o; o = o.parent)
     if (!o.visible) return false;
@@ -125,37 +112,33 @@ export function createInspector(ctx: InspectContext): Inspector {
   let savedCursor = "";
   let enabled = false;
 
-  // --- hover highlight -------------------------------------------------------
-  // ONE mesh, reused across hovers: geometry BORROWED from the hovered piece's
-  // proxy and matrixWorld copied from the source mesh — the pair the raycast
-  // used, so the wash lands exactly where the hit was computed.
+  // The hover highlight: one mesh, reused across hovers, with geometry borrowed
+  // from the hovered piece's proxy and matrixWorld copied from the source mesh
+  // — the pair the raycast used, so the wash lands where the hit was.
   const highlightMat = new THREE.MeshBasicNodeMaterial({
     transparent: true,
     // DoubleSide for the same reason the proxies use it: a piece looked into
     // from the inside presents only back faces.
     side: THREE.DoubleSide,
-    // The wash is COINCIDENT with the drawn surface: depthTest stays ON so a
+    // The wash is coincident with the drawn surface: depthTest stays on so a
     // piece behind another cannot shine through, and the polygon offset absorbs
-    // the last-bit disagreement between the CPU mirror and the shader, which
-    // would otherwise speckle. depthWrite OFF so the overlay never occludes
-    // what follows, and the far side of a closed shell fails the test rather
-    // than double-blending.
+    // the last-bit disagreement between the CPU mirror and the shader.
+    // depthWrite off so the overlay never occludes what follows.
     depthWrite: false,
     polygonOffset: true,
     polygonOffsetFactor: -4,
     polygonOffsetUnits: -4,
     toneMapped: false, // a dev marker should be the token colour, not graded
   });
-  // A CONSTANT fragment, not `color`/`opacity`: those take the lit path, which
-  // folds in a BasicEnvironmentNode and demands a `normal` attribute the
-  // picking proxies deliberately don't carry. `fragmentNode` short-circuits
-  // lighting, which is what a flat marker wants anyway.
+  // A constant fragment, not `color`/`opacity`: those take the lit path, which
+  // folds in a BasicEnvironmentNode and demands a `normal` attribute the picking
+  // proxies don't carry.
   {
     const c = new THREE.Color(HIGHLIGHT_HEX);
     highlightMat.fragmentNode = vec4(c.r, c.g, c.b, HIGHLIGHT_OPACITY);
   }
-  /** Owned placeholder. The highlight only ever BORROWS proxy geometry, so it
-   *  must not be holding one when `disposeProxies` frees them. */
+  /** Owned placeholder. The highlight only borrows proxy geometry, so it must
+   *  not be holding one when `disposeProxies` frees them. */
   const emptyGeo = new THREE.BufferGeometry();
   const highlight = new THREE.Mesh(emptyGeo, highlightMat);
   highlight.frustumCulled = false;
@@ -166,9 +149,8 @@ export function createInspector(ctx: InspectContext): Inspector {
   let highlighted: PickProxy | null = null;
 
   /** Wash the hovered piece. Both inputs are as fresh as the pick that made
-   *  them — geometry re-evaluated only once the op state SETTLES, matrix
-   *  sampled on pointer events — so a hover held still during an animation
-   *  shows a slightly stale outline. */
+   *  them — geometry re-evaluated only once the op state settles — so a hover
+   *  held still during an animation shows a slightly stale outline. */
   const showHighlight = (p: PickProxy) => {
     highlight.geometry = p.proxy.geometry;
     highlight.matrixWorld.copy(p.src.matrixWorld);
@@ -207,8 +189,8 @@ export function createInspector(ctx: InspectContext): Inspector {
       const positions = new Float32Array(seated.count * 3);
       const geo = new THREE.BufferGeometry();
       geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-      // CLONED, not shared: disposing a proxy geometry would otherwise take the
-      // real mesh's index buffer down with it.
+      // Cloned, not shared: disposing a proxy geometry would otherwise take
+      // the real mesh's index buffer down with it.
       if (src.index) geo.setIndex(src.index.clone());
       geo.drawRange = { ...src.drawRange };
       const proxy = new THREE.Mesh(geo, proxyMat);
@@ -226,8 +208,8 @@ export function createInspector(ctx: InspectContext): Inspector {
       // Mesh.raycast pre-culls on the bounding sphere: a seated one left in
       // place would cull away every piece the explode threw outward.
       p.proxy.geometry.computeBoundingSphere();
-      // The highlight DRAWS one of these, so a rewritten position array has to
-      // be re-uploaded — the raycast alone never needed it.
+      // The highlight draws one of these, so a rewritten position array has to
+      // be re-uploaded.
       p.proxy.geometry.attributes.position.needsUpdate = true;
     }
     if (highlighted) ctx.invalidate();
@@ -269,8 +251,8 @@ export function createInspector(ctx: InspectContext): Inspector {
     ndc.set((x / rect.width) * 2 - 1, -(y / rect.height) * 2 + 1);
     raycaster.setFromCamera(ndc, ctx.camera);
     maybeRebuild();
-    // The proxies hold LOCAL displaced positions; the source's world matrix (kept
-    // live by the render loop) carries the object-level motion on top.
+    // The proxies hold local displaced positions; the source's world matrix
+    // carries the object-level motion on top.
     for (const p of proxies) p.proxy.matrixWorld.copy(p.src.matrixWorld);
     const pick = raycaster
       .intersectObjects(proxyMeshes, false)
@@ -326,7 +308,7 @@ export function createInspector(ctx: InspectContext): Inspector {
     if (on === enabled) return;
     enabled = on;
     if (on) {
-      // Rebuilt per enable: the accessories merge into the model AFTER boot, so
+      // Rebuilt per enable: the accessories merge into the model after boot, so
       // a proxy set captured once at construction could miss them.
       builtKey = opsStateKey();
       seenKey = builtKey;

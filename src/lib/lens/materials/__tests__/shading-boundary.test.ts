@@ -2,13 +2,8 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-// THE LAZY BOUNDARY IS A TYPE-ONLY EDGE (materials/shading.ts ↔
-// materials/shading-bench.ts). A value import — or a re-export — in either
-// direction folds the bench's lazy chunk back into the homepage's shared
-// bundle with every other gate still green; the only signal would be someone
-// re-measuring dist/ by hand. This pins the headers' stated rule to the
-// source text (precedent: story/__tests__/piece-flow.test.ts pins
-// hero-driver.ts's source for the same class of unpinnable property).
+// The shading.ts ↔ shading-bench.ts edge must stay type-only: a value import
+// either way folds the bench's lazy chunk into the homepage's shared bundle.
 
 const src = (rel: string): string =>
   readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");

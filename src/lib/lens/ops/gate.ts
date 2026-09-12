@@ -1,26 +1,19 @@
 // The two-phase per-piece choreography gate, written against the scalar algebra
 // so it runs on both the CPU (NUM) and, through ops/emit, the GPU.
 //
-// THE LAW: a staggered window `win` opens per piece (inner ranks first, by
+// A staggered window `win` opens per piece (inner ranks first, by
 // `rank01 × layerStagger`, plus `layerPhase × partStagger`), then splits at
 // `split` into phase 1 (flight = 1 − ease over [flightStart, split]) and
-// phase 2 (stick/tape-down = ease over [split − overlap, rollEnd]).
-// `ease(0) = 0` and `ease(1) = 1` for any snap, so the identity anchors hold:
-// while `layerStagger + partStagger + windowFrac ≤ 1`, every piece saturates
-// to win = 1 (flight = 0 AND stick = 1) at channel = 0.
+// phase 2 (stick = ease over [split − overlap, rollEnd]).
 //
-// Those anchors being EXACT at both ends is why ops.ts's `during` needs no code
-// here: re-running this gate at a remapped channel leaves that scope seated
-// below the sub-window and fully played above it, stagger and split replayed
-// inside for free. The per-piece windows (flightStart/rollEnd) stay this
-// file's — they live in `win` space, after the stagger, and `during` acts
-// before it.
+// INVARIANT: while `layerStagger + partStagger + windowFrac ≤ 1`, every piece
+// saturates EXACTLY to win = 1 (flight = 0 AND stick = 1) at channel = 0.
+// ops.ts's `during` relies on those anchors being exact at both ends.
 
 import type { Algebra, Sc } from "./algebra";
 
-/** INVARIANT: `split < rollEnd + overlap`, i.e. the stick ramp's denominator
- *  `rollEnd − split + min(overlap, split)` must be POSITIVE — at zero the
- *  seated state computes 0/0 = NaN instead of the identity anchor's exact 1. */
+/** INVARIANT: `split < rollEnd + overlap` — the stick ramp's denominator
+ *  `rollEnd − split + min(overlap, split)` must be positive, else NaN. */
 export interface GateSpec<S> {
   layerStagger: Sc<S>;
   windowFrac: Sc<S>;
@@ -68,9 +61,8 @@ export function gate<S>(
     ),
   );
 
-  // phase 2: stick ramps 0 → 1 over win ∈ [split − ov, rollEnd]. ov must stay
-  // clamped to the split so win = 0 still gives stick = 0 (full roll at full
-  // spread).
+  // phase 2: stick ramps 0 → 1 over win ∈ [split − ov, rollEnd]. ov is clamped
+  // to the split so win = 0 still gives stick = 0.
   const ov = A.min(overlap, split);
   const stick = ease(
     A.clamp(

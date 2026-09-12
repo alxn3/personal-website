@@ -1,11 +1,10 @@
 // fly-core: the fly-through's pure math — knob table, pose path, travel remap,
-// passage fades and the glass spans. Read by both story/fly.ts and the /lens
-// demo, so FLY below is the ONE set of fly knobs.
+// passage fades and the glass spans. FLY below is the one set of fly knobs,
+// read by both story/fly.ts and the /lens demo.
 //
-// HOMEPAGE-CHUNK LAW: with optics/prescription.ts this is the only optics/ file
-// allowed in the initial chunk, so it may import exactly `lerp`/`smoothstep`
-// from core/math, PRESCRIPTION from optics/prescription, and TYPES from
-// core/scene — no three, no renderer, nothing from explore/.
+// Homepage-chunk law: with optics/prescription.ts this is the only optics/ file
+// allowed in the initial chunk, so it may import only `lerp`/`smoothstep`,
+// PRESCRIPTION, and types from core/scene — no three, no renderer, no explore/.
 import { lerp, smoothstep } from "../core/math";
 import { PRESCRIPTION } from "./prescription";
 import type { CameraPose, GlassSpanMm, ShadingMode } from "../core/scene";
@@ -16,7 +15,7 @@ export interface Pose {
   el?: number;
   fov?: number;
   /** slides the look-at point (and with it the whole rig) along world X — a
-   *  TRANSLATION the spherical rig has no other way to express. */
+   *  translation the spherical rig has no other way to express. */
   targetX?: number;
   targetY?: number;
   /** on-screen framing size — dist = frame/tan(fov/2), recomputed from the
@@ -27,12 +26,12 @@ export interface Pose {
 }
 export interface PoseKey {
   p: number;
-  /** OMITTED fields carry forward from the previous key, so a key lists only
-   *  what CHANGES; `dist`/`frame` are mutually exclusive (setting one drops the
-   *  carried other). Omit `pose` entirely to HOLD. The first key must give
-   *  az/el (and fov unless the boot fov is intended). */
+  /** Omitted fields carry forward from the previous key; `dist`/`frame` are
+   *  mutually exclusive (setting one drops the carried other). Omit `pose`
+   *  entirely to hold. The first key must give az/el (and fov unless the boot
+   *  fov is intended). */
   pose?: Pose;
-  /** shapes the segment ENDING at this key (default linear). */
+  /** shapes the segment ending at this key (default linear). */
   ease?: (t: number) => number;
 }
 
@@ -40,9 +39,9 @@ const distOf = (pose: Pose, fov: number) =>
   pose.dist ?? (pose.frame ?? 0) / Math.tan((fov * Math.PI) / 360);
 
 /** Build a pose sampler from ascending keys. Every field lerps under the
- *  destination key's ease; `dist` lerps between each end's distOf() taken at
- *  the CURRENT fov, so a frame-locked end tracks the drifting fov while a
- *  fixed-dist end holds. Clamps outside the key range. */
+ *  destination key's ease; `dist` lerps between each end's distOf() at the
+ *  current fov, so a frame-locked end tracks the drifting fov. Clamps outside
+ *  the key range. */
 export function posePath(
   keys: PoseKey[],
   bootFov = 45,
@@ -80,35 +79,32 @@ export function posePath(
 // smoothstep(0,1,·) as a pose-path segment ease (the demos' standard in/out).
 export const ss01 = (t: number) => smoothstep(0, 1, t);
 
-/** The fly knobs. Two laws hold over them, tripwired in
- *  __tests__/flythrough.test.ts: the passage fade must finish outside the
- *  camera's near plane, and the interior remap's window must lie inside the
+/** The fly knobs. Two laws hold over them: the passage fade must finish outside
+ *  the camera's near plane, and the interior remap's window must lie inside the
  *  barrel run. */
 export const FLY = {
-  /** shading with NO depth fade: core/scene rewrites the uFade* planes from the
-   *  camera distance every frame, so a fading look would dissolve the barrel
-   *  the camera is flying through. */
+  /** shading with no depth fade — a fading look would dissolve the barrel the
+   *  camera is flying through. */
   shading: "realistic" as ShadingMode,
   /** world units; the parked framing, with the whole lens ahead of camera */
   distFar: 9.0,
-  /** world units the look-at point rides AHEAD of the camera once the flight is
-   *  under way. Strictly > 0 — a zero radius NaNs the lookAt — and outside the
-   *  0.1 near plane. Small, so camera X ≈ targetX − distIn. */
+  /** world units the look-at point rides ahead of the camera in flight.
+   *  Strictly > 0 (a zero radius NaNs the lookAt) and outside the 0.1 near
+   *  plane. Small, so camera X ≈ targetX − distIn. */
   distIn: 0.34,
-  /** The flight enters the rear and leaves by the front on ONE heading: azimuth
-   *  −π/2 puts the camera at (targetX − d, 0, 0), looking down +X into the
-   *  bayonet mount, and it never leaves that heading. */
+  /** The one heading for the whole flight: azimuth −π/2 puts the camera at
+   *  (targetX − d, 0, 0), looking down +X into the bayonet mount. */
   azRear: -Math.PI / 2,
-  /** the park's elevation; 0 is a pure axial shot from frame one. The pEnter
-   *  key levels whatever is set here back to 0 before the barrel. */
+  /** the park's elevation; 0 is a pure axial shot. The pEnter key levels
+   *  whatever is set here back to 0 before the barrel. */
   elFar: 0,
   fovFar: 42,
   fovIn: 70,
   /** the finale's framing. Equal to fovIn, so the exit carries no zoom and the
-   *  field opens by parallax alone. starfield.ts's disc sizes are calibrated
-   *  against this fov — judge them at it. */
+   *  field opens by parallax alone; starfield.ts's disc sizes are calibrated
+   *  against this fov. */
   fovOut: 70,
-  /** CAMERA world X at each beat (targetX = x + distIn; at the park the camera
+  /** Camera world X at each beat (targetX = x + distIn; at the park the camera
    *  sits distFar behind targetX = 0). The lens occupies x ≈ −1.95…+1.95, so
    *  xEnter/xOut clear the glass stack at both ends. */
   xEnter: -2.8,
@@ -120,63 +116,54 @@ export const FLY = {
   pEnter: 0.22,
   pOut: 0.72,
   pClear: 0.85,
-  /** when the stars arrive: [start, end]. Opens as the camera reaches the mount
-   *  and is up by the time the rear element is on the near plane, so the stars
-   *  come UP THROUGH the glass. Fades the STARS ONLY, never the backdrop. */
+  /** when the stars arrive: [start, end]. Up by the time the rear element is on
+   *  the near plane, so the stars come up through the glass. Fades the stars
+   *  only, never the backdrop. */
   pSkyIn: [0.18, 0.36] as [number, number],
   /** [start, end] over which the aperture channel runs `apertureShut` → 0
-   *  (f/2.8, wide open). MUST be fully open before the camera reaches the glass
-   *  at pEnter — a stop closing there is a shut door in the frame the dive
-   *  flies through — and ideally before pSkyIn[1]. */
+   *  (f/2.8, wide open). Must be fully open before the camera reaches the glass
+   *  at pEnter, and ideally before pSkyIn[1]. */
   pAperture: [0.1, 0.2] as [number, number],
-  /** where the iris starts: 1 = f/22. Not a shut door — the blades leave
-   *  IRIS.irisMinMm of clear hole, so the park reads as stopped down. */
+  /** where the iris starts: 1 = f/22. The blades still leave IRIS.irisMinMm of
+   *  clear hole, so the park reads as stopped down, not shut. */
   apertureShut: 1,
-  /** [start, end] over which the whole room (IBL + the studio lights,
-   *  SceneHandle.setRoomLight) ramps down to `darkFloor`. Runs ahead of pSkyIn
-   *  so the frame is a dark tube before the stars come up in it. */
+  /** [start, end] over which the whole room (IBL + studio lights) ramps down to
+   *  `darkFloor`. Runs ahead of pSkyIn so the frame is a dark tube before the
+   *  stars come up in it. */
   pDark: [0.04, 0.3] as [number, number],
   /** what the room ramps down to — not 0, so a rim of the barrel interior still
    *  catches something instead of reading as a flat silhouette. */
   darkFloor: 0.08,
-  /** what the GLASS's reflections ramp down to on the same pDark window
-   *  (SceneHandle.setGlassGlint, a multiplier on the clones' shipped specular).
-   *  0, so the only thing left in the glass is what shines through it. */
+  /** what the glass's reflections ramp down to on the same pDark window (a
+   *  multiplier on the clones' shipped specular). */
   glintFloor: 0,
   pFocus: [0.72, 1] as [number, number],
-  /** the wormhole ramp: [start, peak, end]. uWormhole rises start→peak and
-   *  unwinds peak→end, and is exactly 0 outside — smoothstep saturates at its
-   *  edges, so the parked frame is the undistorted starfield. */
+  /** the wormhole ramp: [start, peak, end]. uWormhole rises start→peak, unwinds
+   *  peak→end, and is exactly 0 outside. */
   pWormhole: [0, 0.44, 0.84] as [number, number, number],
-  /** the streak window: a touch behind the pinch at the top (the smear wants a
-   *  throat to smear into) and gone before it closes. */
+  /** the streak window: opens a touch behind the pinch and is gone before it
+   *  closes. */
   pStreak: [0.03, 0.42, 0.78] as [number, number, number],
-  /** The passage fade, world units (20 mm to the unit). Each element goes down
-   *  on its own as the camera arrives at it:
-   *    lead — how far BEFORE the element's rearmost point the fade ends.
-   *           Must exceed the camera's near plane (0.1 world) or the element is
-   *           still drawn while the near plane cuts it open.
-   *    fade — the ramp's length, so it runs from `lead + fade` to `lead` before
-   *           the element.
-   *  Needed at all because three's transmission is screen-space: from inside an
-   *  element the refraction offset is enormous and the dual blur smears the
-   *  frame into an axis-aligned cross. See SceneHandle.setGlassElementFade. */
+  /** The passage fade, world units (20 mm to the unit) — each element goes down
+   *  on its own as the camera arrives at it. `lead` is how far before the
+   *  element's rearmost point the fade ends, and must exceed the camera's near
+   *  plane (0.1 world) or the near plane cuts the element open; `fade` is the
+   *  ramp's length. Needed because three's transmission is screen-space: from
+   *  inside an element the refraction offset smears the whole frame. */
   passageLead: 0.3,
   passageFade: 0.55,
-  /** [start, end] of the stretch the camera spends INSIDE the element stack,
-   *  measured in POSE p (the output of `travelRemap`, not input p). */
+  /** [start, end] of the stretch the camera spends inside the element stack,
+   *  measured in pose p (the output of `travelRemap`, not input p). */
   pInside: [0.3, 0.68] as [number, number],
   /** how much faster the stack is crossed; the p saved is handed to the
-   *  approach and the exit. 1 = the linear dive, exactly (the remap is the
-   *  identity there). */
+   *  approach and the exit. 1 = the linear dive (the remap is the identity). */
   insideRate: 2,
 };
 
 /** The travel remap, p → pose p: three linear segments through (0, 0), (a′, a),
- *  (b′, b), (1, 1), where [a, b] is the interior in POSE p and [a′, b′] the
- *  shorter stretch of INPUT p covering it (same midpoint, `rate` narrower).
- *  Monotone, continuous, fixed at both ends; rate = 1 returns `p` itself, so
- *  the identity is bit-exact. */
+ *  (b′, b), (1, 1), where [a, b] is the interior in pose p and [a′, b′] the
+ *  shorter stretch of input p covering it (same midpoint, `rate` narrower).
+ *  Monotone, continuous, fixed at both ends; rate = 1 returns `p` itself. */
 export function travelRemap(
   p: number,
   [a, b]: [number, number],
@@ -207,8 +194,7 @@ export function passageFade(
 }
 
 /** World X of the camera under a spherical pose — the same expression a
- *  CameraPose puts into camera.position.x, and the only way the dive knows
- *  where it is. */
+ *  CameraPose puts into camera.position.x. */
 export function poseCamX(pose: CameraPose): number {
   return (
     (pose.targetX ?? 0) +
@@ -216,7 +202,7 @@ export function poseCamX(pose: CameraPose): number {
   );
 }
 
-/** The elements ordered REAR TO FRONT (ascending world X) — the order the dive
+/** The elements ordered rear to front (ascending world X) — the order the dive
  *  meets them in; `worldAxialSpans` hands back an unordered record. */
 export function passageOrder(
   spansWorld: Record<string, { x0: number; x1: number }>,
@@ -232,8 +218,7 @@ export const arc = ([a, peak, b]: [number, number, number], p: number) =>
   smoothstep(a, peak, p) * (1 - smoothstep(peak, b, p));
 
 /** The elements' axial spans, gltf mm, for SceneHandle.setGlassTransmissive —
- *  which needs the prescription but must not IMPORT it, since core/scene.ts is
- *  in the homepage chunk. Derived here instead. */
+ *  derived here because core/scene.ts must not import the prescription. */
 export const GLASS_SPANS: Record<string, GlassSpanMm> = Object.fromEntries(
   PRESCRIPTION.map((e) => [
     e.id,
@@ -241,12 +226,10 @@ export const GLASS_SPANS: Record<string, GlassSpanMm> = Object.fromEntries(
   ]),
 );
 
-/** az is written once and carried by every later key: ONE heading for the whole
- *  flight. The barrel run is deliberately LINEAR — an ease at an interior key
- *  would stall the camera mid-glass, and pacing is FLY.insideRate's job, which
- *  reshapes p before it reaches this path. `fovOut` sits on the pClear key, not
- *  the last one, so the fov is reached as the lens leaves frame, then carried
- *  unchanged to p = 1. */
+/** az is written once and carried by every later key: one heading for the whole
+ *  flight. The barrel run stays linear — pacing is FLY.insideRate's job, which
+ *  reshapes p before it reaches this path. `fovOut` sits on the pClear key so
+ *  the fov is reached as the lens leaves frame, then carried to p = 1. */
 /* prettier-ignore */
 export const flyPose = posePath([
   { p: 0,           pose: { az: FLY.azRear, el: FLY.elFar, fov: FLY.fovFar, dist: FLY.distFar, targetX: 0                     } },

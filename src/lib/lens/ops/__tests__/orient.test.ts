@@ -14,10 +14,8 @@ import {
   type VertexState,
 } from "../ops";
 
-// The DIRECTION CLASS on the NUM backend (the executable spec). An orient op
-// writes the working direction both levels carry (v.aim / f.orient) and NOTHING
-// else — so the cases below are mostly about what it must leave alone.
-//
+// The DIRECTION CLASS on the NUM backend: an orient op writes the working
+// direction both levels carry (v.aim / f.orient) and nothing else.
 // The seat: a piece framed on the t0 = 0.3 meridian, so both aims start there.
 
 const T0 = 0.3;
@@ -53,7 +51,7 @@ function makeCtx(over: Partial<OpCtx<number>> = {}): OpCtx<number> {
     off: 0,
     rung: 0,
     axi: 0,
-    layerN: 5,
+    depth: 0,
     adopted: 0,
     flight: 1,
     stick: 1,
@@ -104,8 +102,7 @@ describe("rot — the direction class", () => {
     );
     expect(out.f.orient).toBeCloseTo(T0 + 0.8, 12);
 
-    // The comparison that makes the point: a SELECTOR inside the same group is
-    // restored on exit, and the re-aim beside it is not.
+    // A SELECTOR inside the same group is restored on exit; the re-aim is not.
     const seen: number[] = [];
     runPipeline(
       [
@@ -128,10 +125,9 @@ describe("rot — the direction class", () => {
   });
 
   it("(d) a re-aim is NOT scaled by the selection weight", () => {
-    // If it were, a masked piece's chain anchor would drift off the seam and the
-    // channel-0 / masked-piece identity would break. A CONSTANT re-aim survives
-    // the mask; a gate-driven one fades on its own, because the ctx an orient op
-    // reads is the EFFECTIVE one (flightEff = flight·w).
+    // Scaling it would drift a masked piece's chain anchor off the seam. A
+    // constant re-aim survives the mask; a gate-driven one fades on its own,
+    // since an orient op reads the EFFECTIVE ctx (flightEff = flight·w).
     const ctx = makeCtx({ flight: 0.8 });
     for (const w of [1, 0.5, 0]) {
       const out = runPipeline(
@@ -193,7 +189,7 @@ describe("rot — the direction class", () => {
 
   it("(f) rot takes a LIVE value — a per-piece quantity read when the op runs", () => {
     // How a recipe reaches the seam without making `build` ctx-dependent: the
-    // seam sits one halfSpan off the seat, and halfSpan is per piece.
+    // seam sits one halfSpan off the seat, per piece.
     const aim = rot<number>((c) => c.halfSpan);
     for (const halfSpan of [0.5, 1.2]) {
       const out = runPipeline([aim], V0, F0, makeCtx({ halfSpan }));

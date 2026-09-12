@@ -1,72 +1,27 @@
-// The load-time derivation pass: every per-piece constant the op pipeline reads
-// is MEASURED from the geometry here, once, and written as vertex attributes.
-// Nothing about a piece's frame is authored upstream, so a re-cut model needs
-// no table edit anywhere. This file MAY import three (it runs on the CPU at
-// load); the ops themselves never do.
+// Load-time derivation: every per-piece constant the op pipeline reads is
+// measured from the geometry here and written as vertex attributes. May import
+// three (CPU, at load); the ops never do.
 //
-// THE FRAMING UNIT IS THE AUTHORING UNIT — one set of values per glTF NODE,
-// i.e. one Blender object, i.e. one THREE.Mesh (`unitsOf`). Anything finer is
-// wrong: a real part is one mesh carrying many islands, and framing those
-// separately measures a tiny frame per solder blob and drops the whole piece
-// out of the wrap. So per NODE we measure:
-//
-//   t0    centroid meridian of the WHOLE unit, atan2(centroidZ, centroidX)
-//   R     MEDIAN vertex radius, clamped to ≥ R_MIN — the R = 0 NaN guard at the
-//         source, so no downstream op ever divides by zero
-//   span  true angular extent of the whole unit about t0
-//   axi   axisymmetric flag: a body of revolution has an ON-AXIS centroid, so
-//         its t0 is atan2 of two near-zeroes — float noise that differs per
-//         re-export. Such a unit is PINNED to t0 = 0, span = 2π and flagged, so
-//         ops can tell "no meridian" from "points there"
-//   yExt  axial extents (yMin, yMax), packed for the ops' `yN`
-//   layerN piece count of the piece's own rank layer. Informational: the bucket
-//         is too tight to carry a participation decision
-//   rank  0.01mm-bucketed radius key, VALUE-normalized over the model's radius
-//         span — value, not order, so touching shells rank close together
-//   phase index/count of the piece within its LAYER, ordered by t0
-//
-// The CONNECTED-COMPONENT split exists for ONE job: the SHELL_ADOPT pass, where
-// each screw of a `Mount_Screws` mesh must snap to its own host wedge. Only
-// adopted feature meshes keep per-component values.
-//
-// SPACES. Frames are measured in the UNIT's own local space, the space the
-// shader's `position` attribute lives in. The ladder alone is measured in ROOT
-// space — "which side of the chassis is this on" is a question about the
-// assembled model.
-//
-// TWO ADOPTIONS override the measurement, both so a rigid sub-assembly cannot
-// fly apart:
-//
-//   1. Feature adoption — bolted hardware and every PRINTED MARKING live in
-//      their own meshes but are not part of the shell that fans open. Each
-//      snaps to the nearest host sector centre and copies that wedge UNIT's
-//      frame EXACTLY (t0, R and hence rank/layer, span, yExt, axi), because the
-//      ops normalize position over (t0, span, yExt) — an adopter left on its
-//      own extents bends over its own arc and peels off the wedge it is bolted
-//      to. Hosts come from ONE pass (`adoptJobs`): the AUTHORED `SHELL_ADOPT`
-//      table, plus a DERIVED walk for markings, since the nearest ancestor
-//      owning `<name>_Seg<n>` wedges IS the shell a decal is printed on.
-//   2. Ladder grouping — the explode rung is per GROUP (the topmost named
-//      ancestor below the root), so a shell's wedges, its decals and anything
-//      parented under it all travel together.
-//
-// The ladder is DERIVED, not authored: rear/front split by axial centroid
-// against the Chassis_Fixed anchor, each side ordered outward and stepped
-// uniformly to the two reach anchors. `overrides.tierOrder` and
-// `overrides.anchorY` are the escape hatches.
+// The framing unit is one glTF node (= one Blender object = one THREE.Mesh),
+// measured in the unit's own local space; only the ladder is root space.
+// Two adoptions override the measurement so a rigid sub-assembly cannot fly
+// apart: bolted hardware and decals copy their host wedge's frame (SHELL_ADOPT;
+// the component split exists so each screw snaps to its own wedge), and the
+// explode rung is per group. The ladder is derived about the Chassis_Fixed
+// anchor; `overrides.tierOrder` / `overrides.anchorY` override it.
 
 import * as THREE from "three/webgpu";
 import { isGraphGroup, isSegWedge, partClassOf } from "../core/parts";
 import { PART_CLASS } from "./ops";
 
 /** The generated attributes: Float32 vectors, each field held constant over its
- *  piece. PACKED into three because WebGPU allows at most 8 vertex buffers per
- *  pipeline and one-per-name blew that limit. JS-side consumers read fields
- *  through `frameOf`; the shader unpacks in ops/host.ts's ctx build.
+ *  piece, packed into three (WebGPU allows at most 8 vertex buffers per
+ *  pipeline, and a decal's three `_wrap*` lanes fill the rest). JS reads them
+ *  through `frameOf`; the shader unpacks in host.ts.
  *
  *    `_opA` = (t0, R, span, rank)
- *    `_opB` = (phase, class, rung, axi)
- *    `_opY` = (yMin, yMax, layerN, adopted) */
+ *    `_opB` = (phase, class, rung, flags)   flags = axi + 2·adopted
+ *    `_opY` = (yMin, yMax, depth, wink)     wink: core/visibility.ts packWink */
 export const FRAME_ATTRS = [
   { name: "_opA", size: 4 },
   { name: "_opB", size: 4 },
@@ -76,9 +31,7 @@ export const FRAME_ATTRS = [
 /** The SHRINK-WRAP BINDING a decal vertex rides, written by `bindDecals`: the
  *  host triangle it sits on, in the mesh's own local space. Only DECAL meshes
  *  carry these. `u·p0 + v·p1 + w·p2 + h·n̂` decomposes the vertex in the
- *  complete basis {p1−p0, p2−p0, n̂}, so it reproduces the authored position
- *  exactly — which is what lets the deformed position be built the same way
- *  from the deformed corners.
+ *  complete basis {p1−p0, p2−p0, n̂}, reproducing the authored position.
  *
  *    `_wrapA` = (p0.xyz, u)
  *    `_wrapB` = (p1.xyz, v)
@@ -101,16 +54,32 @@ export interface Frame {
   axi: number;
   yMin: number;
   yMax: number;
-  /** Pieces in this piece's rank layer (1 = a lone body). */
-  layerN: number;
+  /** Radial depth: the piece's widest wall offset from R, as a fraction of R. */
+  depth: number;
   /** 1 when the frame was adopted from a host shell wedge (SHELL_ADOPT). */
   adopted: number;
+  /** the packed wink lane (core/visibility.ts `packWink`); WINK_NONE until
+   *  `stampWinkLanes` runs */
+  wink: number;
 }
+
+/** `_opB.w` carries the two 0/1 flags as one integer: axi + 2·adopted. */
+export const packFlags = (axi: number, adopted: number): number =>
+  axi + 2 * adopted;
+
+export const unpackFlags = (
+  flags: number,
+): { axi: number; adopted: number } => {
+  const adopted = Math.floor(flags * 0.5);
+  return { axi: flags - 2 * adopted, adopted };
+};
+
+/** The wink lane's value before `stampWinkLanes`: a piece no fade governs. */
+export const WINK_NONE = -1;
 
 /**
  * Read one vertex's frame off a geometry, unpacking the three attributes.
- * `null` when the geometry carries no frame, so callers test presence and read
- * fields in one step without knowing which lane a field lives in.
+ * `null` when the geometry carries no frame.
  */
 export function frameOf(
   geo: THREE.BufferGeometry,
@@ -120,6 +89,7 @@ export function frameOf(
   const b = geo.getAttribute("_opB");
   const y = geo.getAttribute("_opY");
   if (!a || !b || !y) return null;
+  const { axi, adopted } = unpackFlags(b.getW(vertexIndex));
   return {
     t0: a.getX(vertexIndex),
     R: a.getY(vertexIndex),
@@ -128,17 +98,16 @@ export function frameOf(
     phase: b.getX(vertexIndex),
     cls: b.getY(vertexIndex),
     rung: b.getZ(vertexIndex),
-    axi: b.getW(vertexIndex),
+    axi,
     yMin: y.getX(vertexIndex),
     yMax: y.getY(vertexIndex),
-    layerN: y.getZ(vertexIndex),
-    adopted: y.getW(vertexIndex),
+    depth: y.getZ(vertexIndex),
+    adopted,
+    wink: y.getW(vertexIndex),
   };
 }
 
-/** Non-segmented hardware BOLTED to a segmented shell: host → features.
- *  Adoption is DATA, not scene-graph surgery — the adopted frame alone keeps
- *  these meshes seated on their host. */
+/** Non-segmented hardware BOLTED to a segmented shell: host → features. */
 export const SHELL_ADOPT: Record<string, string[]> = {
   Mount_Bayonet: [
     "Mount_Screws",
@@ -157,26 +126,23 @@ export interface DerivedFrames {
    *  (decals, accessories) are present with 0. */
   ladderRungs: Map<string, number>;
   /** Rank bucket key (`rankKeyOf`) → number of pieces in that layer. Adopted
-   *  features are NOT counted — they ride a wedge rather than being one, and
-   *  counting them would dilute the layer's phase stagger. */
+   *  features are NOT counted; they ride a wedge rather than being one. */
   layerCount: Map<number, number>;
 }
 
-// Reference radius floor, model-mm: an on-axis piece (a flat disc, a rod on the
-// optical axis) measures R ≈ 0, and R is a divisor all over the op algebra.
+// Radius floor, model-mm: an on-axis piece measures R ≈ 0, and R is a divisor
+// all over the op algebra.
 const R_MIN = 0.5;
 // Coincident-position bucket, 1/mm ⇒ 1e-3 mm: seam-duplicated vertices share a
 // bucket, genuinely separate islands do not.
 const POS_QUANT = 1e3;
 // Radius rank bucket, 1/mm ⇒ 0.01 mm.
 const RADIUS_QUANT = 100;
-// Axisymmetry thresholds. The span tolerance is LOOSE because a real mesh's
-// angular sampling sets the shortfall — a ring with relief cutouts reaches only
-// 2π minus its coarsest gap. Measuring the WHOLE mesh rather than each island
-// is what makes a loose span test safe.
+// Axisymmetry thresholds: centroid offset as a fraction of R, and how far short
+// of 2π a full-turn span may fall.
 const AXI_CENTROID_FRAC = 0.02;
 const AXI_SPAN_EPS = 0.15;
-// The two authored ladder distances — the ONLY authored numbers in the ladder.
+// The two authored ladder distances.
 const REACH_REAR = 70; // mm, rearmost extent
 const REACH_FRONT = 95; // mm, frontmost extent
 // The part whose axial centre splits rear from front (and holds rung 0).
@@ -184,8 +150,7 @@ const ANCHOR_PART = "Chassis_Fixed";
 
 const wrapPi = (a: number): number => Math.atan2(Math.sin(a), Math.cos(a));
 
-/** The layer key a radius falls in — `DerivedFrames.layerCount`'s key. Exported
- *  so consumers look a layer up by the SAME law that built the map. */
+/** The layer key a radius falls in — `DerivedFrames.layerCount`'s key. */
 export const rankKeyOf = (R: number): number => Math.round(R * RADIUS_QUANT);
 
 function medianOf(values: number[]): number {
@@ -196,10 +161,9 @@ function medianOf(values: number[]): number {
 }
 
 // ── Connected components ─────────────────────────────────────────────────────
-// Union-find over the triangle indices PLUS coincident positions: a ring of
-// screws modelled as one mesh resolves to one island per screw, which is what
-// lets each screw adopt the wedge it is actually bolted to. ONLY SHELL_ADOPT
-// features are split this way; every other mesh is framed whole.
+// Union-find over triangle indices PLUS coincident positions, so a ring of
+// screws modelled as one mesh resolves to one island per screw. ONLY
+// SHELL_ADOPT features are split this way; every other mesh is framed whole.
 
 function componentsOf(geo: THREE.BufferGeometry): number[][] {
   const pos = geo.getAttribute("position");
@@ -249,12 +213,10 @@ function componentsOf(geo: THREE.BufferGeometry): number[][] {
 
 // ── The FRAMING UNIT ─────────────────────────────────────────────────────────
 // One glTF NODE = one Blender object = exactly one THREE.Mesh: the web GLBs
-// carry no material slots, so the exporter emits ONE primitive per mesh and no
-// node's halves can measure different radii.
+// carry no material slots, so the exporter emits ONE primitive per mesh.
 
-/** One authored node and its mesh. A pair because the class/group walks and the
- *  adoption pass address the NODE, while the measured vertices live on the
- *  mesh. */
+/** One authored node and its mesh: the class/group walks and the adoption pass
+ *  address the NODE, while the measured vertices live on the mesh. */
 interface Unit {
   node: THREE.Object3D;
   meshes: THREE.Mesh[];
@@ -295,13 +257,15 @@ interface LocalPiece {
   axi: boolean;
   yMin: number;
   yMax: number;
+  /** max |r − R| / R over the vertices — a sheet is thin, a body is deep. */
+  depth: number;
   cx: number;
   cy: number;
   cz: number;
 }
 
 /** Measure ONE vertex set as a single frame — the shared body of both framing
- *  granularities (a whole UNIT, or one island of an adopted feature mesh). */
+ *  granularities (a whole UNIT, or one island of an adopted feature). */
 function measureVerts(parts: PiecePart[]): LocalPiece {
   let sx = 0;
   let sy = 0;
@@ -329,6 +293,8 @@ function measureVerts(parts: PiecePart[]): LocalPiece {
   const cy = sy / Math.max(count, 1);
   const cz = sz / Math.max(count, 1);
   const R = Math.max(medianOf(radii), R_MIN);
+  let depth = 0;
+  for (const r of radii) depth = Math.max(depth, Math.abs(r - R) / R);
   let t0 = Math.atan2(cz, cx);
   let aMin = Infinity;
   let aMax = -Infinity;
@@ -341,9 +307,8 @@ function measureVerts(parts: PiecePart[]): LocalPiece {
     }
   }
   let span = Math.max(aMax - aMin, 0);
-  // Axisymmetry guard, TWO independent tests (see the header's `axi`): the
-  // centroid test, and a SPAN test for the pieces whose cutouts or lobes pull
-  // the centroid off the axis but which still wrap the full turn.
+  // Axisymmetry: an on-axis centroid, or a span that still wraps the full turn
+  // (cutouts and lobes can pull the centroid off the axis).
   const axi =
     Math.hypot(cx, cz) < AXI_CENTROID_FRAC * R ||
     span >= Math.PI * 2 - AXI_SPAN_EPS;
@@ -360,6 +325,7 @@ function measureVerts(parts: PiecePart[]): LocalPiece {
     axi,
     yMin,
     yMax,
+    depth,
     cx,
     cy,
     cz,
@@ -380,8 +346,8 @@ function measureWhole(unit: Unit): LocalPiece[] {
   return [measureVerts(unit.meshes.map(wholeMesh))];
 }
 
-/** The SHELL_ADOPT granularity: one frame per ISLAND, so each screw snaps to its
- *  own host wedge. */
+/** The SHELL_ADOPT granularity: one frame per ISLAND, so each screw snaps to
+ *  its own host wedge. */
 function measureComponents(unit: Unit): LocalPiece[] {
   return unit.meshes.flatMap((mesh) =>
     componentsOf(mesh.geometry).map((verts) => measureVerts([{ mesh, verts }])),
@@ -390,10 +356,9 @@ function measureComponents(unit: Unit): LocalPiece[] {
 
 // ── Naming: class and ladder group ───────────────────────────────────────────
 
-/** The name chain from a node up to (not including) the root — every name that
- *  is a PART IDENTITY, so the `Grp_*` graph empties are skipped (core/parts
- *  `isGraphGroup`). They group the node graph without owning a rung, so their
- *  members keep their own separate ladder rungs. */
+/** The name chain from a node up to (not including) the root, keeping only PART
+ *  IDENTITY names — `Grp_*` graph empties are skipped (`isGraphGroup`), so
+ *  their members keep their own separate ladder rungs. */
 function nameChain(obj: THREE.Object3D, root: THREE.Object3D): string[] {
   const names: string[] = [];
   for (let o: THREE.Object3D | null = obj; o && o !== root; o = o.parent)
@@ -403,11 +368,8 @@ function nameChain(obj: THREE.Object3D, root: THREE.Object3D): string[] {
 
 /** A mesh's part class: its OWN name if that name classifies it, else the
  *  nearest classed ancestor, so a `<Part>_SegN` wedge takes its part's class.
- *
- *  The chain EXCLUDES the root, so it is empty when the mesh IS the root — how
- *  a single-mesh accessory arrives from scene.ts's per-accessory pass. Falling
- *  through to `structure` there would class the whole accessory as chassis, so
- *  an empty chain reads the root's own name. */
+ *  The chain excludes the root, so an empty chain (the mesh IS the root, as in
+ *  scene.ts's per-accessory pass) reads the root's own name. */
 function classOf(mesh: THREE.Object3D, root: THREE.Object3D): number {
   const chain = nameChain(mesh, root);
   for (const name of chain) {
@@ -418,10 +380,8 @@ function classOf(mesh: THREE.Object3D, root: THREE.Object3D): number {
 }
 
 /** The ladder group a mesh belongs to: the TOPMOST named ancestor below the
- *  root (its own name if it has none). Topmost, not nearest: the model nests
- *  real sub-assemblies that are welded to their parent and must ride ONE rung
- *  with it. A `Grp_` ancestor is invisible here (see nameChain), so only real
- *  re-parents merge groups. */
+ *  root (its own name if it has none), so nested sub-assemblies ride ONE rung
+ *  with their parent. `Grp_` ancestors are invisible here (see nameChain). */
 function groupOf(mesh: THREE.Object3D, root: THREE.Object3D): string {
   const chain = nameChain(mesh, root);
   return chain.length > 0 ? chain[chain.length - 1] : "";
@@ -429,12 +389,11 @@ function groupOf(mesh: THREE.Object3D, root: THREE.Object3D): string {
 
 // ── The pieces ───────────────────────────────────────────────────────────────
 
-// The frame fields are copied OUT of `local` rather than read through it,
-// because adoption rewrites them for this piece while `local` stays the raw
-// measurement.
+// The frame fields are copied OUT of `local`: adoption rewrites them for this
+// piece while `local` stays the raw measurement.
 interface Piece {
-  /** The authored node this piece frames — its mesh. Naming, class and
-   *  containment tests all read the NODE. */
+  /** The authored node this piece frames. Naming, class and containment tests
+   *  all read the NODE. */
   node: THREE.Object3D;
   local: LocalPiece;
   t0: number;
@@ -443,14 +402,12 @@ interface Piece {
   axi: boolean;
   yMin: number;
   yMax: number;
+  depth: number;
   axialRoot: number; // centroid axial in ROOT space (ladder ordering only)
   group: string;
   cls: number;
   rank: number;
   phase: number;
-  /** Pieces in this piece's rank layer (an adopted feature takes its host's).
-   *  1 until step 3 fills it in. */
-  layerN: number;
   rung: number;
   /** The GROUP name (not the mesh name) of the shell this component adopted its
    *  frame from — `ladderRungs` is keyed by group, so the lookup must be too. */
@@ -472,19 +429,15 @@ interface AdoptJob {
   shell: THREE.Object3D;
   /** The adopting subtrees: a SHELL_ADOPT feature node, or one decal mesh. */
   features: THREE.Object3D[];
-  /** The candidate host NODES when the job already knows them: the derived
-   *  decal walk passes the host's own `_Seg` wedge nodes, because a host also
-   *  carries descendants that are no sector to snap to (an on-axis t0 = 0 would
-   *  win the nearest-meridian search). `null` = every non-feature piece under
-   *  `shell`, the authored SHELL_ADOPT rule. */
+  /** The candidate host NODES when the job already knows them — the host's own
+   *  `_Seg` wedge nodes, so non-sector descendants cannot win the
+   *  nearest-meridian search. `null` = any non-feature piece under `shell`. */
   wedges: THREE.Object3D[] | null;
 }
 
 /** The segmented shell a mesh is printed ON: the NEAREST ancestor below the
- *  root that owns `<its name>_Seg<n>` wedge NODES, with those wedges' framed
- *  meshes. The walk is required — a decal nested two levels down is printed on
- *  the band it sits on, not on the anchor above it. Wedge NODES are returned,
- *  not meshes, and the adoption pass takes every piece framed under one. */
+ *  root that owns `<its name>_Seg<n>` wedge NODES, plus those wedge nodes. The
+ *  adoption pass takes every piece framed under one. */
 function segmentedHostOf(
   mesh: THREE.Object3D,
   root: THREE.Object3D,
@@ -503,8 +456,7 @@ function segmentedHostOf(
 }
 
 /**
- * Every adoption the model asks for, authored and derived, as ONE list — the
- * input to the adoption pass and to the per-ISLAND measurement it needs.
+ * Every adoption the model asks for, authored and derived, as ONE list.
  * AUTHORED JOBS MUST COME FIRST: a derived job rewrites its features' frames,
  * and an authored job's host pool may contain those same meshes.
  */
@@ -520,10 +472,8 @@ function adoptJobs(
       .map((n) => root.getObjectByName(n))
       .filter((o): o is THREE.Object3D => o != null);
     if (objs.length === 0) continue;
-    // A SEGMENTED shell hosts on its own `_SegN` wedges — the decal walk's
-    // rule. An open pool over the whole subtree lets a nearest-meridian search
-    // snap a feature onto a nested sub-assembly in a different rank layer, so
-    // the pool stays open only for an UNSEGMENTED shell.
+    // A SEGMENTED shell hosts on its own `_SegN` wedges; the pool stays open
+    // over the whole subtree only for an UNSEGMENTED shell.
     const segs: THREE.Object3D[] = [];
     shell.traverse((o) => {
       if (isSegWedge(o.name) && o.name.startsWith(`${shell.name}_Seg`))
@@ -536,8 +486,7 @@ function adoptJobs(
     });
   }
   // Printed markings: same adoption, host MEASURED off the segmentation rather
-  // than named. A decal with no segmented ancestor keeps its own derived frame,
-  // which is how a lone decal or an accessory pass stays framed at all.
+  // than named. A decal with no segmented ancestor keeps its own derived frame.
   const byHost = new Map<
     THREE.Object3D,
     { wedges: THREE.Object3D[]; features: THREE.Object3D[] }
@@ -545,8 +494,8 @@ function adoptJobs(
   root.traverse((o) => {
     if (!(o instanceof THREE.Mesh) || classOf(o, root) !== PART_CLASS.decal)
       return;
-    // The adopting FEATURE is the decal's unit node — it adopts once, exactly
-    // as it is framed once.
+    // The adopting FEATURE is the decal's unit node: it adopts once, as it is
+    // framed once.
     const feature = unitOf.get(o)?.node ?? o;
     const found = segmentedHostOf(feature, root);
     if (!found) return;
@@ -563,17 +512,12 @@ function adoptJobs(
 }
 
 // ── The shrink-wrap binding ──────────────────────────────────────────────────
-// A decal must follow its host's RENDERED, FACETED surface, not the ideal
-// deformation curve: the op field at a facet-interior point is the smooth
-// curve, the host renders the chord across the facet, and that L²/8R gap is the
-// "text consumed by the part" artifact. So each decal vertex is BOUND to a host
-// triangle, and the shader evaluates the deform at the three CORNERS and
-// rebuilds the vertex from them.
-//
-// The binding is measured in the DECAL's local space, which works because the
-// model has no node transforms below a part, so a host triangle and its decal
-// share one frame. An export that moved a decal relative to its host would need
-// this pass and the shader to agree on which space the corners live in.
+// Each decal vertex is BOUND to a host triangle so it follows the host's
+// RENDERED, FACETED surface rather than the smooth op field; the shader
+// evaluates the deform at the three CORNERS and rebuilds the vertex from them.
+// Bindings are measured in the DECAL's local space, valid only because the
+// model has no node transforms below a part — a host triangle and its decal
+// share one frame.
 
 /** The closest point on a triangle, its plane-projection barycentrics and the
  *  signed height, for one decal vertex. */
@@ -584,15 +528,15 @@ interface Binding {
   u: number;
   v: number;
   h: number;
-  /** Distance to the CLAMPED closest point — how the winning triangle is chosen. */
+  /** Distance to the CLAMPED closest point — how the winning triangle is
+   *  chosen. */
   dist: number;
 }
 
 /** Barycentric weights of `p`'s projection onto the triangle's plane, plus its
- *  signed height above it. Deliberately UNCLAMPED: for a vertex overhanging a
- *  facet edge the weights fall outside [0, 1], and that affine extension is
- *  what makes the recomposition exact where a clamped foot point would move
- *  the vertex. */
+ *  signed height above it. Deliberately UNCLAMPED: a vertex overhanging a facet
+ *  edge gets weights outside [0, 1], and that affine extension is what keeps
+ *  the recomposition exact. */
 function bindTo(
   p: THREE.Vector3,
   p0: THREE.Vector3,
@@ -618,12 +562,12 @@ function bindTo(
 }
 
 /**
- * Bind every DECAL vertex to the closest triangle of its adopted host, and write
- * the `_wrap*` attributes. Runs after adoption (it rides the host mapping that
- * pass already resolved) and before the attributes are written.
+ * Bind every DECAL vertex to the closest triangle of its adopted host and write
+ * the `_wrap*` attributes. Must run after adoption (it rides that pass's host
+ * mapping) and before the frame attributes are written.
  */
 function bindDecals(pieces: Piece[]): void {
-  // Host unit → its triangles, resolved once per host (several decals share one).
+  // Host unit → its triangles, resolved once per host.
   const cache = new Map<
     Piece,
     {
@@ -689,8 +633,8 @@ function bindDecals(pieces: Piece[]): void {
         p.fromBufferAttribute(pos, vi);
         let best: Binding | null = null;
         for (const t of tris) {
-          // Cheap admissibility bound: a triangle cannot be closer than the gap
-          // to its bounding sphere, so most are rejected without the exact test.
+          // Admissibility bound: a triangle cannot be closer than the gap to
+          // its bounding sphere.
           if (best && p.distanceTo(t.c) - t.r > best.dist) continue;
           tri.set(t.p0, t.p1, t.p2);
           tri.closestPointToPoint(p, foot);
@@ -718,19 +662,17 @@ function bindDecals(pieces: Piece[]): void {
     mesh.geometry.setAttribute("_wrapA", new THREE.BufferAttribute(a, 4));
     mesh.geometry.setAttribute("_wrapB", new THREE.BufferAttribute(b, 4));
     mesh.geometry.setAttribute("_wrapC", new THREE.BufferAttribute(c, 4));
-    // Dead lanes: dropping them keeps the BOUND attribute count off the WebGPU
-    // 8-vertex-buffer ceiling the three `_wrap*` buffers bring it up to.
+    // Drop dead lanes: the three `_wrap*` buffers would otherwise push the
+    // bound attribute count past the WebGPU 8-vertex-buffer ceiling.
     for (const dead of ["uv", "uv1", "_bloomtheta0", "_bloomr", "_bloomgroup"])
       if (mesh.geometry.getAttribute(dead)) mesh.geometry.deleteAttribute(dead);
   }
 }
 
 /**
- * Give every mesh under `root` a BufferGeometry of its own. This pass writes
- * per-piece results as attributes ON THE GEOMETRY, and GLTFLoader hands
- * instanced nodes the SAME BufferGeometry, so sharing would let each instance's
- * `_op*` write clobber the last. Runs before ANY measurement, so nothing
- * downstream has to know about instancing.
+ * Give every mesh under `root` a BufferGeometry of its own: GLTFLoader hands
+ * instanced nodes the SAME geometry, and each instance's `_op*` write would
+ * clobber the last. Must run before ANY measurement.
  */
 function unshareGeometries(root: THREE.Object3D): void {
   const seen = new Set<THREE.BufferGeometry>();
@@ -752,8 +694,7 @@ export function deriveFrames(
   overrides?: {
     tierOrder?: Record<string, number>;
     /** Root-space Y of the rear/front split plane, replacing the derived
-     *  `Chassis_Fixed` bounds midpoint — so an anchor strategy can be A/B'd from
-     *  the caller instead of by editing this file. */
+     *  `Chassis_Fixed` bounds midpoint. */
     anchorY?: number;
   },
 ): DerivedFrames {
@@ -762,7 +703,7 @@ export function deriveFrames(
   root.updateWorldMatrix(true, true);
   const rootInv = new THREE.Matrix4().copy(root.matrixWorld).invert();
 
-  // 1. measure every UNIT (its own local space), plus its root-space axial
+  // 1. measure every UNIT in its own local space, plus its root-space axial
   //    centroid for the ladder. ONE frame per authored node, except a
   //    SHELL_ADOPT feature, which is split into islands.
   const { units, unitOf } = unitsOf(root);
@@ -773,11 +714,9 @@ export function deriveFrames(
   const toRoot = new THREE.Matrix4();
   const p = new THREE.Vector3();
   for (const unit of units) {
-    // Accessories NEVER join this pass — scene.ts gives each its own. They load
-    // in the BACKGROUND, so without this skip the rank normalization span
-    // depends on a race: an accessory's larger radii rescale EVERY body rank
-    // and the calibrated rank bands select a different cast per load. The
-    // `!== root` guard keeps the scoped accessory pass itself framing.
+    // Accessories NEVER join this pass — scene.ts gives each its own, so their
+    // radii cannot rescale the model's rank normalization. The `!== root` guard
+    // keeps that scoped accessory pass itself framing.
     if (unit.node !== root && classOf(unit.node, root) === PART_CLASS.accessory)
       continue;
     const perIsland = featureRoots.some((f) => isUnder(unit.node, f));
@@ -797,12 +736,12 @@ export function deriveFrames(
         axi: local.axi,
         yMin: local.yMin,
         yMax: local.yMax,
+        depth: local.depth,
         axialRoot: p.y,
         group,
         cls,
         rank: 0,
         phase: 0,
-        layerN: 1,
         rung: 0,
       } satisfies Piece;
     });
@@ -818,8 +757,7 @@ export function deriveFrames(
 
   // 2. feature adoption — a bolted feature or a printed marking takes its host
   //    shell's R (hence its rank and layer), snaps t0 to the nearest host
-  //    sector centre, and inherits that WEDGE's span/yExt/axi so it normalizes
-  //    over the wedge's extent rather than its own (see the header).
+  //    sector centre, and inherits that WEDGE's span/yExt/axi.
   for (const { shell, features: featureObjs, wedges } of adoptions) {
     const hostGroup = groupOf(shell, root) || shell.name;
     const hostPieces = pieces.filter((pc) =>
@@ -841,34 +779,29 @@ export function deriveFrames(
             best = hp;
           }
         }
-        // The snapped host UNIT's frame, copied EXACTLY — R included. Anything
-        // approximate puts the adopter in a different rank bucket and gate
-        // slot, and it drifts off the wedge it is printed on. Every lane below
-        // ends byte-identical to the host's, `cls` and `adopted` excepted.
-        //
-        // THAT IDENTITY IS THE WHOLE MECHANISM: do not reintroduce a
-        // special-case chart for any adopter without first checking that its
-        // lanes really are identical to its host's.
+        // The snapped host UNIT's frame, copied EXACTLY — R included. Every
+        // lane below must end byte-identical to the host's, `cls` and
+        // `adopted` excepted, or the adopter lands in a different rank bucket.
         pc.t0 = best.t0;
         pc.R = best.R;
         pc.span = best.span;
         pc.axi = best.axi;
         pc.yMin = best.yMin;
         pc.yMax = best.yMax;
+        pc.depth = best.depth;
         pc.hostGroup = hostGroup;
         pc.adoptFrom = best;
       }
     }
   }
 
-  // 2b. SHRINK-WRAP: bind every decal vertex to a host triangle, so it rides the
-  //     faceted surface its host actually draws rather than the smooth field.
+  // 2b. SHRINK-WRAP: bind every decal vertex to a host triangle, so it rides
+  //     the faceted surface its host draws rather than the smooth field.
   bindDecals(pieces);
 
-  // 3. rank + layer phase. The rank law: 0.01mm radius buckets, normalized
-  //    across the model's radius SPAN by VALUE — the sorted ORDER would space
-  //    shells equally and interleave them mid-flight. Phase orders each layer's
-  //    own pieces by meridian.
+  // 3. rank + layer phase. Rank: 0.01mm radius buckets, normalized across the
+  //    model's radius SPAN by VALUE, not sorted order. Phase orders each
+  //    layer's own pieces by meridian.
   const rKeyOf = (pc: Piece): number => rankKeyOf(pc.R);
   const keys = [...new Set(pieces.map(rKeyOf))].sort((a, b) => a - b);
   const lo = keys[0];
@@ -893,14 +826,9 @@ export function deriveFrames(
     list.forEach((pc, i) => (pc.phase = i / list.length));
     layerCount.set(key, list.length);
   }
-  // An adopted feature takes the phase of the wedge it snapped to — it must fly
-  // on that wedge's timeline, which is the whole point of adopting its frame.
+  // An adopted feature takes the phase of the wedge it snapped to, so it flies
+  // on that wedge's timeline.
   for (const pc of pieces) if (pc.adoptFrom) pc.phase = pc.adoptFrom.phase;
-  // Layer POPULATION: how many pieces share this piece's rank layer, an adopted
-  // feature reading its HOST wedge's. Informational only. The `?? 1` is
-  // defensive — every non-adopted piece is in `layers` by construction.
-  for (const pc of pieces)
-    pc.layerN = layerCount.get(rankKeyOf((pc.adoptFrom ?? pc).R)) ?? 1;
 
   // 4. the derived ladder. Rear/front split against the anchor's axial centre,
   //    each side ordered outward, uniform steps landing the outermost group
@@ -942,8 +870,7 @@ export function deriveFrames(
     g.axial += pc.axialRoot * w;
     g.weight += w;
     // Off the ladder: adopted hardware (rides its host), the anchor itself
-    // (rung 0 by definition), printed markings and removable accessories (they
-    // ride whatever they are parented to, or stay home).
+    // (rung 0 by definition), printed markings and removable accessories.
     if (
       !pc.adoptFrom &&
       pc.group !== ANCHOR_PART &&
@@ -986,13 +913,12 @@ export function deriveFrames(
       ladderRungs.get(pc.hostGroup ?? pc.group) ??
       0;
 
-  // 5. write the attributes — one constant per piece, per vertex. Attributes
-  //    live on the GEOMETRY, so this is only well-defined because
-  //    `unshareGeometries` above gave every mesh its own.
+  // 5. write the attributes — one constant per piece, per vertex, onto the
+  //    per-mesh geometries `unshareGeometries` created above.
   for (const [mesh, mine] of byMesh) {
     const n = mesh.geometry.getAttribute("position").count;
     // Packed lanes, see FRAME_ATTRS: A = (t0, R, span, rank),
-    // B = (phase, class, rung, axi), Y = (yMin, yMax, layerN, adopted).
+    // B = (phase, class, rung, flags), Y = (yMin, yMax, depth, wink).
     const a = new Float32Array(n * 4);
     const b = new Float32Array(n * 4);
     const y = new Float32Array(n * 4);
@@ -1008,11 +934,11 @@ export function deriveFrames(
         b[i * 4] = pc.phase;
         b[i * 4 + 1] = pc.cls;
         b[i * 4 + 2] = pc.rung;
-        b[i * 4 + 3] = pc.axi ? 1 : 0;
+        b[i * 4 + 3] = packFlags(pc.axi ? 1 : 0, pc.adoptFrom ? 1 : 0);
         y[i * 4] = pc.yMin;
         y[i * 4 + 1] = pc.yMax;
-        y[i * 4 + 2] = pc.layerN;
-        y[i * 4 + 3] = pc.adoptFrom ? 1 : 0;
+        y[i * 4 + 2] = pc.depth;
+        y[i * 4 + 3] = WINK_NONE;
       }
     }
     const set = (name: string, data: Float32Array, itemSize: number): void => {

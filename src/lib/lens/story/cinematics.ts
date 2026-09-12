@@ -1,21 +1,21 @@
 import * as THREE from "three/webgpu";
 import { smoothstep } from "../core/math";
-import { displaceSeatedPoint } from "../ops/cpu";
+import { seatedPointDisplacer } from "../ops/cpu";
 import { isGlassElement } from "../core/parts";
 
 // Cinematic extras layered over the mechanism rig: refraction rays and ambient
 // dust. Presentation only — nothing here moves a mechanism part, and the only
-// `.visible` flags it writes belong to nodes it builds itself. The story's
-// ending carries no accessory; the caps stay a `/lens`-only accessory group.
+// `.visible` flags it writes belong to nodes it builds itself.
+
+/** Front (+X) first — the rays thread the DISPLACED column in that order. */
+const byXDesc = (a: THREE.Vector3, b: THREE.Vector3) => b.x - a.x;
 
 export interface LensCinematics {
   /** Drive the extras for one frame from the eased mechanism value. */
   update(explodeT: number, nowMs: number): void;
-  /** Re-tint the presentation extras (dust motes, refraction rays) for the site
-   *  theme — the dark-stage cream dust vanishes on a light stage and vice versa. */
+  /** Re-tint the extras (dust motes, refraction rays) for the site theme. */
   setTheme(light: boolean): void;
-  /** Show/hide the ambient dust motes, on by default. Dispose-safe — it writes
-   *  only the `.visible` flag of a node this module owns outright. */
+  /** Show/hide the ambient dust motes, on by default. */
   setDust(visible: boolean): void;
   dispose(): void;
 }
@@ -39,16 +39,16 @@ export function createCinematics(
 
   // Refraction rays: 3 warm lines tracing the light path through the glass,
   // fading in only when the lens is fully exploded. Each element's SEATED bbox
-  // centre, resolved ONCE into its own local frame so the per-frame walk is a
-  // displacement plus a matrix rather than a Box3 sweep. It must be the bbox
-  // centre: an element's node origin sits at its parent's (geometry is baked in
-  // place), so getWorldPosition would thread the GROUP empties instead.
+  // centre, resolved once into its own local frame. It must be the bbox centre —
+  // an element's node origin sits at its parent's, so getWorldPosition would
+  // thread the GROUP empties instead.
   const raySeated = glassElements.map((m) => {
     const c = new THREE.Box3().setFromObject(m).getCenter(new THREE.Vector3());
     return m.worldToLocal(c); // the same matrix both ways ⇒ exact, pose or not
   });
-  // Hoisted so a deep-explode frame allocates nothing. Fully overwritten each
-  // frame before it is sorted, so the previous sort order never leaks in.
+  // Each element's seated centre moved through the op field (ops/cpu.ts), one
+  // displacer per element; both hoisted so a deep-explode frame allocates nothing.
+  const rayDisplacers = glassElements.map((m) => seatedPointDisplacer(m));
   const rayPts = glassElements.map(() => new THREE.Vector3());
 
   const rays: THREE.Line[] = [];
@@ -114,45 +114,46 @@ export function createCinematics(
   }
 
   function update(explodeT: number, nowMs: number): void {
-    // refraction rays — thread the optical axis through the world-space glass.
-    // The explode deform runs IN-SHADER, so the seated centre above is where the
-    // element USED to be: displace it through the same op field the render runs
-    // (ops/cpu.ts, mesh-local like the shader's `positionLocal`), then take it
-    // to world through the element's own live matrix, which carries the
-    // mechanism's object motion exactly once.
+    // Refraction rays — thread the optical axis through the world-space glass.
+    // The explode deform runs IN-SHADER, so the seated centre is displaced
+    // through the same op field (ops/cpu.ts, mesh-local) and then taken to world
+    // through the element's own live matrix.
     const rayOp = smoothstep(0.62, 0.96, explodeT);
     if (rayOp > 0.001 && glassElements.length) {
       for (let i = 0; i < glassElements.length; i++) {
         const m = glassElements[i];
         m.updateWorldMatrix(false, false); // this frame's mechanism pose, as Box3 took it
-        m.localToWorld(displaceSeatedPoint(m, rayPts[i].copy(raySeated[i])));
+        m.localToWorld(rayDisplacers[i].displace(rayPts[i].copy(raySeated[i])));
       }
       const pts = rayPts;
-      pts.sort((a, b) => b.x - a.x); // front (+X) → rear, on the DISPLACED column
-      const frontX = pts[0].x;
-      const rearX = pts[pts.length - 1].x;
+      pts.sort(byXDesc);
       const n = pts.length;
-      rays.forEach((ray, ri) => {
+      const frontX = pts[0].x;
+      const rearX = pts[n - 1].x;
+      for (let ri = 0; ri < rays.length; ri++) {
+        const ray = rays[ri];
         const off = (ri - 1) * 0.5; // radial offset per ray, in Y
         const arr = ray.geometry.attributes.position.array as Float32Array;
-        let k = 0;
-        const put = (x: number, y: number, z: number) => {
-          arr[k++] = x;
-          arr[k++] = y;
-          arr[k++] = z;
-        };
         // straight-ish converging rays down the optical axis (X); ignore each
         // element's tilt wobble so the beam stays a clean bundle, not a zigzag
-        put(frontX + 0.6, off, 0);
-        pts.forEach((pt, i) =>
-          put(pt.x, off * (1 - 0.85 * ((i + 1) / (n + 1))), 0),
-        );
-        put(rearX - 0.6, off * 0.12, 0);
+        arr[0] = frontX + 0.6;
+        arr[1] = off;
+        arr[2] = 0;
+        for (let i = 0; i < n; i++) {
+          const k = (i + 1) * 3;
+          arr[k] = pts[i].x;
+          arr[k + 1] = off * (1 - 0.85 * ((i + 1) / (n + 1)));
+          arr[k + 2] = 0;
+        }
+        const k = (n + 1) * 3;
+        arr[k] = rearX - 0.6;
+        arr[k + 1] = off * 0.12;
+        arr[k + 2] = 0;
         ray.geometry.attributes.position.needsUpdate = true;
         (ray.material as THREE.LineBasicNodeMaterial).opacity =
           rayOp * (ri === 1 ? 0.95 : 0.55);
         ray.visible = true;
-      });
+      }
     } else {
       for (const ray of rays) ray.visible = false;
     }

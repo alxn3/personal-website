@@ -5,8 +5,9 @@
 // gate. host.ts stays the reference; this file is how that reference is written
 // down in WGSL/GLSL rather than built as nodes.
 //
-// The `js` dialect exists for the equivalence gate: it executes, so an emit can
-// be checked against NUM over the goldens' own grid.
+// The `js` dialect is the CPU evaluator (deform.js.ts, run by ops/cpu.ts) and
+// the equivalence gate: it executes, so an emit is checked against NUM over the
+// goldens' own grid. Its ops route to `__`, the NUM backend the host binds.
 
 import { gate } from "../gate";
 import { makeRecipes } from "../recipes";
@@ -19,13 +20,13 @@ import {
 } from "../ops";
 import { srcAlgebra, litOf, type Dialect } from "./algebra-src";
 import { LAYOUT } from "./layout";
+import { WRAP_DIR } from "../house";
 
 /** Mirrors ops/host.ts — kept here as literals rather than imported, because
  *  host.ts pulls in three and the emit step must not. `emit.test.ts` pins both
  *  against host.ts's source so they cannot drift. */
 export const IDLE_EPS = 1e-6;
 const HOUSE_FROM = -1;
-const WRAP_DIR = -1;
 const TAU = 6.283185307179586;
 
 /** How each dialect spells the things the algebra does not cover: the input
@@ -68,14 +69,17 @@ const SHAPES: Record<Dialect, Shape> = {
     branch: (c) => `if ( ${c} ) {`,
     ret: (x, y, z, w) => `return vec4( ${x}, ${y}, ${z}, ${w} );`,
   },
+  // Reads `.xyzw` like the shaders, so a three Vector3/Vector4 is an input as
+  // it stands; writes into an out-param, so a frame allocates nothing.
   js: {
-    comp: (v, i) => `${v}[${i}]`,
-    lane: (q, l) => `k[${q}][${l}]`,
-    header: () => `(function opsFold( __, p, a, b, y, ch, k ) {`,
+    comp: (v, i) => `${v}.${XYZW[i]}`,
+    lane: (q, l) => `k[${q}].${XYZW[l]}`,
+    header: () => `(function opsFold( p, a, b, y, ch, k, out ) {`,
     accum: (n) => `let ${n} = 0;`,
     addTo: (n, e) => `${n} = ${n} + ${e};`,
     branch: (c) => `if ( ${c} ) {`,
-    ret: (x, y, z, w) => `return [ ${x}, ${y}, ${z}, ${w} ];`,
+    ret: (x, y, z, w) =>
+      `out[0] = ${x};\n  out[1] = ${y};\n  out[2] = ${z};\n  out[3] = ${w};\n  return out;`,
   },
 };
 
@@ -96,11 +100,14 @@ export function emitDeform(dialect: Dialect): string {
   const layerPhase = S.comp("b", 0);
   const partClass = S.comp("b", 1);
   const rung = S.comp("b", 2);
-  const axi = S.comp("b", 3);
   const yMin = S.comp("y", 0);
   const yMax = S.comp("y", 1);
-  const layerN = S.comp("y", 2);
-  const adopted = S.comp("y", 3);
+  const depth = S.comp("y", 2);
+  // ops/frames.ts packFlags: `b.w` = axi + 2·adopted; `y.w` is the wink lane,
+  // which only the materials read.
+  const flags = S.comp("b", 3);
+  const adopted = A.floor(A.mul(flags, 0.5));
+  const axi = A.sub(flags, A.mul(adopted, 2));
 
   const halfSpan = A.mul(S.comp("a", 2), 0.5);
   const yMid = A.mul(A.add(yMin, yMax), 0.5);
@@ -167,7 +174,7 @@ export function emitDeform(dialect: Dialect): string {
       off,
       rung,
       axi,
-      layerN,
+      depth,
       adopted,
       channel,
       gateAt,
@@ -184,13 +191,12 @@ export function emitDeform(dialect: Dialect): string {
     const items = recipe.build(ctx, knobs);
     validatePipeline(items, name);
     const res = runPipeline(items, seated, frame0, ctx);
-    // THE HARD IDLE GATE (host.ts law 3), and the delta form measured against
-    // the authored point itself (law 2).
-    const on = B.step(IDLE_EPS, channel);
-    const dx = B.mul(B.sub(res.v.x, px), on);
-    const dy = B.mul(B.sub(res.v.axial, py), on);
-    const dz = B.mul(B.sub(res.v.z, pz), on);
-    const dr = B.mul(res.v.rot, on);
+    // The delta form, measured against the authored point itself (law 2). The
+    // branch below IS the hard idle gate (law 3): a skipped recipe adds nothing.
+    const dx = B.sub(res.v.x, px);
+    const dy = B.sub(res.v.axial, py);
+    const dz = B.sub(res.v.z, pz);
+    const dr = res.v.rot;
 
     out.push("");
     out.push(`  ${S.branch(`${channel} >= ${lit(IDLE_EPS)}`)}`);

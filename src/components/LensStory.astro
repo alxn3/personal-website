@@ -328,8 +328,9 @@ const heroBand = bandOf("hero");
   }
   /* the mobile split: each half-window keeps the same total --cap-fade of
      travel, so the hand-over still finishes inside the shared pad — it just
-     runs out-then-in instead of both at once. */
-  @media (max-width: 760px) {
+     runs out-then-in instead of both at once. Same query as the one-slot
+     layout in LensSceneContent.astro (park off: aspect ≤ 4/5). */
+  @media (max-width: 760px), (max-aspect-ratio: 4/5) {
     :global(#lens-track .cap-band) {
       animation-range: cover calc(100% - 100svh - var(--cap-fade)) cover
         calc(100% - 100svh - var(--cap-fade) / 2);
@@ -512,8 +513,8 @@ const heroBand = bandOf("hero");
   }
 
   /* ---- mobile / portrait: hero type + chrome (content-block placement is
-         handled inside LensSceneContent.astro) ---- */
-  @media (max-width: 760px) {
+         handled inside LensSceneContent.astro, same query) ---- */
+  @media (max-width: 760px), (max-aspect-ratio: 4/5) {
     .hero-title {
       font-size: clamp(40px, 11vw, 64px);
     }

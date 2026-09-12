@@ -3,18 +3,11 @@ import { attribute, uniform, varying, vec4 } from "three/tsl";
 import { opsLocalPosition } from "../ops/host";
 import { FRAME_ATTRS } from "../ops/frames";
 
-// DEV ONLY — dynamically imported, so none of it reaches a visitor's bundle.
-// Reads back where the REAL deformation shader puts a chosen set of vertices.
-//
-// The design rule: this module contains NO deformation math. It runs
-// `opsLocalPosition()` — the node graph ops/host.ts hands the model's materials
-// — on a throwaway mesh whose vertices are laid out one per PIXEL of a float
-// render target, then reads the pixels back. Nothing to drift from.
-//
-// Layout: one COLUMN per sample point, one ROW per timestep. Callers set the
-// uniforms for a step, call renderRow(k), and read every row back in ONE
-// transfer. The step index is written into ALPHA so readback is independent of
-// the backend's row order — the row a pixel came from is in the pixel.
+// Dev only — dynamically imported. Reads back where the deform shader puts a
+// chosen set of vertices: no math of its own — it runs `opsLocalPosition()` on
+// a throwaway mesh laid out one vertex per pixel of a float render target (one
+// column per sample, one row per timestep; the step index is written to alpha
+// so readback is independent of row order) and reads the pixels back.
 
 /** One probe point: a real vertex of a real frame-carrying mesh. */
 export interface ProbeSample {
@@ -41,15 +34,15 @@ export interface PositionProbe {
   renderRow(row: number): void;
   end(): void;
   /** Read `rowCount` rows back. Returns `[row][sample] → vec3` in each sample's
-   *  own MESH-LOCAL space, indexed by the row written into alpha (so a
-   *  backend row flip cannot silently transpose the result). */
+   *  own mesh-local space, indexed by the row written into alpha, so a backend
+   *  row flip cannot transpose the result. */
   read(rowCount: number): Promise<Float32Array>;
   dispose(): void;
 }
 
 // Two triangles per sample, covering exactly one pixel of the target. Points
-// would be a vertex cheaper but point SIZE is a backend-dependent mess (WGSL
-// has no gl_PointSize); a quad is portable and this geometry is tiny anyway.
+// would be cheaper but point size is backend-dependent (WGSL has no
+// gl_PointSize); a quad is portable.
 const CORNERS = [
   [0, 0],
   [1, 0],
@@ -62,12 +55,11 @@ const CORNERS = [
 /**
  * Build a probe over `samples`, able to hold `rows` timesteps. The geometry
  * copies each sample's seated `position` plus every `_op*` frame attribute the
- * graph reads, taken from ops/frames.ts's FRAME_ATTRS so a re-packed or new
- * attribute cannot fall out of the probe.
+ * graph reads, taken from ops/frames.ts's FRAME_ATTRS.
  *
- * A sample whose mesh is MISSING a frame attribute throws: uploading zeros
+ * A sample whose mesh is missing a frame attribute throws: uploading zeros
  * would put `R = 0` — a divisor all over the op algebra — into the graph and
- * hand back plausible-looking garbage rather than an obvious failure.
+ * hand back plausible-looking garbage.
  */
 export function createPositionProbe(
   renderer: THREE.WebGPURenderer,
@@ -132,10 +124,9 @@ export function createPositionProbe(
     geometry.setAttribute(name, new THREE.BufferAttribute(extra[name], size));
   }
 
-  // Target WIDTH padded to a multiple of 16 texels: WebGPU requires a
+  // Target width padded to a multiple of 16 texels: WebGPU requires a
   // texture→buffer copy's bytesPerRow to be a multiple of 256 and three hands
-  // the readback back with that padding still in it, so an unpadded width would
-  // shear every row. 16 × rgba32float = 256 bytes exactly.
+  // the readback back with that padding in it. 16 × rgba32float = 256 bytes.
   const texW = Math.ceil(count / 16) * 16;
 
   const uRow = uniform(0);
@@ -154,10 +145,9 @@ export function createPositionProbe(
   // vertexNode replaces the whole model-view-projection chain: this mesh is a
   // pixel layout, not something in the scene.
   material.vertexNode = vec4(ndcX, ndcY, 0, 1);
-  // varying() forces the deformation to run in the VERTEX stage, exactly where
-  // the real material runs it; alpha carries the row (offset by 1, so the
-  // cleared value 0 reads as "never written") and makes readback self-
-  // describing — no assumption about which way up the backend hands rows back.
+  // varying() forces the deformation to run in the vertex stage, where the real
+  // material runs it; alpha carries the row (offset by 1, so the cleared value 0
+  // reads as "never written") and makes readback self-describing.
   material.fragmentNode = vec4(varying(opsLocalPosition()) as any, row.add(1));
 
   const mesh = new THREE.Mesh(geometry, material);
@@ -185,10 +175,9 @@ export function createPositionProbe(
     rows,
     seated,
     async compile() {
-      // The target MUST be bound while compiling: compileAsync builds the
-      // pipeline for the currently bound colour format, and a pipeline built
-      // for the canvas is not the one a float target needs — the mismatch is
-      // compiled lazily at draw time and the first rows come back empty.
+      // The target must be bound while compiling: compileAsync builds the
+      // pipeline for the currently bound colour format, and a canvas pipeline
+      // is not the one a float target needs — the first rows come back empty.
       const prev = renderer.getRenderTarget();
       renderer.setRenderTarget(target);
       await renderer.compileAsync(probeScene, probeCamera);
@@ -199,8 +188,8 @@ export function createPositionProbe(
       prevAutoClear = renderer.autoClear;
       renderer.setRenderTarget(target);
       renderer.autoClear = false;
-      // Clear once so anything the batch does NOT write reads as alpha 0, i.e.
-      // "no row here" — see read().
+      // Clear once so anything the batch does not write reads as alpha 0 —
+      // "no row here".
       renderer.clear();
     },
     renderRow(r) {
@@ -212,9 +201,9 @@ export function createPositionProbe(
       renderer.autoClear = prevAutoClear;
     },
     async read(rowCount) {
-      // Always transfer the FULL target: a partial read would depend on which
+      // Always transfer the full target: a partial read would depend on which
       // end of the texture the backend calls row 0. Alpha then says which
-      // timestep each pixel belongs to, and unwritten pixels (alpha 0) drop out.
+      // timestep each pixel belongs to, and unwritten pixels drop out.
       const raw = (await renderer.readRenderTargetPixelsAsync(
         target,
         0,
@@ -235,9 +224,8 @@ export function createPositionProbe(
         out[o + 1] = raw[i * 4 + 1];
         out[o + 2] = raw[i * 4 + 2];
       }
-      // A row that never arrived would read as the origin and quietly poison
-      // every derived number (a 0,0,0 "position" looks like a huge move and a
-      // huge stretch). Refuse to hand back a partial result.
+      // A row that never arrived would read as the origin and poison every
+      // derived number, so refuse to hand back a partial result.
       const missing = [...written].flatMap((w, r) => (w ? [] : [r]));
       if (missing.length) {
         throw new Error(

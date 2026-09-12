@@ -1,69 +1,18 @@
-// pieceStateAt(p, key) — where every piece of the lens is at one scroll
-// position, as plain JSON. The third instrument of the family: story/state.ts
-// answers "what is the story DOING at p", story/cost.ts "what does the frame at
-// p COST", this one "where is each PIECE, and how is it moving".
-//
-// IDENTITY. A piece is a DERIVED FRAME — the lane tuple ops/frames.ts packs
-// into the `_op*` attributes at load, which is the roster the deform host
-// itself uses. `buildPieceTable` reads those back off a framed scene and cuts a
-// mesh into ONE PIECE PER DISTINCT LANE TUPLE; identical lanes deform
-// identically, so merging two of them loses no measurement.
-//
-// STATE SPACE: BORE-CYLINDRICAL — (theta, radius, axial) about the optical
-// axis, the algebra's OWN space, in which a world-space curve is a line or a
-// ramp. Plus five shape scalars off the probe set: `roll`, the complementary
-// pair `bend` / `curl`, and `stretch` / `stretchAxial`. Every one is a DELTA
-// from the piece's own seat, so "at rest" is exactly zero, not approximately
-// (see `restOf`). The frame is the MESH's OWN local space — the bore's for
-// every node but the iris gear and blades, which are seated off the axis, so
-// this mirrors the render but reports their `radius` from their own origin.
-//
-// EVALUATION: THE REAL PIPELINE, UNDER NUM — every number comes out of
-// ops/cpu.ts's `pieceField` on the backend the recipe goldens are pinned on. No
-// browser, no shader, no second model of the deform. The recipe set is the one
-// the hero bakes (story/cost.ts `DEFORM_RECIPES`), driven at
-// `storyStateAt(p).channels` and each recipe's `knobDefaults`.
-//
-// THE PROBES. Seven points: the frame ORIGIN and one ARC at each end of the
-// piece's axial extent. TWO AXIAL LEVELS are what make "end to end" measurable
-// — on one median plane every probe shares a `yN` and a piece bent along the
-// bore reads rigid. THREE POINTS PER ARC give an END an ORIENTATION, so `bend`
-// is a genuine relative rotation rather than one chord's change of angle. The
-// pipeline's own rotational output is not carried here (ops/host.ts spends it
-// on the shading normal), so `roll` and `bend` come from probe geometry.
-//
-// WHAT IT DELIBERATELY DOES NOT REPORT:
-//
-//   · EVERY RESIDUAL story/state.ts DECLARES — the channels are the AUTHORED
-//     ones at p, so ease lag, phase clocks and mount latches all apply.
-//   · THE MECHANISM DRIVES: the iris rotation and the focus screw's spin are
-//     object-level transforms on their own clock, not deform terms.
-//   · THE MODEL'S OWN PLACEMENT — the dolly, the body rolls and the camera are
-//     story/state.ts's. This works in the gltf frame throughout (optical axis
-//     +Y, radial plane X–Z, MILLIMETRES), the frame the deform is written in.
-//   · AN AXISYMMETRIC PIECE'S `stretch`: its probes are a ring sample, which
-//     answers to rigid motion. See `ringFramed`.
-//   · A THIN PIECE'S AXIAL READINGS AT FACE VALUE — the ops normalize the axial
-//     coordinate per piece (`yN`), so an axial term really does spread a
-//     sub-millimetre shim a hundredfold. Read it next to the piece's extent.
-//   · THE DECAL SHRINK-WRAP: a decal vertex rides its host's rendered FACET, so
-//     the field probed here is the ideal curve rather than the chord.
-//   · VISIBILITY. A winked-out piece still has a pose and it is reported;
-//     story/cost.ts owns who is on screen.
-//
-// PURE. No fs, no DOM, no renderer: the roster arrives as a `PieceTable`, built
-// from a framed live scene (the DEV rider) or from the shipped GLB framed in
-// node (the test) — the SAME builder over the SAME `deriveFrames` output.
-//
-// LAZY — NEVER STATICALLY REACHABLE FROM THE HOMEPAGE, for story/state.ts's
-// reason and by importing it and story/cost.ts. Reached ONLY by
-// `await import("./flow")` from hero-driver's DEV block, or by a test in
-// node. It must NEVER be added to index.ts.
+// pieceStateAt(p, key): where every piece of the lens is at one scroll
+// position, as plain JSON — the third instrument beside state.ts and cost.ts.
+// A piece is a derived frame (one per distinct `_op*` lane tuple); numbers come
+// from ops/cpu.ts `pieceField` under NUM at `storyStateAt(p).channels`, in
+// bore-cylindrical gltf-frame mm, every scalar a delta from the seat. Not
+// reported: state.ts's residuals, mechanism drives, model placement,
+// visibility, an axisymmetric piece's `stretch` (`ringFramed`).
+// LAZY: reached only by `await import("./flow")` (DEV block or a test),
+// never added to index.ts.
 
 import type * as THREE from "three/webgpu";
 import { NUM } from "../ops/algebra";
 import {
   IDLE_EPS,
+  lanesAt,
   pieceField,
   type LiveRecipe,
   type PieceLanes,
@@ -96,10 +45,9 @@ const wrapPi = (x: number): number => x - TAU * Math.floor((x + Math.PI) / TAU);
 
 // ── THE ROSTER ──────────────────────────────────────────────────────────────
 
-/** The five families the rollups are cut by, plus the mechanism that is in none
- *  of them. These are core/visibility.ts's own wink bands under one name each,
- *  so "which cast" reads the same here as it does for who is on screen.
- *  `other` is what neither fade governs: the iris, focus train, mount, PCB. */
+/** The five families the rollups are cut by — core/visibility.ts's own wink
+ *  bands — plus `other`, what neither fade governs: iris, focus train, mount,
+ *  PCB. */
 export type PieceCast =
   "wedges" | "decals" | "extras" | "interior" | "elements" | "other";
 
@@ -141,50 +89,16 @@ export interface PieceTable {
   byKey: Map<string, PieceRow>;
 }
 
-/** The lane tuple of vertex `i`, as ops/frames.ts packed it. */
-function lanesAt(geo: THREE.BufferGeometry, i: number): PieceLanes | null {
-  const a = geo.getAttribute("_opA");
-  const b = geo.getAttribute("_opB");
-  const y = geo.getAttribute("_opY");
-  if (!a || !b || !y) return null;
-  return {
-    t0: a.getX(i),
-    R: a.getY(i),
-    // `_opA.z` is the piece's full angular SPAN; the ops read the half
-    halfSpan: a.getZ(i) * 0.5,
-    rank01: a.getW(i),
-    layerPhase: b.getX(i),
-    partClass: b.getY(i),
-    rung: b.getZ(i),
-    axi: b.getW(i),
-    yMin: y.getX(i),
-    yMax: y.getY(i),
-    layerN: y.getZ(i),
-    adopted: y.getW(i),
-  };
-}
-
-/** The whole tuple, in one string. Every lane the deform reads is in it, so
- *  two vertices with the same key are two the field cannot tell apart and "one
- *  piece per distinct key" is exactly "one piece per distinct deform". A key
- *  that was not the whole tuple would silently keep whichever came first. */
+/** The whole tuple, in one string: every lane the deform reads, so "one piece
+ *  per distinct key" is exactly "one piece per distinct deform". */
 const laneKey = (l: PieceLanes): string =>
-  `${l.t0},${l.R},${l.halfSpan},${l.rank01},${l.layerPhase},${l.partClass},${l.rung},${l.axi},${l.yMin},${l.yMax},${l.layerN},${l.adopted}`;
+  `${l.t0},${l.R},${l.halfSpan},${l.rank01},${l.layerPhase},${l.partClass},${l.rung},${l.axi},${l.yMin},${l.yMax},${l.depth},${l.adopted}`;
 
 /**
  * The roster, censused off a FRAMED scene graph — one `deriveFrames` has run
- * over, so every mesh carries the `_op*` attributes. A mesh with no frame is
- * skipped.
- *
- * SEVERAL PIECES PER MESH is normal: ops/frames.ts splits an adopted feature
- * mesh into ISLANDS so each screw snaps to its own wedge. Cutting on a new
- * tuple in vertex order gives one piece per DISTINCT LANE TUPLE — not one per
- * island, since adoption copies the host wedge's frame verbatim and two islands
- * on one wedge merge. Such a mesh just weighs once per frame, not per island.
- *
- * ACCESSORIES ARE NOT PIECES, and neither are the shading extras (a clone of
- * their host's geometry). Both are split off by ancestry — the rule
- * core/visibility.ts's sweep and story/cost.ts's census both use.
+ * over, so every mesh carries the `_op*` attributes; a mesh with no frame is
+ * skipped. Several pieces per mesh is normal, one per distinct lane tuple.
+ * Accessories and shading extras are not pieces, split off by ancestry.
  */
 export function buildPieceTable(root: THREE.Object3D): PieceTable {
   const pieces: PieceRow[] = [];
@@ -222,10 +136,9 @@ export function buildPieceTable(root: THREE.Object3D): PieceTable {
 // ── THE DEFORM AT p ─────────────────────────────────────────────────────────
 
 /**
- * The recipes the hero's baked graph is running at p, at the channels the story
- * writes and the knobs it never touches. An IDLE recipe is dropped by the
- * host's own hard gate value (ops/cpu.ts `IDLE_EPS`): below it a recipe
- * contributes EXACTLY zero, so skipping it is not an approximation.
+ * The recipes the hero's baked graph is running at p. An idle recipe is dropped
+ * by the host's own hard gate (ops/cpu.ts `IDLE_EPS`), below which it
+ * contributes exactly zero.
  */
 export function liveDeformAt(p: number): LiveRecipe[] {
   const channels = storyStateAt(p).channels;
@@ -236,10 +149,8 @@ export function liveDeformAt(p: number): LiveRecipe[] {
     live.push({
       recipe: RECIPES[name],
       channel,
-      // THE FOUR KNOBS THE STORY WRITES (story/envelopes.ts): the departure's
-      // scope, the ending's spread, its mid-fall curl and its parked ring
-      // phase, all constants. Everything else rests at the recipe's own
-      // defaults.
+      // the knobs the story writes (story/envelopes.ts); everything else rests
+      // at the recipe's own defaults
       knobs:
         name === "assemble"
           ? { ...RECIPES[name].knobDefaults, keepScope: ASSEMBLE_KEEP_SCOPE }
@@ -263,8 +174,8 @@ export function liveDeformAt(p: number): LiveRecipe[] {
 type V3 = [number, number, number];
 
 /** One axial end of a piece: three points of its seated median circle at one
- *  axial level. Three rather than two, because three carry an ORIENTATION: the
- *  chord a→b is the tangential direction, the plane they span the normal. */
+ *  axial level. Three carry an ORIENTATION — the chord a→b is the tangential
+ *  direction, the plane they span the normal. */
 interface Arc {
   a: V3;
   m: V3;
@@ -280,10 +191,8 @@ interface Probes {
 }
 
 /** The widest half-extent a probe is placed at. An axisymmetric piece has
- *  `span = 2π`, and ±π about its meridian is the SAME point, so the probes go
- *  at the quarter turns — the widest pair that stays distinct. That makes such
- *  a piece's arcs a RING SAMPLE, which is why `stretch` is not reported for
- *  one; see `ringFramed`. */
+ *  `span = 2π`, where ±π is the same point, so its probes go at the quarter
+ *  turns — a RING SAMPLE, hence no `stretch` for one (see `ringFramed`). */
 const PROBE_SPAN_CAP = Math.PI / 2;
 
 function probesOf(l: PieceLanes): Probes {
@@ -318,8 +227,7 @@ export interface PieceState {
   /** position ALONG the optical axis (the bore's own x), mm */
   axial: number;
   /** the three above, less the piece's seated values. `dTheta` is wrapped, so a
-   *  piece that has gone a full turn reads 0 — `roll` and the trajectory's own
-   *  continuity are where a revolution shows. */
+   *  piece that has gone a full turn reads 0. */
   dTheta: number;
   dRadius: number;
   dAxial: number;
@@ -327,32 +235,25 @@ export interface PieceState {
    *  what the outlier lists are ranked by */
   travel: number;
   /** THE PIECE TURNING IN PLACE about the bore: the angle its tangential
-   *  direction has swung out of tangential, in the local cylindrical frame AT
-   *  ITS DEFORMED POSITION. A rigid revolution carries that frame with it and
-   *  reads 0, so this is the motion that is not just "further round". */
+   *  direction has swung out of tangential, in the local cylindrical frame at
+   *  its DEFORMED position. A rigid revolution reads 0. */
   roll: number;
   /** THE PIECE'S END-TO-END RELATIVE ROTATION: the angle of the rotation taking
-   *  its low-axial end's frame onto its high-axial end's. Radians, unsigned,
-   *  and exactly 0 for any rigid motion. ZERO ALSO MEANS "NOT MEASURED" in the
-   *  degenerate case `endTurn` names. */
+   *  its low-axial end's frame onto its high-axial end's. Radians, unsigned, 0
+   *  for any rigid motion — and 0 also means "not measured" in the degenerate
+   *  case `endTurn` names. */
   bend: number;
-  /** THE PIECE'S CURL, SIGNED: how much more (or less) its arcs curve than at
-   *  their seat, averaged over the two ends. Positive = tighter, negative =
-   *  flattened, exactly 0 for a rigid motion.
-   *
-   *  `bend`'s complement: `bend` is the AXIAL reading and is a true 0 through
-   *  the peel, the cards and the internals, which do the same thing to both of
-   *  a piece's ends. What they do do is circumferential, and that is this
-   *  column. Neither is derivable from the other. */
+  /** THE PIECE'S CURL, SIGNED: how much more (positive) or less its arcs curve
+   *  than at their seat, averaged over the two ends; 0 for a rigid motion.
+   *  `bend`'s circumferential complement — neither derives from the other. */
   curl: number;
   /** THE PIECE'S SIZE ROUND THE BORE: the deformed arcs' total pairwise
-   *  separation over their seated one. 1 = rigid. NOT MEASURED for an
+   *  separation over their seated one. 1 = rigid. Not measured for an
    *  axisymmetric piece — it reads a flat 1 there, see `ringFramed`. */
   stretch: number;
   /** THE PIECE'S SIZE ALONG THE BORE: the same ratio over the three flanks
-   *  joining its two axial ends. 1 = rigid, and measured for every piece. It is
-   *  a RATIO of the piece's own axial extent, so it is large where that extent
-   *  is small — see the header. */
+   *  joining its two axial ends. 1 = rigid. A RATIO of the piece's own axial
+   *  extent, so it is large where that extent is small. */
   stretchAxial: number;
 }
 
@@ -377,8 +278,8 @@ const cross = (u: V3, v: V3): V3 => [
   u[0] * v[1] - u[1] * v[0],
 ];
 
-/** `null` for a zero-length vector — the caller decides what a degenerate
- *  measurement means rather than dividing by zero into a NaN. */
+/** `null` for a zero-length vector, so the caller decides what a degenerate
+ *  measurement means rather than dividing into a NaN. */
 function unit(u: V3): V3 | null {
   const n = len(u);
   return n > 0 ? [u[0] / n, u[1] / n, u[2] / n] : null;
@@ -389,11 +290,8 @@ function unit(u: V3): V3 | null {
  *  cross. `null` if either has collapsed.
  *
  *  The spine (both ends' midpoints joined) is shared by the two ends, so it
- *  contributes nothing of its own to their relative rotation — it is the common
- *  reference the tangents are read against. The arc's own plane normal would do
- *  the same job but is ill-conditioned exactly where the deform puts these
- *  pieces: an arc that flattens and curves back flips it, and `bend` jumps to
- *  π. The spine stays far from parallel and degrades gracefully. */
+ *  contributes nothing to their relative rotation. The arc's own plane normal
+ *  would do the same job but flips when an arc flattens and curves back. */
 function frameOf(q: Arc, spine: V3): [V3, V3, V3] | null {
   const t = unit(sub(q.b, q.a));
   if (!t) return null;
@@ -407,16 +305,10 @@ function frameOf(q: Arc, spine: V3): [V3, V3, V3] | null {
 }
 
 /** `bend`: the angle of the rotation taking the low end's frame onto the high
- *  end's. No rest value is subtracted and none is needed — at rest the two arcs
- *  are the SAME arc at two heights, so the rest frames cancel, which is why
- *  this reads 0 for any rigid motion and not only for the seat.
- *
- *  BOTH PARTS of the rotation are read rather than the trace alone, since the
- *  trace loses half its digits near rest and this module's law is that a piece
- *  which has not moved reads EXACTLY zero.
- *
- *  THE ONE DEGENERATE CASE: if either end has no orientation there is no
- *  rotation to measure, and the 0 returned means NOT MEASURED, not "rigid". */
+ *  end's. No rest value is subtracted — at rest the two arcs are the SAME arc
+ *  at two heights, so the rest frames cancel. Both parts of the rotation are
+ *  read rather than the trace alone, which loses half its digits near rest. If
+ *  either end has no orientation the 0 returned means NOT MEASURED. */
 function endTurn(pr: Probes): number {
   const spine = sub(pr.hi.m, pr.lo.m);
   const lo = frameOf(pr.lo, spine);
@@ -453,16 +345,14 @@ const arcGirth = (q: Arc): number =>
 const girth = (pr: Probes): number => arcGirth(pr.lo) + arcGirth(pr.hi);
 
 /** The axial extent: the three flanks joining the two ends — `stretchAxial`'s.
- *  Disjoint from `girth` by construction (these are pure y-offsets at rest,
- *  `girth`'s all lie in a y-plane), so the two ratios are independent. */
+ *  Disjoint from `girth` by construction, so the two ratios are independent. */
 const flanks = (pr: Probes): number =>
   len(sub(pr.hi.a, pr.lo.a)) +
   len(sub(pr.hi.m, pr.lo.m)) +
   len(sub(pr.hi.b, pr.lo.b));
 
 /** The piece's mean tangential direction — both ends' chords summed, so a piece
- *  whose ends have turned oppositely reports the middle of them (and `bend`
- *  reports that they differ at all). */
+ *  whose ends have turned oppositely reports the middle of them. */
 const tangentOf = (pr: Probes): V3 =>
   add(sub(pr.lo.b, pr.lo.a), sub(pr.hi.b, pr.hi.a));
 
@@ -477,24 +367,15 @@ function rollOf(t: V3, theta: number): number {
 
 /**
  * Is this piece's circumferential baseline MATERIAL? — the gate on `stretch`.
- *
- * A body of revolution has no meridian, so ops/frames.ts pins its span to 2π
- * and raises `axi`. Its probe arcs are then the median circle sampled at the
- * quarter turns rather than a span of its own material, and the distance
- * between two such points answers to the ring's RIGID motion: it tracks the
- * radius under a dilation and does not move under a sideways carry, so no
- * divisor built from the frame's radius is right in both. This therefore
- * reports NEITHER — an axisymmetric piece's `stretch` is the rigid 1.
- *
- * `bend` and `stretchAxial` need no such gate: both are RELATIVE readings
- * between the piece's two axial ends, so a rigid motion of the whole ring
- * applies to both alike and cancels.
+ * A body of revolution has no meridian (ops/frames.ts pins its span to 2π and
+ * raises `axi`), so its probe arcs are a ring sample whose separations answer
+ * to the ring's RIGID motion; `stretch` reports the rigid 1 for one. `bend` and
+ * `stretchAxial` need no gate: both are relative between the two axial ends.
  */
 const ringFramed = (l: PieceLanes): boolean => l.axi >= 0.5;
 
 /** The piece's seat, decoded through the SAME path as its deformed pose rather
- *  than read off the lanes: a rest state that read 1e-16 instead of 0 would
- *  make "nothing has moved yet" un-assertable and every table cell noisy. */
+ *  than read off the lanes, so a rest state is exactly 0 and not 1e-16. */
 function restOf(pr: Probes) {
   const o = decode(pr.o);
   return {
@@ -506,7 +387,7 @@ function restOf(pr: Probes) {
   };
 }
 
-/** The pose of one piece at p. Pure: same p, same piece, same output. */
+/** The pose of one piece at p. */
 export function pieceStateAt(
   p: number,
   key: string,
@@ -562,27 +443,19 @@ export function pieceStateAt(
 
 // ── ONE PIECE'S TRAJECTORY ──────────────────────────────────────────────────
 
-/** Every p the table's rows are read at: story/cost.ts's grid. SHARED rather
- *  than rebuilt, so the three instruments' tables line up row for row. */
+/** Every p the table's rows are read at: story/cost.ts's grid, shared so the
+ *  three instruments' tables line up row for row. */
 export const FLOW_SAMPLE_PS: number[] = COST_SAMPLE_PS;
 
-/** Resolution of the window scan below: 1/2000 of the track, ~2 pixels of
- *  scroll on a 100-viewport story. */
+/** Resolution of the window scan below, as a fraction of the track. */
 const WINDOW_STEPS = 2000;
 
 let window_: [number, number] | null = null;
 
 /** The window everything moves in: [first p, last p] outside which every piece
- *  is exactly on its seat, so a trajectory only needs resolution inside it.
- *
- *  ONE SPAN, SCANNED rather than spelled: the channels' windows are authored in
- *  several shapes in story/envelopes.ts, and their union here would be the
- *  second copy story/state.ts's rule forbids. Every motion in the story is a
- *  channel, so the scan sees all of it.
- *
- *  SNAPPED OUTWARD by one scan step, so the window is a SUPERSET of what the
- *  scan saw: "every piece is exactly on its seat outside this" has to be true,
- *  not nearly. Memoized — the scan is deliberately not paid at import. */
+ *  is exactly on its seat. Scanned rather than spelled, so it is not a second
+ *  copy of the channels' windows, and snapped OUTWARD by one step so it is a
+ *  superset of what the scan saw. Memoized, not paid at import. */
 export function deformWindow(): [number, number] {
   if (window_) return window_;
   const step = 1 / WINDOW_STEPS;
@@ -616,10 +489,7 @@ export interface PieceFlow {
 }
 
 /** One piece's whole trajectory — dense through the window where the deform is
- *  live, sparse elsewhere, and always through every row of `FLOW_SAMPLE_PS` so
- *  a trajectory and the checked-in table can be read against each other. The
- *  API half of the instrument: the table cannot carry every trajectory and
- *  stay diffable. */
+ *  live, sparse elsewhere, and always through every row of `FLOW_SAMPLE_PS`. */
 export function pieceFlow(
   key: string,
   table: PieceTable,
@@ -662,8 +532,7 @@ const statOf = (values: number[]): Stat => ({
   mean: values.reduce((a, b) => a + b, 0) / values.length,
 });
 
-/** The state dimensions the rollups summarise — the names are `PieceState`'s
- *  own, so a dimension added there is one line from the table. */
+/** The state dimensions the rollups summarise — `PieceState`'s own names. */
 export const FLOW_DIMS = [
   "dTheta",
   "dRadius",
@@ -718,13 +587,14 @@ export interface SceneFlow {
   outliers: Outlier[];
 }
 
-/** How many pieces each scene names. Small on purpose: the table is a diff
- *  surface, and a long list of near-ties is not. */
+/** How many pieces each scene names. */
 export const OUTLIER_N = 5;
+/** travel under this, mm, is numerical noise, not motion: a scene where
+ *  nothing moves names nobody */
+export const TRAVEL_FLOOR = 1e-9;
 
 /** Each scene's own sample set: the shared grid clipped to its range, plus its
- *  hold centre. HALF-OPEN on the right exactly as story/cost.ts's rollups are,
- *  so a sample on a boundary belongs to the scene whose p0 it is. */
+ *  hold centre. Half-open on the right, as story/cost.ts's rollups are. */
 function scenePs(i: number): number[] {
   const r = RANGES[i];
   const last = i === RANGES.length - 1;
@@ -734,12 +604,12 @@ function scenePs(i: number): number[] {
   return [...new Set([...ps, holdCentreOf(r)])].sort((a, b) => a - b);
 }
 
-/** The whole table: every scene, every cast, rolled up — and the pieces that
- *  stand out named. Pure: same table, same output. */
+/** The whole table: every scene, every cast, rolled up, with the pieces that
+ *  stand out named. */
 export function flowRollups(table: PieceTable): SceneFlow[] {
   return RANGES.map((r, i) => {
     const ps = scenePs(i);
-    // one live set per p, shared by all 207 pieces
+    // one live set per p, shared by every piece
     const states = ps.flatMap((p) => {
       const live = liveDeformAt(p);
       return table.pieces.map((row) => pieceStateAt(p, row.key, table, live));
@@ -774,11 +644,8 @@ export function flowRollups(table: PieceTable): SceneFlow[] {
       const cur = best.get(s.key);
       if (!cur || s.travel > cur.travel) best.set(s.key, s);
     }
-    // a scene where nothing moves names nobody — pieces at travel 0 are not an
-    // outlier list, and a zero scene that starts moving should show up in the
-    // diff as rows arriving
     const outliers = [...best.values()]
-      .filter((s) => s.travel > 0)
+      .filter((s) => s.travel > TRAVEL_FLOOR)
       .sort((a, b) => b.travel - a.travel || (a.key < b.key ? -1 : 1))
       .slice(0, OUTLIER_N)
       .map((s): Outlier => ({

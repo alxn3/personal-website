@@ -6,16 +6,10 @@ import {
   type VertexState,
 } from "../ops";
 
-// The op state carries the radial-plane point in CARTESIAN (ops/ops.ts). The
-// laws in this folder are about a BARREL, so they stay stated in (theta,
-// radius) and convert here — an assertion describes the geometry, not the
-// representation.
-//
-// `polarOf` reads the angle back through atan2, so it lands in (−π, π]: an
-// expectation built by ADDING to a seated angle has to be folded the same way.
-// The old state could carry an unwrapped theta and nothing depended on it (the
-// sector selector compares cosines, the host rebuilds a point, and the normal's
-// `rot` is its own accumulator and still unwrapped).
+// The op state carries the radial-plane point in CARTESIAN; the laws in this
+// folder are about a BARREL, so they stay stated in (theta, radius) and convert
+// here. `polarOf` reads the angle back through atan2, so it lands in (−π, π] —
+// an expectation built by adding to a seated angle must be folded the same way.
 
 /** The radial-plane point at (theta, radius). */
 export const atPolar = (

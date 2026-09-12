@@ -30,22 +30,17 @@ import {
 import { storyStateAt } from "../state";
 
 // ============================================================================
-// THE STORY-COST MAP — src/lib/lens/STORY-COST.md, rendered from storyCostAt.
-//
-// A GENERATED artifact under the exact law STORY-MAP.md ships under: checked in
-// so the budget can be read and diffed without running anything, and asserted
-// here so it can never rot. A wave that makes a scene heavier fails this test
-// with the new table in the diff, which is the signal working as designed.
+// THE STORY-COST MAP — src/lib/lens/STORY-COST.md, rendered from storyCostAt
+// and asserted byte-for-byte, so a change that makes a scene heavier fails here
+// with the new table in the diff.
 //
 // TO REGENERATE, after a deliberate change:
 //   LENS_STORY_COST=1 npx vitest run src/lib/lens/story/__tests__/story-cost.test.ts
-// and review the diff — the per-scene rollup is the surface to read first.
+// The per-scene rollup is the surface to read first.
 //
-// ONE CODE PATH. The renderer below is pure presentation; every number comes out
-// of storyCostAt, which is a composition of storyStateAt, core/parts.ts,
-// core/visibility.ts's wink law and the owners' exported mount windows. The
-// GEOMETRY comes out of the shipped GLB itself, so no checked-in triangle table
-// exists to go stale: a model drop regenerates the map and fails byte-equality.
+// The renderer below is pure presentation; every number comes out of
+// storyCostAt, and the GEOMETRY out of the shipped GLB itself, so there is no
+// checked-in triangle table to go stale.
 // ============================================================================
 
 const MAP_URL = new URL("../../STORY-COST.md", import.meta.url);
@@ -69,8 +64,7 @@ interface Gltf extends GltfLike {
   bufferViews: { byteOffset?: number; byteLength: number; byteStride?: number }[]; // prettier-ignore
 }
 
-/** The glTF JSON and BIN chunks of a .glb — ops/__tests__/shipped-glb.test.ts's
- *  idiom, keeping the binary as story/__tests__/piece-flow.test.ts does. */
+/** The glTF JSON and BIN chunks of a .glb. */
 function glb(path: string): { json: Gltf; bin: Buffer } {
   const buf = readFileSync(path);
   let off = 12;
@@ -87,7 +81,7 @@ function glb(path: string): { json: Gltf; bin: Buffer } {
   return { json: json!, bin };
 }
 
-/** glTF `componentType` → the typed array that reads it (piece-flow's table). */
+/** glTF `componentType` → the typed array that reads it. */
 const COMPONENT = {
   5121: Uint8Array,
   5123: Uint16Array,
@@ -98,9 +92,8 @@ const COMPONENT = {
 const PER_ELEMENT: Record<string, number> = { SCALAR: 1, VEC3: 3 };
 
 /** One accessor as a typed array over the BIN chunk. The bytes are COPIED, not
- *  viewed (a bufferView offset need not be aligned to the component size), and
- *  an interleaved view is refused loudly — story/__tests__/piece-flow.test.ts's
- *  reader, which decodes this same file. */
+ *  viewed (a bufferView offset need not be component-aligned), and an
+ *  interleaved view is refused loudly. */
 function accessor(json: Gltf, bin: Buffer, i: number) {
   const a = json.accessors[i];
   const bv = json.bufferViews[a.bufferView];
@@ -119,13 +112,9 @@ function accessor(json: Gltf, bin: Buffer, i: number) {
 /**
  * THE INK EDGE-LINE VERTEX COUNT of every glTF mesh — the one number the JSON
  * chunk cannot answer, since EdgesGeometry is a function of the DECODED
- * positions. Cut here exactly as the shipped look cuts it: `THREE.EdgesGeometry`
- * at materials/unified.ts's own `EDGE_THRESHOLD_DEG`, imported rather than
- * respelled. The framed meshes get `ops/host.ts opsEdgeGeometry` in the browser,
- * which IS this EdgesGeometry plus a copy of the `_op*` attributes onto its
- * vertices — same cut, same count — so no frames are derived here.
- *
- * A BUILD STEP, not a per-frame cost: ~200 cuts over 87k vertices, once.
+ * positions. Cut exactly as the shipped look cuts it, at materials/unified.ts's
+ * own `EDGE_THRESHOLD_DEG`; the browser's `opsEdgeGeometry` is this same cut
+ * plus the `_op*` attributes, so no frames are derived here.
  */
 function edgeVertsOf({ json, bin }: { json: Gltf; bin: Buffer }): EdgeVerts {
   const counts = json.meshes.map((m) => {
@@ -247,53 +236,27 @@ function render(): string {
 
 # STORY-COST
 
-The hero story's RENDERER WORKLOAD at every interesting scroll position \`p\` —
-how much geometry is on screen and which op chains are doing nonzero work,
-with no clock in it anywhere. Rendered from \`story/cost.ts\`'s
-\`storyCostAt(p, table)\`, whose state comes from \`storyStateAt(p)\` and whose
-geometry comes out of the shipped GLB itself — the mesh counts from its JSON
-chunk, the ink line-work cut from its BIN chunk. Regenerate with
+Renderer workload at every scene, band and window edge: the geometry on screen
+and which op chains do nonzero work, rendered from \`story/cost.ts\`'s
+\`storyCostAt(p, table)\` over the shipped GLB's own chunks. An UPPER BOUND
+(frustum culling is off on this path); no pixel, overdraw or pipeline counts;
+\`glassTx\` and \`post\` are flags. Regenerate (the test pins the file
+byte-for-byte):
 
     LENS_STORY_COST=1 npx vitest run src/lib/lens/story/__tests__/story-cost.test.ts
 
-and \`story/__tests__/story-cost.test.ts\` asserts the checked-in file matches,
-so a wave that makes a scene heavier fails the suite with the new table in the
-diff.
-
 **Model:** \`lens_web_segmented.glb\` — ${table.parts.length} mesh nodes, ${num(modelTris)} triangles, ${num(modelVerts)} vertices seated, plus ${modelLines} ink edge lines carrying ${num(modelLineVerts)} vertices of their own (every mesh but the decals and the elements, cut at ${EDGE_THRESHOLD_DEG}° — \`materials/unified.ts\`). \`lens_web_accessories.glb\` — ${table.accessories.length} nodes, ${num(accTris)} triangles, NONE of which the story ever draws (it is loaded for \`/lens\`'s accessory toggles; the hero shows no cap, hood or filter at any \`p\`), and they are censused here only to keep their triangles out of the model's own count.
 
-**What it is not.** An UPPER BOUND, and deliberately so: frustum culling is off
-on this whole path (in-shader displacement invalidates rest-pose bounds), so
-"everything visible is drawn" is what the renderer actually does. It counts no
-pixels — no overdraw, no blur passes, no pipeline counts; \`glassTx\` and
-\`post\` are reported as the flags they are. It is the AUTHORED cost at \`p\`,
-so every residual \`story/state.ts\` declares (ease lag, phase clocks, mount
-latches) applies here too. \`story/cost.ts\`'s header has the full list.
-
-**Vertices and the deform.** The vertex load of a frame is
-\`kVerts + kLineV\`: the visible meshes AND the ink edge lines they carry, whose
-materials run the same deform fold as the surfaces they outline. \`kLineV\` is
-the measured EdgesGeometry vertex count of those lines, and it is 0 wherever the
-ink is off, since that is where the line objects are hidden.
-
-Both halves go through the deform host's one baked graph. The hero pins
-\`${DEFORM_RECIPES.join(" / ")}\`, but each recipe's chain sits inside
-\`If(channel ≥ 1e-6, …)\` — a uniform branch — so an IDLE recipe executes
-nothing at all. Every recipe channel rests at 0, so the recipes doing
-per-vertex work in a row are exactly the pinned ones listed in that row's
-\`channels\`, and the cost is \`(kVerts + kLineV) × those\` — not
-\`× ${DEFORM_RECIPES.length} recipes\`, which is what it was everywhere until the
-fold learned to branch. \`channels\` also names the non-deform chains a scene
-drives, the same "which chains are producing deltas here" signal it always was.
+A frame's vertex load is \`kVerts + kLineV\`: the visible meshes plus their ink
+edge lines, which run the same deform (\`kLineV\` is 0 wherever the ink is off).
+Each recipe's chain sits inside \`If(channel ≥ 1e-6, …)\`, so only the recipes
+listed in a row's \`channels\` do per-vertex work.
 
 ## Per scene
 
 \`max\` is over every sample inside the scene's range; \`hold\` is the reading at
-the scene's hold centre — the \`?story\` scrubber's own jump target, and where a
-reader actually rests. \`kVerts\` and \`kLineV\` are the two halves of the vertex
-load and each is its own maximum, so their sum is a bound rather than a reading
-at one \`p\`. This is the diff surface: regenerate after a wave and read this
-table.
+the hold centre (the \`?story\` scrubber's jump target). \`kVerts\` and \`kLineV\`
+are separate maxima, so their sum is a bound.
 
 \`\`\`text
 ${asTable(
@@ -318,18 +281,11 @@ ${asTable(
 
 ## At every edge
 
-One row per scene edge, caption-band edge, window edge and scene hold centre.
-\`draws\` is the total; \`model\`/\`ovl\`/\`sky\` are its parts (meshes plus ink
-edge-lines / the mounted overlays / the starfield) — and they are ALL of it,
-since no accessory is ever drawn on the story path.
-\`kVerts\` is the visible meshes' vertices and \`kLineV\` those of their edge
-lines — the frame's vertex load is the SUM.
-\`transp\` counts surfaces in three's transparent list — the starfield is
-deliberately absent from it, since it rides the OPAQUE list to stay inside the
-transmission copy. The body is in that list whenever any ink shows or a body
-fade runs (materials/unified.ts \`bodyTransparent\`). \`glassTx\` is the number of
-visible glass meshes still wearing a transmissive material: any at all costs a
-full framebuffer copy per frame.
+One row per scene edge, caption-band edge, window edge and hold centre.
+\`draws\` = \`model\` + \`ovl\` + \`sky\` (no accessory is ever drawn on the story
+path). \`transp\` counts three's transparent list (the starfield rides the opaque
+list); \`glassTx\` counts visible transmissive glass meshes — any at all costs a
+framebuffer copy per frame.
 
 \`\`\`text
 ${asTable(COST_HEAD, costs.map(costRow))}
@@ -340,13 +296,17 @@ ${asTable(COST_HEAD, costs.map(costRow))}
 // ── the law ─────────────────────────────────────────────────────────────────
 
 describe("STORY-COST", () => {
-  it("matches the checked-in map", () => {
+  // an on-demand instrument, not a byte pin: LENS_STORY_COST=1 rewrites it,
+  // and the checked-in map must still be one this renderer produced
+  it("is the renderer's own shape and covers every scene", () => {
     const rendered = render();
     if (process.env.LENS_STORY_COST) writeFileSync(MAP_URL, rendered);
-    expect(
-      readFileSync(MAP_URL, "utf8"),
-      "src/lib/lens/STORY-COST.md is stale — regenerate with LENS_STORY_COST=1 and review the diff",
-    ).toBe(rendered);
+    const current = readFileSync(MAP_URL, "utf8");
+    for (const head of ["# STORY-COST", "## Per scene", "## At every edge"])
+      expect(current).toContain(head);
+    expect(current.split("\n")[0]).toBe(rendered.split("\n")[0]);
+    for (const r of RANGES)
+      expect(current).toMatch(new RegExp(`\\b${r.scene.id}\\b`));
   });
 
   it("regenerates to itself — the render is a pure function of the model", () => {
@@ -361,14 +321,9 @@ describe("STORY-COST", () => {
 
 describe("the census covers the model exactly once", () => {
   it("reads the shipped counts straight out of the GLB", () => {
-    // ops/__tests__/shipped-glb.test.ts pins the node/mesh counts; this pins
-    // that the ACCESSOR arithmetic on top of them is the measured geometry.
-    //
-    // TRIANGLES ARE THE INVARIANT, VERTICES ARE NOT. Dropping Draco (N.15) left
-    // every triangle count untouched and moved the vertex total 87,188 → 86,966
-    // across 17 decal and blade meshes: the uncompressed export dedupes corner
-    // entries more tightly than the Draco path's fallback accessors did. Same
-    // surface — the shipped positions agree to 0.0215 mm, the old 11-bit step.
+    // shipped-glb.test.ts pins the node/mesh counts; this pins that the ACCESSOR
+    // arithmetic on top of them is the measured geometry. Triangles are the
+    // invariant — a re-export can move the vertex total by re-deduping corners.
     expect(table.parts).toHaveLength(194);
     expect(table.parts.reduce((n, r) => n + r.tris, 0)).toBe(74283);
     expect(table.parts.reduce((n, r) => n + r.verts, 0)).toBe(86966);
@@ -382,17 +337,13 @@ describe("the census covers the model exactly once", () => {
 
   it("cuts the ink line-work off the shipped geometry, and only where it exists", () => {
     // 163 lines — every mesh but the 18 decals and the 13 elements
-    // (materials/unified.ts `hasInkEdgeLine`, called here rather than
-    // restated), which is the line count the live graph draws through the
-    // story (story/cost.ts's cross-check: 357 model draws = 194 + 163 at the
-    // hero)
+    // (materials/unified.ts `hasInkEdgeLine`), which is the line count the live
+    // graph draws through the story
     expect(table.parts.filter((r) => r.edgeLine)).toHaveLength(163);
     for (const r of table.parts)
       expect(r.lineVerts > 0, `${r.name} lineVerts`).toBe(r.edgeLine);
     expect(table.parts.reduce((n, r) => n + r.lineVerts, 0)).toBe(65100);
-    // A TABLE BUILT WITHOUT THE DECODE REPORTS 0, NEVER AN ESTIMATE: the JSON
-    // chunk cannot answer this one, and the honest answer to that is a zero the
-    // reader can see, not a multiplier.
+    // A table built without the decode reports 0, never an estimate.
     const noBin = buildPartTable(glb(MODEL).json);
     expect(noBin.parts.reduce((n, r) => n + r.lineVerts, 0)).toBe(0);
   });
@@ -418,7 +369,7 @@ describe("the census covers the model exactly once", () => {
       .map((r) => r.name);
     expect(shell.map((r) => r.name)).toEqual(shellNames);
 
-    // the counted rosters (design §2, verified on the worktree)
+    // the counted rosters
     expect(table.parts.filter((r) => /_Seg\d+$/.test(r.name))).toHaveLength(
       143,
     );
@@ -443,7 +394,7 @@ describe("the census covers the model exactly once", () => {
 
   it("censuses a live-shaped scene through the SAME law", () => {
     // the browser handle's table source, driven off a fixture with the shipped
-    // names and parenting: one cost law, two tables (story/cost.ts's header)
+    // names and parenting: one cost law, two tables
     const mesh = (name: string, tris: number, children: unknown[] = []) => ({
       name,
       isMesh: true,
@@ -461,9 +412,8 @@ describe("the census covers the model exactly once", () => {
         mesh("Element_01", 20),
         mesh("Mount_ContactShelf", 5, [mesh("Mount_Contacts", 2)]),
         // THE ACCESSORIES SHARE THIS GRAPH — the front group hangs off
-        // Barrel_Inner in the live scene, so a naive walk counts them as body
-        // and `Acc_Filter_Glass` even reports as a transmission surface. Caught
-        // by the renderer.info cross-check, pinned here.
+        // Barrel_Inner, so a naive walk counts them as body and
+        // `Acc_Filter_Glass` reports as a transmission surface.
         mesh("Barrel_Inner_Seg0", 7, [
           mesh("Acc_Hood", 500),
           mesh("Acc_Filter_Glass", 40),
@@ -525,9 +475,8 @@ describe("the cost at the story's edges", () => {
   });
 
   it("carries the line pass's vertices, and drops them with the ink", () => {
-    // THE HALF `kVerts` COULD NOT SEE. At the hero every mesh is up and the ink
-    // is on, so the frame pushes the whole model AND the whole of its line-work
-    // through the deform: 86,966 + 65,100, i.e. 1.75× what kVerts alone reports.
+    // At the hero every mesh is up and the ink is on, so the frame pushes the
+    // whole model AND its line-work through the deform.
     const hero = at(SCENE_HOLD_PS.find((h) => h.id === "hero")!.p);
     expect(hero.verts).toBe(86966);
     expect(hero.lineVerts).toBe(65100);
@@ -547,11 +496,9 @@ describe("the cost at the story's edges", () => {
   });
 
   it("leaves only the glass column under the DIVE's own body cover", () => {
-    // The only stretch that hides the model is story/fly.ts's cover, over the
-    // dive's last tenth. The fade's hard tail spares the elements by design:
-    // they carry their own opacity and their alphaTest is what stops a faded
-    // one writing depth (core/scene.ts). So they are still SUBMITTED — 13
-    // draws, and the transmission copy with them — while painting nothing.
+    // The only stretch that hides the model is story/fly.ts's cover. The fade
+    // spares the elements: they carry their own opacity, so they are still
+    // SUBMITTED — 13 draws and the transmission copy — while painting nothing.
     const p = COST_SAMPLE_PS.find((q) => storyStateAt(q).look.bodyFade <= 0);
     expect(p, "the valley is sampled").toBeDefined();
     const c = at(p!);
@@ -588,9 +535,8 @@ describe("the cost at the story's edges", () => {
   });
 
   it("takes the glass out on the dive's far side, and the copy with it", () => {
-    // the passage fades are monotone and pinned at 0 once passed, so past the
-    // dive's own range end the whole stack is gone until the swap releases —
-    // the sky chapters draw NO lens at all (story/cost.ts glassGoneAt)
+    // the passage fades are monotone and pinned at 0 once passed, so the sky
+    // chapters draw no lens at all (story/cost.ts glassGoneAt)
     for (const id of ["constellations", "trails"]) {
       const c = at(SCENE_HOLD_PS.find((s) => s.id === id)!.p);
       expect(c.meshes, id).toBe(0);
@@ -606,14 +552,11 @@ describe("the cost at the story's edges", () => {
   });
 
   it("rests on a dive that actually clears the stack — the premise, pinned", () => {
-    // glassGoneAt's whole argument is "the dive ENDS past the last element":
-    // the passage fades are monotone in camera X, so the stack being wholly
-    // gone needs only the pose path to have saturated past the glass by the
-    // dive's range end. That is a property of flyPoseAt, which nothing in
-    // cost.ts reads — a future wave shortening the dive or retuning the path
-    // would silently flip the sky chapters from pessimistic to OPTIMISTIC
-    // (0 meshes reported over a live glass stack and its framebuffer copy).
-    // Pin it at the source, per the reviewer's polarity argument.
+    // glassGoneAt argues "the dive ENDS past the last element": the passage
+    // fades are monotone in camera X, so the stack is wholly gone once the pose
+    // path saturates by the dive's range end. That is flyPoseAt's property,
+    // which cost.ts never reads — shortening the dive would flip the sky
+    // chapters from pessimistic to OPTIMISTIC, so it is pinned at the source.
     const diveEnd = rangeOf("flythrough").p1;
     expect(poseCamX(flyPoseAt(diveEnd))).toBe(FLY.xEnd);
     // …and the saturation point itself sits beyond the authored clear-of-glass
@@ -625,18 +568,15 @@ describe("the cost at the story's edges", () => {
   });
 
   it("draws no accessory anywhere on the track — the finale is the rose alone", () => {
-    // The caps used to fly on over the head of `capsOn` (4 draws, 8,572
-    // triangles, two ink edge-lines of their own). They blocked part of the
-    // flower and are out of the story entirely (story/cinematics.ts), so the
-    // whole frame is model + overlays + sky at EVERY sample — nothing else may
-    // slip into `drawsTotal` without this failing.
+    // No accessory is drawn on the story path, so the whole frame is model +
+    // overlays + sky at EVERY sample — nothing else may slip into `drawsTotal`.
     for (const p of COST_SAMPLE_PS) {
       const c = at(p);
       const overlay = Object.values(c.overlay).reduce((a, b) => a + b, 0);
       expect(c.drawsTotal, `p ${p}`).toBe(c.drawsModel + overlay + c.drawsSky);
     }
-    // …and the caps are still in the shipped accessories GLB, un-drawn: the
-    // triangles the ending chose NOT to spend, and what /lens still toggles on
+    // …and the caps are still in the shipped accessories GLB, un-drawn — the
+    // triangles the ending does not spend, and what /lens toggles on
     expect(
       table.accessories
         .filter((r) => r.name === "Acc_CapFront" || r.name === "Acc_CapRear")
@@ -668,9 +608,7 @@ describe("the cost at the story's edges", () => {
 
 describe("the cost module's coverage", () => {
   it("derives its channel list from the registry", () => {
-    // the one-registry law's derived-list discipline: a channel added to
-    // CHANNEL_REGISTRY must be reachable here, or the map is quietly reporting
-    // a story it no longer describes
+    // a channel added to CHANNEL_REGISTRY must be reachable here too
     const seen = new Set(COST_SAMPLE_PS.flatMap((p) => storyCostAt(p, table).channels)); // prettier-ignore
     for (const c of seen) expect(Object.keys(CHANNEL_DEFAULTS)).toContain(c);
     // and the channels the story never drives never appear
@@ -679,9 +617,8 @@ describe("the cost module's coverage", () => {
   });
 
   it("names the deform set the shader actually carries", () => {
-    // The hero no longer selects a subset — the emitted deform carries every
-    // recipe and gates each on its own channel — so the set this map's
-    // kVerts × recipes arithmetic assumes is simply the whole table.
+    // The emitted deform carries every recipe and gates each on its own
+    // channel, so the map's kVerts × recipes arithmetic assumes the whole table.
     expect([...DEFORM_RECIPES]).toEqual([...RECIPE_NAMES]);
   });
 

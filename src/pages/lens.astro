@@ -437,7 +437,7 @@ const shadingTransitions = [
     // so the homepage hero must not carry it.
     const { ANIMATIONS, fmtParam } = await loadAnimations();
     // Refresh one slider's physical-value readout off its uniform (the truth
-    // after KNOB_LIMITS clamping — what a baked default would be).
+    // after the knob's range clamp — what a baked default would be).
     const syncParamOut = (
       anim: (typeof ANIMATIONS)[number] | undefined,
       input: HTMLInputElement,

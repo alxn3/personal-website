@@ -1,13 +1,10 @@
-// DEV ONLY — dynamically imported, so none of it reaches a visitor's bundle.
-// A model-contract tripwire: assert at load every structural assumption the
-// code makes about the GLBs, so a re-export that breaks one fails LOUDLY at
-// boot. Report-only — violations are console.error'd, never thrown.
+// Dev only — dynamically imported. A model-contract tripwire: assert at load
+// every structural assumption the code makes about the GLBs. Report-only —
+// violations are console.error'd, never thrown. The required-name list is
+// derived from the two code-side tables that address parts by name
+// (MECHANISM_PARTS and SHELL_ADOPT).
 //
-// The required-name list is DERIVED from the two code-side tables that address
-// parts BY NAME (MECHANISM_PARTS and SHELL_ADOPT), so a name the code stops
-// needing fails loudly and gets updated — the safe drift direction.
-//
-// ORDERING: run AFTER ops/frames deriveFrames — the second half of the contract
+// Ordering: run after ops/frames deriveFrames — the second half of the contract
 // reads the frame attributes that pass stamps.
 import * as THREE from "three/webgpu";
 import { MECHANISM_PARTS } from "../ops/mechanism";
@@ -31,18 +28,15 @@ const ACCESSORY_PARTS = [
   "Acc_CapFront",
   "Acc_CapRear",
 ] as const;
-/** parts.ts documents "the 13 lens elements" — a changed count means the
- *  optics grouping (isolate, refraction ray path) no longer matches. */
+/** A changed count means the optics grouping (isolate, refraction ray path) no
+ *  longer matches. */
 const GLASS_ELEMENT_MESHES = 13;
-/** Floor on the DERIVED explode ladder's group count — this asserts only that
- *  the derivation still found a ladder's worth of groups, so a re-export that
- *  drops whole part families shows up as a COUNT collapse. Kept well below the
- *  live count so ordinary consolidation does not trip it; the exact count is
- *  measured in ops/__tests__/frames.test.ts. */
+/** Floor on the derived explode ladder's group count, so a re-export that
+ *  drops whole part families shows up as a count collapse. Kept well below the
+ *  live count so ordinary consolidation does not trip it. */
 const LADDER_GROUPS_MIN = 20;
-/** Cap on how many same-kind offenders get named before the report summarizes:
- *  a systematic break (a whole pass that didn't run) would otherwise print one
- *  line per mesh and bury everything else. */
+/** Cap on how many same-kind offenders get named before the report
+ *  summarizes. */
 const NAME_CAP = 8;
 
 const named = (names: string[]): string =>
@@ -75,9 +69,8 @@ function bodyViolations(root: THREE.Object3D): string[] {
 }
 
 /** True if this node — or anything above it — is an accessory root (`Acc_*`).
- *  The accessories MERGE into the body's scene graph, so a body-scope traversal
- *  reaches them; only the ancestor walk can tell them apart (an accessory's
- *  sub-meshes carry generic names). */
+ *  The accessories merge into the body's scene graph, so only the ancestor walk
+ *  can tell them apart (their sub-meshes carry generic names). */
 function underAccessory(o: THREE.Object3D): boolean {
   for (let a: THREE.Object3D | null = o; a; a = a.parent)
     if (isAccessory(a.name)) return true;
@@ -117,21 +110,18 @@ function frameScan(
   return v;
 }
 
-/** The DERIVED half of the contract: every renderable mesh must carry a frame,
+/** The derived half of the contract: every renderable mesh must carry a frame,
  *  the sector span the sheet ops normalize theta over must be positive (a zero
- *  span is a NaN source for every op that normalizes over it), and the ladder
- *  must still have a ladder's worth of groups. R is NOT checked — frames.ts
- *  floors it at R_MIN, so the guard belongs at the derivation. */
+ *  span is a NaN source), and the ladder must still have a ladder's worth of
+ *  groups. R is not checked — frames.ts floors it at R_MIN. */
 function frameViolations(
   root: THREE.Object3D,
   frames: DerivedFrames,
 ): string[] {
-  // ACCESSORIES ARE NOT THIS SCOPE'S BUSINESS — checking them here is a RACE.
-  // They merge into the scene graph before their own scoped deriveFrames pass,
-  // and this report runs off a dynamic import that can resolve in between, so
-  // every accessory mesh would read as unframed. The accessory scope below
-  // checks them off the SAME promise, with its handler registered strictly
-  // later than scene.ts's, so the frame pass has provably run.
+  // Accessories are not this scope's business: they merge into the scene graph
+  // before their own scoped deriveFrames pass, so checking here would race and
+  // read them as unframed. The accessory scope below checks them off the same
+  // promise, with its handler registered later than scene.ts's.
   const v: string[] = frameScan(root, underAccessory);
   if (frames.ladderRungs.size < LADDER_GROUPS_MIN)
     v.push(
@@ -148,10 +138,9 @@ function report(scope: string, v: string[]): void {
   for (const line of v) console.error(`[lens]   ${line}`);
 }
 
-/** Run the tripwire on a loaded, FRAMED model: the body immediately, the
- *  accessories once their background load lands (accessoriesReady must be the
- *  never-rejecting handle). `frames` is passed through rather than re-read off
- *  a dev probe, which the contract must not depend on existing. */
+/** Run the tripwire on a loaded, framed model: the body immediately, the
+ *  accessories once their background load lands. `frames` is passed through
+ *  rather than re-read off a dev probe. */
 export function reportModelContract(
   model: LensModel,
   frames: DerivedFrames,
@@ -160,16 +149,15 @@ export function reportModelContract(
     ...bodyViolations(model.scene),
     ...frameViolations(model.scene, frames),
   ]);
-  // A load that never asked for the accessories GLB (the hero) has no accessory
-  // scope to check — the parts are legitimately absent.
+  // A load that never asked for the accessories GLB has no accessory scope to
+  // check — the parts are legitimately absent.
   if (!model.hasAccessories) return;
   void model.accessoriesReady.then(() => {
     const missing = ACCESSORY_PARTS.filter(
       (n) => !model.scene.getObjectByName(n),
     );
-    // The frame half of the accessory contract, deferred here for the ordering
-    // reason in frameViolations: core/scene's own handler has run by now, so an
-    // unframed accessory mesh is a real derivation failure.
+    // The frame half of the accessory contract: core/scene's own handler has
+    // run by now, so an unframed accessory mesh is a real derivation failure.
     const roots = ACCESSORY_PARTS.map((n) => model.scene.getObjectByName(n));
     report("accessories", [
       ...missing.map((n) => `accessory missing: ${n}`),

@@ -6,13 +6,10 @@ import { displaceInto } from "../../dev/ops-cpu";
 
 // THE SHRINK-WRAP BINDING (ops/frames.ts bindDecals + its host.ts variant): a
 // decal rides its host's RENDERED FACET rather than the smooth op field, so the
-// chord error across a coarse facet cancels on both instead of swallowing the
-// text.
-//
-// Driven through `displaceInto` — dev/ops-cpu.ts sweeps the NUM mirror
-// (ops/cpu.ts) of the very graph host.ts builds over every vertex, so this
-// exercises the shipped path rather than a restatement of it. The host below is deliberately COARSE (few, wide facets):
-// on a fine host the field and the facet agree and the law is untestable.
+// chord error across a coarse facet cancels on both.
+// Driven through `displaceInto`, the NUM mirror of the graph host.ts builds.
+// The host below is deliberately COARSE — on a fine host the field and the
+// facet agree and the law is untestable.
 
 const TAU = Math.PI * 2;
 
@@ -97,9 +94,8 @@ describe("decal shrink-wrap binding", () => {
     deriveFrames(root);
     const pos = decal.geometry.getAttribute("position");
 
-    // (a) every decal vertex carries a binding, and it REPRODUCES the authored
-    // position: u·p0 + v·p1 + w·p2 + h·n̂ decomposes the vertex in a complete
-    // basis, so the seated render is unmoved (to recomposition float error).
+    // (a) every decal vertex carries a binding that REPRODUCES the authored
+    // position: u·p0 + v·p1 + w·p2 + h·n̂ is a complete basis.
     const wa = decal.geometry.getAttribute(WRAP_ATTRS[0].name);
     const wb = decal.geometry.getAttribute(WRAP_ATTRS[1].name);
     const wc = decal.geometry.getAttribute(WRAP_ATTRS[2].name);
@@ -137,13 +133,9 @@ describe("decal shrink-wrap binding", () => {
       for (const c of [0, 1, 2])
         expect(rest[i * 3 + c]).toBeCloseTo(pos.getComponent(i, c), 6);
 
-    // (b) CO-MOVEMENT. Deform, then check the decal against its host's own
-    // deformed FACET — the corners' displaced positions, read from the same
-    // mirror. The decal must land on the plane through them, not on the smooth
-    // field, which on this coarse host is a different surface entirely.
-    // Deep enough that this piece's gate has actually released it (its layer
-    // phase holds it seated until ~0.9) and the wrap's BEND is live, so the
-    // facet and the smooth field are genuinely different surfaces.
+    // (b) CO-MOVEMENT: the decal must land on the plane through its host's
+    // deformed facet corners, not on the smooth field. 0.9 is deep enough that
+    // this piece's gate has released it and the wrap's bend is live.
     recipeChannel("assemble").value = 0.9;
     try {
       const moved = displaced(decal);

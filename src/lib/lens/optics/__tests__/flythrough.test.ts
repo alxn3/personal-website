@@ -13,9 +13,8 @@ import {
 
 /**
  * The fly-through's PURE half: where the camera is, which element it is
- * arriving at, and how p is stretched over the flight. These are the numeric
- * laws the story's dive (story/fly.ts) rides — they outlived the /lens demo
- * that first exercised them.
+ * arriving at, and how p is stretched over the flight — the numeric laws the
+ * story's dive (story/fly.ts) rides.
  */
 
 const NEAR_PLANE = 0.1; // world units — core/scene's camera near
@@ -167,11 +166,9 @@ describe("fly-through / the ruler", () => {
   });
 
   it("(k2) is a pure AXIAL displacement — which is what lets the LENS do the moving", () => {
-    // The story does not fly this camera: it parks one at −distFar and slides
-    // the MODEL to (−distFar − camX) instead (story/fly.ts). Those are the same
-    // frames only while the path stays ON the axis — a Y or Z component would
-    // need a rotation no dolly can express — so this is the tripwire on the
-    // precondition, not on the arithmetic.
+    // The story parks a camera at −distFar and slides the MODEL instead; that
+    // matches only while the path stays ON the axis, since a Y or Z component
+    // would need a rotation no dolly can express.
     for (let i = 0; i <= 40; i++) {
       const pose = flyPose(i / 40);
       const y = pose.distance * Math.sin(pose.elevation) + (pose.targetY ?? 0);
@@ -223,10 +220,8 @@ describe("fly-through / the ruler", () => {
   });
 
   it("(n) HOLDS the finale's framing — the fov never moves after pClear", () => {
-    // The demo used to reach fovOut on the LAST key, so everything after the
-    // lens left the frame was a continuous zoom into the starfield ("we still
-    // continue zooming in after we go through"). The settle now finishes at
-    // pClear and the finale is a hold, whatever fovOut is tuned to.
+    // The settle finishes at pClear and the finale is a hold, whatever fovOut
+    // is tuned to — no continuous zoom into the starfield.
     for (let i = 0; i <= 20; i++) {
       const p = FLY.pClear + ((1 - FLY.pClear) * i) / 20;
       expect(flyPose(p).fov, `fov at p ${p}`).toBeCloseTo(FLY.fovOut, 12);
@@ -245,9 +240,8 @@ describe("fly-through / the ruler", () => {
   });
   it("(o) flies DEAD-ON down the axis, from the park to the finale", () => {
     // az = −π/2 and el = 0 put the camera at (targetX − dist, 0, 0) looking at
-    // (targetX, 0, 0): the optical axis, square to the mount face. The park used
-    // to carry a slight high angle that levelled off before the barrel, and it
-    // read as the lens being tilted. Nothing on the path may reintroduce it.
+    // (targetX, 0, 0): the optical axis, square to the mount face. Any high
+    // angle on the path reads as the lens being tilted.
     for (let i = 0; i <= 40; i++) {
       const pose = flyPose(i / 40);
       expect(pose.elevation, `elevation at p ${i / 40}`).toBeCloseTo(0, 12);
@@ -264,9 +258,8 @@ describe("fly-through / the ruler", () => {
   });
 
   it("(p) takes the room AND the glass glints down before the stars arrive", () => {
-    // One window drives both (FLY.pDark): the frame has to be a dark tube by the
-    // time the sky comes up in it, or the studio lights are still on the glass
-    // when the starfield is supposed to be the only light in the frame.
+    // One window drives both (FLY.pDark): the frame must be a dark tube by the
+    // time the sky comes up in it.
     expect(FLY.pDark[0]).toBeLessThan(FLY.pDark[1]);
     expect(FLY.pDark[1]).toBeLessThanOrEqual(FLY.pSkyIn[1]);
     // both floors are levels, and the glass floor is the darker of the two —
@@ -278,16 +271,13 @@ describe("fly-through / the ruler", () => {
   });
 
   it("(q) has the iris WIDE OPEN before the camera reaches the glass", () => {
-    // The dive opens the stop on the approach; a stop still closing when the
-    // camera arrives at the mount is a shut door in the frame it flies through.
-    // pEnter is that arrival, and the passage through the stack begins after it.
+    // The dive opens the stop on the approach; a stop still closing at pEnter
+    // (the arrival at the mount) is a shut door in the frame.
     expect(FLY.pAperture[0]).toBeGreaterThanOrEqual(0);
     expect(FLY.pAperture[0]).toBeLessThan(FLY.pAperture[1]);
     expect(FLY.pAperture[1]).toBeLessThan(FLY.pEnter);
     // …and open before the sky is FULLY up: the trace clips every ray outside
-    // the iris clear radius, so a still-shut stop must not be the thing
-    // metering the risen starfield (the fades may overlap — the open is tuned
-    // to land late, just before glass entry)
+    // the iris clear radius, so a shut stop must not meter the risen starfield
     expect(FLY.pAperture[1]).toBeLessThan(FLY.pSkyIn[1]);
     // the park is stopped DOWN and the flight ends wide open (the channel is
     // 0 = f/2.8 open, 1 = f/22 closed)

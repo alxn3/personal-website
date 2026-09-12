@@ -1,17 +1,10 @@
-// The SOURCE backend for `Algebra<S>`: a third implementation alongside `NUM`
-// (ops/algebra.ts), emitting shader SOURCE TEXT instead of numbers. Recipes, gate and pipeline are all written
-// against `Algebra<S>`, so running them on this backend yields the deform chain
-// as WGSL, GLSL or JS — from the SAME code the CPU spec runs.
-//
-// SSA WITH A MEMO: every operation allocates one temp and records the expression
-// text, so an expression already emitted in scope returns its existing temp
-// rather than a second copy. That is the CSE TSL cannot do (it does not compare
-// across distinct node objects), and it is why the emitted chain is shorter than
-// the node graph's.
-//
-// SCOPES ARE REAL: a temp declared inside an `if` block is out of scope after
-// it, so `fork()` gives a branch its own line list and its own memo layered over
-// the parent's. A child may READ a parent temp; a parent can never see a child's.
+// The SOURCE backend for `Algebra<S>`: emits shader source text (WGSL, GLSL or
+// JS) instead of numbers, so the recipes, gate and pipeline yield the deform
+// chain from the same code the CPU spec runs. SSA with a memo: each operation
+// allocates one temp, and an expression already emitted in scope returns its
+// temp — the CSE TSL cannot do. Scopes are real: `fork()` gives an `if` branch
+// its own line list and memo layered over the parent's; a child may read a
+// parent temp, never the reverse.
 
 import type { Algebra, Sc } from "../algebra";
 

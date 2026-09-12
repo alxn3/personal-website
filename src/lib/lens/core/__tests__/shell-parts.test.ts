@@ -9,12 +9,9 @@ import {
 } from "../parts";
 import { PART } from "../names";
 
-// The shell gate's cast, pinned against the names the SHIPPED GLBs actually
-// carry — the same source ops/__tests__/shipped-glb.test.ts reads, for the same
-// reason: a predicate written from memory drifts silently when the model drops,
-// and this one decides what the story TAKES OFF THE LENS. Every name below is
-// asserted to exist in a shipped model, so a rename fails here rather than in a
-// scroll nobody re-checks.
+// The shell gate's cast, pinned against the names the SHIPPED GLBs carry: this
+// predicate decides what the story takes off the lens, so every name below is
+// asserted to exist in a shipped model and a rename fails here.
 
 interface Gltf {
   nodes: { name: string }[];
@@ -43,10 +40,8 @@ const basePart = (n: string) => n.replace(/_Seg\d+$/, "");
 
 describe("the node-name table", () => {
   it("names only parts the shipped models actually carry", () => {
-    // core/names.ts is where a model-side rename lands. A name that stops
-    // existing must fail HERE — as a table entry pointing at nothing — rather
-    // than as a predicate that quietly matches no mesh and a departure table
-    // whose row is never read.
+    // A table entry pointing at nothing must fail here rather than as a
+    // predicate that quietly matches no mesh.
     for (const name of Object.values(PART))
       expect(REAL.has(name), `${name} is a real node`).toBe(true);
   });
@@ -125,8 +120,7 @@ describe("isShellPart", () => {
   });
 
   it("never mistakes a shim ring (or a brass one) for a control ring", () => {
-    // The `^` in `^Ring_` is what keeps these out — the collision the gate
-    // would fail SILENTLY on, hiding internals behind the shell's envelope.
+    // The `^` in `^Ring_` keeps these out; the collision would fail silently.
     for (const n of [
       "Shim_Ring_01",
       "Shim_Ring_02",
@@ -143,9 +137,8 @@ describe("isShellPart", () => {
   });
 
   it("partitions the SHIPPED models into exactly this cast", () => {
-    // KNOWN LIMITATION: this catches a rename or a widened predicate, but NOT a
-    // new exterior family whose name the predicate doesn't match — it would
-    // simply never join the cast, and both assertions below would still pass.
+    // Catches a rename or a widened predicate, but NOT a new exterior family
+    // the predicate doesn't match — it would just never join the cast.
     const shell = [...new Set(NAMES.filter(isShellPart).map(basePart))].sort();
     expect(shell).toEqual(SHELL_PARTS);
     // …and it is a real slice of the model, not everything and not nothing
@@ -192,9 +185,8 @@ describe("isPeelTube", () => {
   });
 
   it("stops at its own cast — the rest-cast and the keep-set are not tubes", () => {
-    // The rear tube, the shims and the focus metalwork leave too, but on the
-    // REST cast (isPeelRest) with their own windows; the keep-set (iris,
-    // mount) never leaves at all. Neither may ride this predicate.
+    // The shims and focus metalwork leave on the REST cast; the keep-set (iris,
+    // mount) never leaves. Neither may ride this predicate.
     for (const n of [
       "Shim_Ring_02_Seg3",
       "Mount_ChassisPlate_Seg1", // NOT Chassis_Fixed — the `^` is load-bearing
@@ -211,9 +203,8 @@ describe("isPeelTube", () => {
   });
 
   it("leaves the hardware the chassis ADOPTS behind", () => {
-    // Focus_Motor/Focus_GuideRods are children of Chassis_Fixed (ops/frames.ts)
-    // but carry their own names, so the gate never reaches them and the
-    // mechanism stays whole once the tube is off.
+    // Focus_Motor/Focus_GuideRods are children of Chassis_Fixed but carry their
+    // own names, so the gate never reaches them.
     for (const n of ["Focus_Motor", "Focus_GuideRods"]) {
       expect(REAL.has(n), `${n} is a real node`).toBe(true);
       expect(isPeelTube(n), n).toBe(false);
@@ -223,8 +214,7 @@ describe("isPeelTube", () => {
 
 describe("the casts together", () => {
   it("share no piece — each gets its own band of a fade channel", () => {
-    // core/scene gives each its own slice, so an overlap would put a piece in
-    // two bands and the later branch would silently win.
+    // An overlap would put a piece in two bands and the later branch would win.
     for (const n of NAMES) {
       const casts = [
         isShellPart(n),
@@ -238,14 +228,8 @@ describe("the casts together", () => {
 
   it("with the keep-set, WHITELIST the whole model (owner's law)", () => {
     // Every model name is either KEPT for the card scene (glass, iris,
-    // mount/PCB — "the connector, the glass elements and the aperture
-    // assembly"), in one of the four departing casts, or one of the pure
-    // GROUP nodes (which carry no mesh and are never gated — their meshes are
-    // classified under their own names). Nothing may fall through: a new part
-    // added to the model must be placed, or this fails.
-    // lens_work MIGRATION STEP 5 added three more: the two `Grp_` graph
-    // empties and `Optics_G1` (the first NESTED one — a child of Barrel_Inner,
-    // holding Element_01/02).
+    // mount/PCB), in one of the four departing casts, or a pure GROUP node
+    // (no mesh, never gated). A new part must be placed, or this fails.
     const GROUPS = new Set([
       "Grp_FocusDrive",
       "Grp_MountRear",
@@ -274,9 +258,7 @@ describe("the casts together", () => {
       (n) => isShellPart(n) || isPeelExtra(n) || isPeelTube(n) || isPeelRest(n),
     );
     expect(leaving).toHaveLength(48 + 12 + 74 + 1);
-    // More NODE names leave than stay now (the cladding is heavily wedge-cut),
-    // but the keep-set — glass, iris, mount, PCB — must remain: cap the slice
-    // so the casts can never quietly swallow the model.
+    // Caps the slice so the casts can never quietly swallow the model.
     expect(leaving.length).toBeLessThan(NAMES.length * 0.75);
   });
 });

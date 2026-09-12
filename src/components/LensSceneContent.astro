@@ -157,8 +157,10 @@ const band = bandOf(scene);
   }
 
   /* ---- mobile / portrait: every block collapses into a scrimmed BOTTOM band
-         (pos="top" keeps a top band), never floating over the lens. */
-  @media (max-width: 760px) {
+         (pos="top" keeps a top band), never floating over the lens. Keyed to
+         where the lens park is OFF: parkScaleFor (core/scene.ts) is 0 at
+         aspect ≤ 4/5, so a portrait tablet takes this layout too. */
+  @media (max-width: 760px), (max-aspect-ratio: 4/5) {
     .cap-band,
     .cap-band[data-pos] {
       /* every block shares the ONE bottom slot, so consecutive captions hand
@@ -178,9 +180,7 @@ const band = bandOf(scene);
       margin-inline: auto !important;
       text-align: center;
       align-items: center;
-      /* the 50% term is the width the story table's cam.xs framing was tuned
-         against */
-      max-width: min(88vw, 460px, 50%);
+      max-width: min(88vw, 460px);
     }
     .lens-cap[data-pos="top"] {
       top: 12svh !important;
@@ -204,6 +204,14 @@ const band = bandOf(scene);
     }
     .lens-cap :global(.cap-body) {
       text-align: center;
+    }
+  }
+  /* a small LANDSCAPE window still parks the lens aside (parkScaleFor > 0
+     above aspect 4/5): half the band keeps the caption off it */
+  @media (max-width: 760px) and (min-aspect-ratio: 4/5) {
+    .lens-cap,
+    .lens-cap[data-pos] {
+      max-width: 50%;
     }
   }
 </style>

@@ -1,19 +1,14 @@
 import * as THREE from "three/webgpu";
 
-// DEV ONLY — dynamically imported, so none of it reaches a visitor's bundle.
-// `?mtrace`: one row per rendered frame, so the story's movement can be
-// reviewed as CURVES rather than stills and a hitch no screenshot would catch
-// shows up as a spike.
+// Dev only — dynamically imported. `?mtrace`: one row per rendered frame, so
+// the story's movement can be reviewed as curves rather than stills. Harvest
+// from the console as `window.__lensMotionTrace`.
 //
-// It reads the CAMERA and nothing else, which is sufficient: the lens never
-// rotates in world space (the camera orbits it, optical axis world +X), so aim,
-// roll, screen position and apparent size all follow from the camera pose.
-//
-// ONE SPAN IS EXEMPT: through the fly-through the camera is PARKED and the lens
-// translates past it, so the rows there are flat by design and `ndc`/`rad`
-// project the lens' HOME rather than where it is.
-//
-// Harvest from the console as `window.__lensMotionTrace`.
+// It reads the camera and nothing else: the lens never rotates in world space
+// (the camera orbits it, optical axis world +X), so aim, roll, screen position
+// and apparent size all follow from the camera pose. Through the fly-through
+// the camera is parked and the lens translates past it, so the rows there are
+// flat and `ndc`/`rad` project the lens' home rather than where it is.
 
 /** Ring capacity — ~5.5 min at 60fps, far past any scripted sweep. */
 const CAP = 20000;

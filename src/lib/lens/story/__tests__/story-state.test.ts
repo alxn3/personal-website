@@ -13,6 +13,8 @@ import {
   focalMmAt,
   inkFillAt,
   interiorFadeAt,
+  peelRollAt,
+  peelTurnAt,
   preShutAt,
   rockYAt,
   sceneIndexAt,
@@ -21,7 +23,6 @@ import {
   zoomAt,
 } from "../envelopes";
 import { revealRollAt, turnAt } from "../reveal";
-import { peelRollAt, peelTurnAt } from "../peelcards";
 import { internalsEnvAt } from "../internals";
 import {
   EXIT_END,
@@ -49,16 +50,11 @@ import { STORY_SAMPLE_PS, STORY_WINDOWS, storyStateAt } from "../state";
 //
 // story/state.ts is a composition, not a model: every field must be the value
 // of the function whose module OWNS it — the same function the driver calls.
-// That is checkable directly, and it is the only guard that matters, because a
-// report that re-derives a law is exactly the rot this whole surface exists to
-// kill (story/__tests__/reveal.test.ts used to rebuild the explode channel by
-// hand; story/internals.ts used to keep a textual twin of the pre-shut ramp).
 //
 // The other half is the CHUNK LAW: story/state.ts drags optics/ in through
 // fly.ts / trails.ts / constellations.ts, so a single static import of it from
 // anything on the hero's path would put the whole dive in the homepage's first
-// chunk. That is asserted on the SOURCE below and verified on the built output
-// in the report; both, because the build check is not in `npm test`.
+// chunk. Asserted on the SOURCE below.
 // ============================================================================
 
 const rwR = rangeOf("rewrap");
@@ -96,7 +92,6 @@ describe("storyStateAt agrees with the modules that own each law", () => {
       expect(s.look.reveal, `reveal ${p}`).toBe(flyRevealAt(p));
       // the fly's span uniforms, read from their owner at EVERY p — the report
       // does not zero them outside the span, because the ramps already are
-      // (pinned against exit()'s teardown in __tests__/story-fly.test.ts)
       expect(s.look.skyMix, `skyMix ${p}`).toBe(flySkyMixAt(p));
       expect(s.look.warp, `warp ${p}`).toBe(flyWarpAt(p));
       expect(s.look.streak, `streak ${p}`).toBe(flyStreakAt(p));
@@ -118,10 +113,8 @@ describe("storyStateAt agrees with the modules that own each law", () => {
   });
 
   it("reports the model's placement — the ONE orientation the driver writes", () => {
-    // hero-driver writes exactly these three axes in its single
-    // setModelOrientation call; they are disjoint in p but for the ending's
-    // rock, which rides two of them at once, and the report keeps them separate
-    // so the map can show which one is live.
+    // hero-driver writes these three axes in one setModelOrientation call; the
+    // report keeps them separate so the map can show which is live.
     for (const p of PS) {
       const s = storyStateAt(p);
       // the roll's gate is the EXPLODE channel (story/reveal.ts — the spin
@@ -170,9 +163,8 @@ describe("storyStateAt agrees with the modules that own each law", () => {
 
 describe("the writer maps, as the report sees them", () => {
   it("tiles the iris across p with no gap and no overlap", () => {
-    // three writers, separated by RANGE rather than by rAF order. Every p has
-    // exactly one, and the fly wins inside its own span because its writes land
-    // last in the driver's frame().
+    // three writers, separated by RANGE rather than by rAF order; the fly wins
+    // inside its own span because its writes land last in frame().
     for (const p of PS) {
       const s = storyStateAt(p);
       const inFly = p >= DIVE_P0 && p <= EXIT_END;
@@ -186,8 +178,7 @@ describe("the writer maps, as the report sees them", () => {
         expect(s.hud.fStop).not.toBe(null);
       } else if (s.irisOwner === "fly") {
         expect(s.channels.aperture).toBe(flyApertureAt(flyDiveP(p)));
-        // both of the fly's iris ramps are its own exported laws — the rack
-        // used to be written inline in frame() and reported as null here
+        // both of the fly's iris ramps are its own exported laws
         expect(s.channels.focus).toBe(flyFocusAt(flyDiveP(p)));
         expect(s.hud.fStop).not.toBe(null);
       } else {
@@ -209,8 +200,8 @@ describe("the writer maps, as the report sees them", () => {
         below ? 1 : flyBodyFadeAt(p),
       );
     }
-    // the seam itself: the driver's half is a constant 1 and the fly opens on
-    // 1, which is what makes the tile stepless as well as gapless
+    // the seam: the driver's half is a constant 1 and the fly opens on 1, so
+    // the tile is stepless as well as gapless
     expect(flyBodyFadeAt(DIVE_P0)).toBe(1);
   });
 
@@ -247,12 +238,10 @@ describe("the writer maps, as the report sees them", () => {
 });
 
 describe("the chunk law, on the source", () => {
-  // story/state.ts drags optics/ in. A single STATIC import of it from anything
-  // the homepage reaches would put the whole dive in the first chunk — the same
-  // law story/fly.ts states for itself. `import.meta.env.DEV` removes
-  // hero-driver's `import("./state")` from a production build entirely, so
-  // the built homepage chunk contains no trace of it (verified with a build);
-  // this is the cheap tripwire that runs on every `npm test`.
+  // story/state.ts drags optics/ in, so a single STATIC import of it from
+  // anything the homepage reaches would put the whole dive in the first chunk.
+  // hero-driver's `import("./state")` sits behind `import.meta.env.DEV`, so
+  // a production build drops it entirely.
   const root = new URL("../../", import.meta.url).pathname;
   const files: string[] = [];
   (function walk(dir: string) {
@@ -277,9 +266,7 @@ describe("the chunk law, on the source", () => {
 
   it("is imported statically by nothing but its two instrument siblings", () => {
     // story/cost.ts and story/flow.ts are state.ts's only static consumers, and
-    // both live under this very law themselves (below) — the cost map is the
-    // state map's arithmetic and the flow map is its geometry, so each must be
-    // as unreachable from the hero's path as its input is.
+    // both live under this same law themselves (below).
     expect(
       staticImportersOf("state"),
       "story/state.ts must be reached by import() or by a test only",
@@ -287,9 +274,8 @@ describe("the chunk law, on the source", () => {
   });
 
   it("carries story/cost.ts under the same law", () => {
-    // story/flow.ts takes the hero's pinned deform set and the sample grid off
-    // cost.ts rather than rebuilding either, which is the only static reach
-    // into it that exists.
+    // story/flow.ts takes the pinned deform set and sample grid off cost.ts
+    // rather than rebuilding either — the only static reach into it.
     expect(
       staticImportersOf("cost"),
       "story/cost.ts must be reached by import() or by a test only",

@@ -8,8 +8,6 @@ import {
   orbit,
   rot,
   runPipeline,
-  scale,
-  shear,
   spread,
   swirl,
   tilt,
@@ -40,9 +38,8 @@ const F0: PieceFrame<number> = frameAt(F0P.theta, F0P.radius, {
 });
 
 // `channel` / `gateAt` are the raw clock and the REAL gate a `during` scope
-// would re-run (see fixture-gate.ts); the flight/stick pair each case passes is
-// the case's own, since a transform's law does not care which channel produced
-// its flight.
+// would re-run; each case passes its own flight/stick pair, since a transform's
+// law does not care which channel produced its flight.
 function makeCtx(over: Partial<OpCtx<number>> = {}): OpCtx<number> {
   const rank01 = over.rank01 ?? 0.5;
   const layerPhase = over.layerPhase ?? 0;
@@ -63,7 +60,7 @@ function makeCtx(over: Partial<OpCtx<number>> = {}): OpCtx<number> {
     off: 0,
     rung: 0,
     axi: 0,
-    layerN: 5, // one wedge of a 5-cut layer
+    depth: 0, // a thin sheet
     adopted: 0, // frames its own sector; rides no host shell
     flight: 1,
     stick: 1,
@@ -83,10 +80,9 @@ function runT(
   return op.run(v, f, w, ctx);
 }
 
-// Assert a transform is a no-op on both vertex and frame. The POINT is strict —
-// every transform returns the components it was handed. `axial` is not, because
-// `tilt` rebuilds it as pivot + (axial − pivot), which cancels to within an ULP
-// for a distant hinge; that is the pivot's arithmetic, not the op's.
+// Assert a transform is a no-op on both vertex and frame. The POINT is strict;
+// `axial` is not, because `tilt` rebuilds it as pivot + (axial − pivot), which
+// cancels only to within an ULP for a distant hinge.
 function expectIdentity(out: {
   v: VertexState<number>;
   f: PieceFrame<number>;
@@ -113,8 +109,6 @@ describe("transforms", () => {
       spread(0.4),
       ladder<number>("attr", 2),
       ladder(5, 2),
-      scale(2),
-      shear(0.7),
       tilt(1.2),
       tilt(1.2, { pivot: -7 }),
     ];
@@ -157,9 +151,8 @@ describe("transforms", () => {
   });
 
   it("(c′) swirl is orbit plus the fly-in couplings: flight^exp, (rank01 + ½), wrapDir", () => {
-    // The same numbers the flagged orbit produced — swirl is a verbatim copy of
-    // that body. exp 0.65 and rankScale are assemble's; wrapDir stays INSIDE
-    // this op, because the swirl is the wrap's own motion.
+    // exp 0.65 and rankScale are assemble's; wrapDir stays INSIDE this op,
+    // because the swirl is the wrap's own motion.
     const ctx = makeCtx({ flight: 0.5, rank01: 0.5, wrapDir: -1 });
     const out = runT(
       swirl(1.2, { exp: 0.65, rankScale: true }),
@@ -212,9 +205,8 @@ describe("transforms", () => {
     expect(out.v.rot).toBeCloseTo(V0.rot + a, 12);
     expect(out.v.axial).toBe(V0.axial);
 
-    // Revolution WITHOUT spin is the composition of the two, no carry flag: the
-    // frame travels by `a` while the piece's own facing comes back to where it
-    // started.
+    // Revolution WITHOUT spin is the composition of the two: the frame travels
+    // by `a` while the piece's own facing returns to where it started.
     const composed = runPipeline(
       [orbit<number>(1.2), orbit<number>(-1.2, { about: "frame" })],
       V0,
@@ -227,9 +219,8 @@ describe("transforms", () => {
   });
 
   it("(d) spread displaces along the WORKING DIRECTION — rot then spread IS the old seam flag", () => {
-    // F0.orient is the seat (t0 = 0.3, the direction every piece starts aimed
-    // along), so one rot of −halfSpan aims at t0 − halfSpan: the meridian the
-    // deleted `seamDir: 1` flag used to name, and the same numbers it produced.
+    // F0.orient is the seat (t0 = 0.3), so one rot of −halfSpan aims at
+    // t0 − halfSpan: the seam meridian.
     const ctx = makeCtx({ flight: 0.5, R: 2, t0: 0.3, halfSpan: 0.5 });
     const out = runPipeline(
       [rot<number>(-0.5), spread<number>(0.4)],
@@ -257,11 +248,9 @@ describe("transforms", () => {
   });
 
   it("(d′) spread on an AXISYMMETRIC piece dilates per vertex and moves no frame", () => {
-    // A body of revolution has no meridian (t0 is the pinned 0), so sliding the
-    // whole piece along t0 would drag a ring off-axis in an arbitrary direction.
-    // Instead every vertex moves out along its OWN meridian — the classic
-    // explode's radial dilation: same meridian, radius + D — and the frame,
-    // which a dilation does not translate, stays exactly put.
+    // A body of revolution has no meridian, so sliding it along t0 would drag a
+    // ring off-axis; instead every vertex moves out along its OWN meridian
+    // (radius + D) and the frame, which a dilation does not translate, stays.
     const ctx = makeCtx({
       flight: 0.5,
       R: 2,
@@ -338,23 +327,7 @@ describe("transforms", () => {
     );
   });
 
-  it("(f) scale(2) at flight 1, w 1 doubles the vertex's offset from the frame centre; shear displaces theta-wise ∝ (axial − f.axial)", () => {
-    const ctx = makeCtx({ flight: 1 });
-
-    const offBefore = Math.hypot(V0.x - F0.x, V0.z - F0.z, V0.axial - F0.axial);
-
-    const out = runT(scale(2), V0, F0, 1, ctx);
-    const offAfter = Math.hypot(
-      out.v.x - F0.x,
-      out.v.z - F0.z,
-      out.v.axial - F0.axial,
-    );
-    expect(offAfter).toBeCloseTo(2 * offBefore, 12);
-    // Frame is the fixed point; rot unchanged.
-    expect(out.f).toEqual(F0);
-    expect(out.v.rot).toBe(V0.rot);
-
-    // ladder rung = ctx.rung when rungOf === "attr".
+  it('(f) ladder reads the piece\'s own rung when rungOf is "attr"', () => {
     const attr = runT(
       ladder<number>("attr", 2),
       V0,
@@ -363,35 +336,6 @@ describe("transforms", () => {
       makeCtx({ flight: 1, rung: 3 }),
     );
     expect(attr.v.axial).toBeCloseTo(V0.axial + 3 * 2 * 1 * 1, 12);
-
-    // shear: the tangential push (tang) is exactly amt·flight·w·(axial − f.axial),
-    // added perpendicular to the meridian ⇒ Δtheta = atan2(tang, radius).
-    const amt = 0.7;
-    const tangOf = (vtx: VertexState<number>): number =>
-      amt * 1 * 1 * (vtx.axial - F0.axial);
-    const near: VertexState<number> = { ...V0, axial: F0.axial + 0.3 };
-    const far: VertexState<number> = { ...V0, axial: F0.axial + 0.6 };
-    const sNear = runT(shear(amt), near, F0, 1, ctx);
-    const sFar = runT(shear(amt), far, F0, 1, ctx);
-    expect(polarOf(sNear.v).theta).toBeCloseTo(
-      V0P.theta + Math.atan2(tangOf(near), V0P.radius),
-      12,
-    );
-    expect(polarOf(sFar.v).theta).toBeCloseTo(
-      V0P.theta + Math.atan2(tangOf(far), V0P.radius),
-      12,
-    );
-    // The raw tangential displacement is proportional to (axial − f.axial): the
-    // far vertex (2× the offset) is pushed exactly 2×.
-    expect(tangOf(far) / tangOf(near)).toBeCloseTo(2, 12);
-    // A vertex level with the frame (axial === f.axial) is unmoved.
-    const level: VertexState<number> = { ...V0, axial: F0.axial };
-    const sLevel = runT(shear(amt), level, F0, 1, ctx);
-    expect(sLevel.v.x).toBeCloseTo(level.x, 12);
-    expect(sLevel.v.z).toBeCloseTo(level.z, 12);
-    // Frame + rot unchanged.
-    expect(sNear.f).toEqual(F0);
-    expect(sNear.v.rot).toBe(V0.rot);
   });
 
   it("(g) tilt turns (radius, axial) about the hinge (frame radius, pivot); the meridian, rot and the working direction untouched", () => {
@@ -417,12 +361,9 @@ describe("transforms", () => {
     expect(
       Math.hypot(polarOf(out.v).radius - F0P.radius, out.v.axial - pivot),
     ).toBeCloseTo(Math.hypot(dr, dy), 12);
-    // The meridian never moves (the hinge is the tangent circle) — the point
-    // only slides along it — and rot stays seated, because a tilt turns normals
-    // about the local tangent axis, which the one optical-axis rot angle cannot
-    // express (see the op's note). MID-MOTION the meridian holds to 12 places
-    // rather than to the bit, since the slide runs through a unit vector; the
-    // IDLE identity is the strict one, and case (a) still pins it.
+    // The meridian never moves (the hinge is the tangent circle) and rot stays
+    // seated, since a tilt turns normals about the local tangent axis, which
+    // the single optical-axis rot angle cannot express.
     expect(polarOf(out.v).theta).toBeCloseTo(V0P.theta, 12);
     expect(out.v.rot).toBe(V0.rot);
     // The frame rides the same rotation with dr = 0 (it sits ON the hinge

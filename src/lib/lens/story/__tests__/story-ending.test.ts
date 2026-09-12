@@ -3,7 +3,7 @@ import * as THREE from "three/webgpu";
 import { shippedModel, placeModel } from "./shipped-model";
 import { buildPieceTable, liveDeformAt } from "../flow";
 import { pieceField, pieceFields } from "../../ops/cpu";
-import { sampleStory, applyStoryFraming } from "../camera";
+import { sampleStory, applyStoryFraming, type StorySample } from "../camera";
 import { storyStateAt } from "../state";
 const poseAt = (p: number) => {
   const t = new THREE.Vector3();
@@ -23,23 +23,20 @@ import { STORY_R, atFrac, rangeOf, type Pose } from "../story";
 // ============================================================================
 // THE ENDING'S FRAME, MEASURED THROUGH THE REAL PROJECTION OVER THE REAL CLOUD.
 //
-// The rewrap parks on a flat, face-on spread and the descent brings it home.
-// Three of the properties that beat rests on are about where the PIECES land on
-// screen, and no law stated in p can see any of them:
+// Three properties of the ending are about where the PIECES land on screen, and
+// no law stated in p can see them:
 //
-//   · THE FLATTEN MUST NOT READ AS A ZOOM. Its pullback is paired with its fov
-//     (story/camera.ts `back`), which makes `|pos| · tan(fov/2)` an identity —
-//     a law on that number cannot fail for any ortho schedule. The FIGURE's
-//     projected radius can, and it is what the reader sees.
-//   · THE HELD CLOUD MUST SIT INSIDE ITS OWN DEPTH-FADE BAND, or a third of it
-//     is drawn half-transparent (core/scene.ts's fade planes).
+//   · THE FLATTEN MUST NOT READ AS A ZOOM. Its pullback is paired with its fov,
+//     so `|pos| · tan(fov/2)` is an identity; the FIGURE's projected radius is
+//     the number the reader sees.
+//   · THE HELD CLOUD MUST SIT INSIDE ITS OWN DEPTH-FADE BAND, or part of it is
+//     drawn half-transparent.
 //   · AND IT HAS TO FIT — on a phone the binding dimension is the WIDTH, which
 //     core/scene's zoom law fixes at one frame half-height whatever the aspect.
 //
-// Every number comes off `ops/cpu.ts`'s `pieceField` at `storyStateAt(p)`'s
-// channels, over the frames `ops/frames.ts` derives from the shipped GLB,
-// projected by a real THREE camera `applyStoryFraming` has placed — the same
-// two calls core/scene.ts makes every frame.
+// Every number comes off ops/cpu.ts's `pieceField` at `storyStateAt(p)`'s
+// channels, over the shipped GLB's frames, projected by a real THREE camera
+// `applyStoryFraming` has placed.
 // ============================================================================
 
 const rwR = rangeOf("rewrap");
@@ -109,34 +106,39 @@ function cameraAt(p: number, [w, h]: [number, number]) {
   const up = new THREE.Vector3();
   const target = new THREE.Vector3();
   const sample = sampleStory(p, pos, up, target);
-  return place(sample, pos, up, target, p, [w, h]);
+  return place(sample, pos, up, target, [w, h]);
 }
 
 /** …and the camera a POSE alone would give, with no flatten in it: the
  *  counterfactual the blend has to match. */
-function poseCamera(pose: Pose, p: number, wh: [number, number]) {
+function poseCamera(pose: Pose, wh: [number, number]) {
   return place(
-    { fov: pose.fov, xs: pose.xs, ys: pose.ys ?? 0, wide: pose.wide ?? 1 },
+    {
+      fov: pose.fov,
+      xs: pose.xs,
+      ys: pose.ys ?? 0,
+      wide: pose.wide ?? 1,
+      near: pose.near ?? 1,
+      lift: pose.lift ?? 0.06,
+    },
     new THREE.Vector3(...pose.pos).multiplyScalar(STORY_R),
     new THREE.Vector3(...pose.up),
     new THREE.Vector3(...(pose.target ?? [0, 0, 0])),
-    p,
     wh,
   );
 }
 
 function place(
-  sample: { fov: number; xs: number; ys: number; wide: number },
+  sample: StorySample,
   pos: THREE.Vector3,
   up: THREE.Vector3,
   target: THREE.Vector3,
-  p: number,
   [w, h]: [number, number],
 ) {
   const cam = new THREE.PerspectiveCamera(sample.fov, w / h, 0.1, 400);
   cam.zoom = frameZoom(w, h);
   up.normalize();
-  applyStoryFraming(cam, sample, pos, up, target, w, h, parkScaleFor(w, h), p);
+  applyStoryFraming(cam, sample, pos, up, target, w, h, parkScaleFor(w, h));
   cam.updateMatrixWorld(true);
   return cam;
 }
@@ -169,18 +171,16 @@ function maxNdcX(cloud: THREE.Vector3[], cam: THREE.PerspectiveCamera) {
 }
 
 describe("the ending's flat frame", () => {
-  // THE NO-POP LAW, ON THE FIGURE. At the park the projection is wholly
-  // orthographic; the same p with the row's own perspective pose is the frame
-  // the reader would have had instead. The blend is a projection change only if
-  // those two put the cloud at the same size — which is what the rewrap's
-  // TARGET distance buys, and this is the pin on that number: move the target,
-  // the scatter or the reach and the two part company.
+  // THE NO-POP LAW, ON THE FIGURE: at the park the projection is wholly
+  // orthographic, and the same p with the row's own perspective pose is the
+  // frame the reader would have had. The blend is a projection change only if
+  // the two put the cloud at the same size — what the rewrap's TARGET buys.
   it("puts the cloud the same size on screen with the flatten and without", () => {
     const p = atFrac(rwR, 0.99);
     const cloud = cloudAt(p);
     for (const wh of [WIDE, PHONE]) {
       const flat = screenRadius(cloud, cameraAt(p, wh));
-      const persp = screenRadius(cloud, poseCamera(rwR.scene.cam, p, wh));
+      const persp = screenRadius(cloud, poseCamera(rwR.scene.cam, wh));
       expect(sampleStory(p, new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()).fov).toBeCloseTo(3, 9); // prettier-ignore
       expect(Math.abs(flat / persp - 1), `${wh[0]}x${wh[1]}`).toBeLessThan(
         0.02,
@@ -188,10 +188,9 @@ describe("the ending's flat frame", () => {
     }
   });
 
-  // …AND NO STEP GETTING THERE. Nothing in the model moves for the whole of the
-  // rewrap (story/reveal.ts's spread law), so every change in the figure's size
-  // across the blend-in is the CAMERA's: the pull-back's own, plus whatever the
-  // projection is doing. One smooth ramp, sampled fine enough that a cut shows.
+  // …AND NO STEP GETTING THERE: nothing in the model moves across the rewrap,
+  // so every change in the figure's size over the blend-in is the CAMERA's.
+  // Sampled fine enough that a cut shows.
   it("never steps: the blend-in is one ramp on the figure's own size", () => {
     const open = atFrac(rwR, rwR.scene.orthoIn![0]);
     const cloud = cloudAt(open);
@@ -264,9 +263,8 @@ describe("the ending's depth fade", () => {
       expect(Math.min(...park), `rewrap ${f}`).toBeGreaterThan(0.5);
     }
     // …and through the descent NO PIECE THE READER CAN SEE goes under half.
-    // The waiting cloud now parks OFF the frame's sides by design (the phone
-    // law below pins that), so the ghost floor is a law about the pieces ON
-    // STAGE — an off-screen piece may sit outside the band.
+    // The waiting cloud parks OFF the frame's sides by design, so the ghost
+    // floor is a law about the pieces ON STAGE.
     const visible = (p: number): number[] => {
       const cam = cameraAt(p, WIDE);
       const pieces = piecesAt(p);
@@ -277,9 +275,8 @@ describe("the ending's depth fade", () => {
       });
     };
     expect(visible(atFrac(capR, 0.16)).filter((v) => v < 0.5)).toHaveLength(0);
-    // The band has a real dip around capsOn 0.475 that a single sample on the
-    // far side of it cannot see, so the descent is scanned and floored — and
-    // there are always pieces on stage to hold the law to.
+    // The band dips mid-descent, where a single sample would miss it, so the
+    // descent is scanned and floored.
     let worst = 1;
     let sampled = 0;
     for (let i = 0; i <= 64; i++) {
@@ -290,29 +287,26 @@ describe("the ending's depth fade", () => {
     }
     expect(sampled).toBeGreaterThan(50);
     expect(worst, "the descent's deepest visible ghost").toBeGreaterThan(0.5);
-    // and by the time the pieces are home the fade is off entirely. capsOn 0.6,
-    // not 0.5: the dispersal is a BUMP on the flight now (ops/recipes.ts
-    // `disperse`), so the cloud is still opened out at a channel value the band
-    // — which sizes itself off that channel — reads as nearly home.
+    // and by the time the pieces are home the fade is off entirely. 0.6, not
+    // 0.5: the dispersal is a BUMP on the flight, so the cloud is still opened
+    // out at a channel value the band reads as nearly home.
     expect(Math.min(...fades(atFrac(capR, 0.6)))).toBe(1);
   });
 });
 
 describe("the ending on a phone", () => {
-  // PORTRAIT IS THE BINDING CASE. core/scene drives zoom from min(w,h)/h, so a
+  // PORTRAIT IS THE BINDING CASE: core/scene drives zoom from min(w,h)/h, so a
   // portrait frame is exactly ONE half-height wide however narrow the screen
-  // is: the held spread — as wide as it is tall — is clipped left and right
-  // unless the pose says how much frame it needs (story/story.ts `Pose.wide`).
+  // is, and the held spread is clipped unless the pose says how much frame it
+  // needs (`Pose.wide`).
   it("holds the whole spread inside the frame, sides included", () => {
     for (const f of [0.6, 0.8, 0.95]) {
       const p = atFrac(rwR, f);
       expect(maxNdcX(cloudAt(p), cameraAt(p, PHONE)), `rewrap ${f}`).toBeLessThan(1); // prettier-ignore
     }
-    // …then the descent INVERTS the law: the reveal has already shown the
-    // reader the whole figure, and from the turn on the waiting cloud parks
-    // OFF the frame — the pieces arrive from out of view. Pinned as an
-    // overflow so a framing retune cannot silently put the parked cloud back
-    // on stage.
+    // …then the descent INVERTS the law: from the turn on, the waiting cloud
+    // parks OFF the frame and the pieces arrive from out of view. Pinned as an
+    // overflow so a framing retune cannot put the parked cloud back on stage.
     for (const f of [0.3, 0.44]) {
       const p = atFrac(capR, f);
       expect(maxNdcX(cloudAt(p), cameraAt(p, PHONE)), `capsOn ${f}`).toBeGreaterThan(1); // prettier-ignore
@@ -325,10 +319,9 @@ describe("the ending on a phone", () => {
     }
   });
 
-  // THE PULL-BACK CAN OUTRUN THE FAR PLANE. The flatten alone parks the camera
-  // ten times its own reach out, and the portrait reach multiplies that again —
-  // past the resting far plane, which drew an empty stage. core/scene raises it
-  // to follow (`farFor`), and this is the tripwire on that.
+  // THE PULL-BACK CAN OUTRUN THE FAR PLANE: the flatten parks the camera ten
+  // times its own reach out and the portrait reach multiplies that again, so
+  // core/scene raises the plane to follow (`farFor`).
   it("keeps the flat park inside its own far plane", () => {
     const p = atFrac(rwR, 0.95);
     const cloud = cloudAt(p);
@@ -344,8 +337,8 @@ describe("the ending on a phone", () => {
   });
 
   it("costs a LANDSCAPE frame nothing — the reach is portrait's alone", () => {
-    // 16:9 is already wider than anything the ending asks for, so the pose is
-    // used exactly as authored: same camera, to the last bit.
+    // 16:9 is wider than anything the ending asks for, so the pose is used
+    // exactly as authored.
     for (const f of [0.5, 0.95]) {
       const p = atFrac(rwR, f);
       const pos = new THREE.Vector3();

@@ -6,15 +6,12 @@
 // graphs), so it is reachable ONLY through hero-driver's dynamic import() and
 // must NEVER be re-exported from index.ts.
 //
-// TIME, NOT SCROLL — an ACCUMULATED dt clamped to 100 ms a frame, never
-// performance.now() itself, because the hero stops rendering off-viewport and a
-// law keyed to absolute time would find every stroke dead on return. It gates
-// on `state.storyTarget`, the raw p, not the eased channel.
+// TIME, NOT SCROLL — the tick's ACCUMULATED dt, never performance.now() itself,
+// since the hero stops rendering off-viewport. It gates on the eased story p.
 //
-// IT OWNS NOTHING THE STORY DRIVES: one attached object and its own uniforms,
-// so it cannot fight hero-driver or story/fly.ts whatever order the rAFs run
-// in. It rides the STARFIELD GROUP for that group's per-frame camera-centring —
-// and unmounts with it when the fly exits, which the re-attach is written for.
+// It owns nothing the story drives: one attached object and its own uniforms.
+// It rides the STARFIELD GROUP for that group's per-frame camera-centring, and
+// unmounts with it when the fly exits — hence the re-attach.
 
 import * as THREE from "three/webgpu";
 import {
@@ -50,8 +47,7 @@ const tR = rangeOf("trails");
 
 /** Slack past each edge of the sky chapter before the ink is detached, so a
  *  scrub on an edge cannot thrash attach/detach; inside it the group hangs on
- *  the starfield at envelope 0. Exported so story/cost.ts reads the window
- *  rather than re-spelling it. */
+ *  the starfield at envelope 0. */
 const SPAN_PAD = 0.02;
 export const SPAN_P0 = coR.p0 - SPAN_PAD;
 export const SPAN_P1 = tR.p1 + SPAN_PAD;
@@ -63,72 +59,55 @@ export const constellationEnvAt = (p: number): number =>
   smoothstep(atFrac(coR, 0.05), atFrac(coR, 0.2), p) *
   (1 - smoothstep(tR.p0, atFrac(tR, 0.25), p));
 
-/** The quote's envelope — later in, much later out: the typography arrives once
- *  the sky is already drawing itself and HOLDS through the trails while the
- *  lines go, leaving the words alone on the stars at the chapter's end. */
+/** The quote's envelope — later in, much later out: it holds through the trails
+ *  while the lines go, leaving the words alone at the chapter's end. */
 export const quoteEnvAt = (p: number): number =>
   smoothstep(atFrac(coR, 0.35), atFrac(coR, 0.55), p) *
   (1 - smoothstep(atFrac(tR, 0.85), tR.p1, p));
 
-/** The names' envelope — the strokes', exactly: a name and the lines around it
- *  are one gesture and must arrive and leave together. An alias, not a copy, so
- *  giving the labels their own life has to be a deliberate edit. */
+/** The names' envelope: an ALIAS of the strokes', so a name and the lines
+ *  around it always arrive and leave together. */
 export const labelEnvAt = constellationEnvAt;
 
 // ── PAIR PICKING ────────────────────────────────────────────────────────────
-// EVERY STAR IS FAIR GAME, WITH PRIORITY IN THE MIDDLE: the pool is the catalog
-// inside the cone the held fly pose looks at, minus optics/sky.ts's DIM TIER,
-// and the bias is in the PICK (a centre-weighted draw), not in the pool.
-//
-// AND THE PICK GROWS WHAT IS ALREADY THERE: most spawns take one end from a
-// star a VISIBLE stroke already touches, so the sky carries figures that chain
-// and branch; the rest seed the next figure. MAX_TOUCH and the no-clash rule
-// (which shared endpoints are exempt from) keep it a chart.
+// The pool is the catalog inside the cone the held fly pose looks at, minus
+// optics/sky.ts's dim tier; the centre bias is in the PICK, not the pool. Most
+// spawns take one end from a star a visible stroke already touches, so figures
+// chain and branch; MAX_TOUCH and the no-clash rule keep it a chart.
 
 /** half-angle of the visible cone about the view axis (world +X — the held fly
  *  pose looks down it), radians */
 const CONE_RAD = (55 * Math.PI) / 180;
 /** the angular separation a pair must fall inside, radians. The lower bound is
  *  also the degenerate guard on the endpoint gaps: a stroke is inset by GAP_RAD
- *  at BOTH ends and must have ink left to draw. The upper bound keeps a stroke
- *  a mark rather than something that crosses the frame. */
+ *  at both ends and must have ink left to draw. */
 const MIN_SEP = 0.08;
 const MAX_SEP = 0.3;
 /** the clear sky a new stroke must leave around every stroke already on it,
- *  radians — `arcsClash`'s threshold, and the half of "no overlaps" that
- *  crossing alone does not cover (near-parallel strokes read as railroad
- *  tracks). Shared stars are exempt. */
+ *  radians — `arcsClash`'s threshold. Shared stars are exempt. */
 const CLEAR_RAD = 0.02;
 /** how many pairs back the driver refuses to repeat */
 const RECENT = 6;
-/** draws before `pickPair` gives up for this tick. Coming back null is a
- *  SKIPPED SPAWN, which is the right answer — a quiet tick beats a stroke laid
- *  across a stroke. */
+/** draws before `pickPair` gives up for this tick; coming back null is a
+ *  skipped spawn */
 const PICK_ATTEMPTS = 64;
 /** how sharply a pick favours the middle of the frame: a candidate's weight is
- *  exp(−½(γ/this)²) with γ its angle off the view axis. Priority, not
- *  exclusivity — the edges still see the occasional line. */
+ *  exp(−½(γ/this)²) with γ its angle off the view axis */
 const CENTRE_SIGMA_RAD = 0.3;
 /** how often an attempt takes its FIRST end from a star a visible stroke
- *  already touches. High, because a figure has only a dozen strokes' worth of
- *  life to grow in; the remainder seeds the next figure. Only taken when there
- *  is something to grow from, so an empty sky always starts fresh. */
+ *  already touches. Only taken when there is something to grow from, so an
+ *  empty sky always starts fresh. */
 const GROW_CHANCE = 0.9;
 /** the anchor is drawn from the live strokes' stars NEWEST FIRST, at index
- *  ⌊u^this × count⌋ — so a figure grows from its growing end rather than from a
- *  stroke about to fade and take the join with it. */
+ *  ⌊u^this × count⌋, so a figure grows from its growing end */
 const GROW_RECENCY_POW = 3;
-/** how many VISIBLE strokes may end on one star: enough to chain and branch
- *  once, before a bright central star collects everything and reads as a
- *  starburst. Counted over the live strokes only, so a star is free again once
- *  the strokes that touched it have faded. */
+/** how many VISIBLE strokes may end on one star. Counted over the live strokes
+ *  only, so a star is free again once the strokes touching it have faded. */
 export const MAX_TOUCH = 3;
 
 /** The candidate directions: everything in the cone that is not backdrop — and,
- *  index for index, the UNFLOORED `starRho` of each. That is a MONOTONE
- *  BRIGHTNESS KEY, not the radius the field is drawn at: the starfield floors
- *  small discs, and both the name picks and the endpoint-gap test want the
- *  honest magnitude the floor flattens away. */
+ *  index for index, the UNFLOORED `starRho` of each, a monotone brightness key
+ *  rather than the radius the field draws (the starfield floors small discs). */
 export const CANDIDATE_DIRS: Dir3[] = [];
 export const CANDIDATE_RHO: number[] = [];
 {
@@ -155,15 +134,10 @@ const dot3 = (a: Dir3, b: Dir3): number =>
   a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 
 /**
- * Do two strokes cross? Half of the test that keeps the sky from turning into a
- * mesh; `arcsClash` is the whole of it. Both arcs are shorter than π, so their
- * great circles meet at one antipodal PAIR, ±(nAB × nCD), and they cross iff
- * one of those lies strictly inside both arcs.
- *
- * STRICTLY, WHICH IS WHAT MAKES SHARED ENDPOINTS LEGAL: strokes meeting at a
- * common star intersect exactly there, where both dot products are 0. So is a
- * degenerate ±m from coincident circles — pickPair's on-sky refusal is what
- * keeps a repeat off the sky.
+ * Do two strokes cross? Both arcs are shorter than π, so their great circles
+ * meet at one antipodal PAIR, ±(nAB × nCD), and they cross iff one of those
+ * lies STRICTLY inside both arcs — strictly, which is what makes shared
+ * endpoints legal.
  */
 export function arcsCross(a: Dir3, b: Dir3, c: Dir3, d: Dir3): boolean {
   const n1 = cross3(a, b);
@@ -183,7 +157,7 @@ export function arcsCross(a: Dir3, b: Dir3, c: Dir3, d: Dir3): boolean {
 
 /** The angle from a point to a great-circle ARC, radians: its distance to the
  *  circle when its foot lands inside the arc, and to the nearer end otherwise. */
-function arcDist(p: Dir3, s: Dir3, e: Dir3): number {
+export function arcDist(p: Dir3, s: Dir3, e: Dir3): number {
   const n = cross3(s, e);
   const nl = Math.hypot(n[0], n[1], n[2]);
   if (nl > 1e-9) {
@@ -202,12 +176,9 @@ function arcDist(p: Dir3, s: Dir3, e: Dir3): number {
 
 /**
  * Do two strokes clash? — cross, or run close enough to read as one doubled
- * line. Four point-to-arc distances are the whole clearance test, because two
- * segments that do not cross are closest at an endpoint of one of them.
- *
- * A SHARED STAR IS NOT A CLASH: an endpoint sitting on one of the other
- * stroke's endpoints is skipped rather than measured. A shallow wedge leaving
- * one star is still refused — the short arm's FAR endpoint measures it.
+ * line. Four point-to-arc distances are the whole clearance test, since two
+ * segments that do not cross are closest at an endpoint of one of them. A
+ * SHARED STAR is skipped rather than measured.
  */
 export function arcsClash(
   a: Dir3,
@@ -227,8 +198,8 @@ export function arcsClash(
 export const pairKey = (i: number, j: number): string =>
   i < j ? `${i}-${j}` : `${j}-${i}`;
 
-/** The centre-weighted pick's CUMULATIVE weights over a pool, index for index —
- *  built once per pool, so a draw is one `rng()` and a binary search. */
+/** The centre-weighted pick's CUMULATIVE weights over a pool, index for index,
+ *  built once per pool so a draw is one `rng()` and a binary search. */
 export function centreCdf(dirs: readonly Dir3[]): number[] {
   const cdf: number[] = [];
   let sum = 0;
@@ -257,19 +228,14 @@ export function sampleCdf(cdf: readonly number[], u: number): number {
 }
 
 /**
- * Pick the next pair to draw: two distinct candidates whose separation is in the
- * window, not already a stroke on the sky, not in `recent`, clashing with
- * nothing on the sky, and neither end already carrying MAX_TOUCH strokes. Null
- * when nothing legal turned up inside PICK_ATTEMPTS — the caller draws nothing.
+ * Pick the next pair to draw: two distinct candidates whose separation is in
+ * the window, not already a stroke on the sky, not in `recent`, clashing with
+ * nothing, and neither end already carrying MAX_TOUCH strokes. Null when
+ * nothing legal turned up inside PICK_ATTEMPTS.
  *
- * `live` is the strokes ALREADY ON THE SKY, oldest first, as index pairs into
- * `dirs`: it supplies both the MAX_TOUCH count and the newest-first list of
- * stars worth growing from. The second end is always a centre-weighted draw
- * from the whole pool, so a figure can reach into fresh sky.
- *
- * DETERMINISTIC IN `rng`, never Math.random, and EXACTLY THREE draws are
- * consumed per attempt whichever branch it takes — so where the stream lands
- * depends on the attempt COUNT alone.
+ * `live` is the strokes already on the sky, OLDEST FIRST, as index pairs into
+ * `dirs`. Deterministic in `rng`, and exactly three draws are consumed per
+ * attempt whichever branch it takes.
  */
 export function pickPair(
   rng: () => number,
@@ -281,15 +247,14 @@ export function pickPair(
 ): [number, number] | null {
   const n = dirs.length;
   if (n < 2) return null;
-  // A pair already on the sky is refused OUTRIGHT: `recent` remembers fewer
-  // spawns than a stroke's lifetime and the clash test exempts shared
-  // endpoints, so a duplicate would pass both and land as a doubled line.
+  // a pair already on the sky is refused outright: `recent` remembers fewer
+  // spawns than a stroke's lifetime, and the clash test exempts shared endpoints
   const onSkyKeys = new Set(live.map(([a, b]) => pairKey(a, b)));
   const touch = new Map<number, number>();
   for (const s of live)
     for (const k of s) touch.set(k, (touch.get(k) ?? 0) + 1);
-  // THE STARS A FIGURE CAN STILL GROW FROM: on the sky, not yet a hub, and in
-  // NEWEST-FIRST order, which the draw below leans on hard.
+  // the stars a figure can still grow from: on the sky, not yet a hub, and in
+  // NEWEST-FIRST order, which the draw below relies on
   const open: number[] = [];
   for (let m = live.length - 1; m >= 0; m--)
     for (const k of live[m])
@@ -314,9 +279,8 @@ export function pickPair(
   return null;
 }
 
-/** optics/sky.ts's generator, which is private there: a 32-bit LCG as a
- *  `() => [0, 1)` stream. `Math.imul` keeps the multiply exact in 32 bits, so
- *  the sequence is identical in every JS engine. */
+/** optics/sky.ts's generator, private there: a 32-bit LCG as a `() => [0, 1)`
+ *  stream. `Math.imul` keeps the multiply exact in 32 bits. */
 export function lcg(seed: number): () => number {
   let s = seed >>> 0;
   return () => {
@@ -327,24 +291,21 @@ export function lcg(seed: number): () => number {
 
 /** the pair stream's seed — the knob for "same sky, different strokes" */
 const SEED = 20260808;
-/** how often a new stroke starts, ms — a dozen or so strokes on the sky at
- *  once. Half of the ring buffer's one invariant: SLOT_COUNT × this must
- *  outlast a stroke, or a spawn would blank a line mid-life. */
+/** how often a new stroke starts, ms. Half of the ring buffer's one invariant:
+ *  SLOT_COUNT × this must outlast a stroke, or a spawn blanks a live line. */
 export const SPAWN_MS = 1200;
 
 // ── THE NAMES AND THE WORDS ─────────────────────────────────────────────────
 // Type on the sky: star names and one quotation, as canvas-painted textures on
 // camera-facing quads in the strokes' own attached group.
 //
-// FLAT, LIKE EVERYTHING ELSE UP HERE (the 2D/3D law: only the lens model reads
-// 3D). A sprite's centre goes through modelViewMatrix and its corners are added
-// in VIEW space before the projection — story/peelcards.ts's billboard — so the
-// type can never tilt into perspective; that corner offset also carries the
-// view-space SHIFT that puts a name right-and-below its star.
+// FLAT, like everything else up here (the 2D/3D law). A sprite's centre goes
+// through modelViewMatrix and its corners are added in VIEW space before the
+// projection, so the type can never tilt into perspective; that corner offset
+// also carries the shift that puts a name right-and-below its star.
 
-/** PLACEHOLDER CONTENT, like the catalog these sit on: classic star-atlas
- *  names, uppercase because the sprite's look is letterspaced caps. Nothing
- *  else here reads the strings. */
+/** Placeholder content: classic star-atlas names, uppercase because the
+ *  sprite's look is letterspaced caps. */
 export const LABELS: readonly string[] = [
   "VEGA",
   "ALTAIR",
@@ -360,25 +321,21 @@ export const QUOTE_TEXT =
   "“Boredom always precedes a period of great creativity.”";
 export const QUOTE_ATTR = "— ROBERT PIRSIG";
 
-/** The attribution's ink, per theme. AUTHORED, not derived from SKY_INK: it is
- *  the sky's one warm accent. The light value is that same orange taken down
- *  until it clears 3:1 on paper, where the dark one is illegible. */
+/** The attribution's ink, per theme. Authored, not derived from SKY_INK: it is
+ *  the sky's one warm accent, taken darker on paper for contrast. */
 export const QUOTE_ATTR_INK = { dark: 0xdd8a4c, light: 0x8a4a12 };
 
-/** How far apart two labelled stars must be, radians. Wide, because a name is
- *  a much bigger mark than its star; the greedy pick below refuses the fainter
- *  of any pair inside it. */
+/** How far apart two labelled stars must be, radians; the greedy pick below
+ *  refuses the fainter of any pair inside it. */
 export const LABEL_SEP = 0.25;
 
 /** The window a name may sit in, as half-angles about the view axis: up (+Y)
- *  and right (+Z) on the screen. NOT the strokes' cone — a stroke at its edge
- *  still reads, while a name there is a word half off the screen. The right
- *  bound leaves room for the label, which is set OUTWARD from its star. */
+ *  and right (+Z) on the screen. Narrower than the strokes' cone, since a name
+ *  at that edge is a word half off the screen. */
 const LABEL_UP_RAD = (26 * Math.PI) / 180;
 const LABEL_RIGHT_RAD = (38 * Math.PI) / 180;
 
-/** Whether a direction is inside that window — the eligibility test the picks
- *  below are run with. */
+/** Whether a direction is inside that window. */
 export const inLabelFrame = (d: Dir3): boolean =>
   d[0] > 0 &&
   Math.abs(Math.atan2(d[1], d[0])) <= LABEL_UP_RAD &&
@@ -388,17 +345,14 @@ export const inLabelFrame = (d: Dir3): boolean =>
  * Which stars get named — the brightest first, each accepted only if it clears
  * every star already taken (and every `reserved` direction) by `LABEL_SEP`.
  * `bright` is any strictly increasing function of magnitude, index for index
- * with `dirs`.
- *
- * DETERMINISTIC AND PURE: ties break by index, so the answer is a function of
- * the catalog alone. Computed at module load rather than authored as a table,
- * so a re-cut catalog re-picks instead of leaving names pointing at nothing.
+ * with `dirs`. Ties break by index, so the answer is a function of the catalog
+ * alone and a re-cut catalog re-picks.
  */
 export function pickLabelStars(
   dirs: readonly Dir3[],
   bright: readonly number[],
   opts: {
-    /** which directions may carry a name at all — `inLabelFrame` in the driver */
+    /** which directions may carry a name at all */
     eligible: (d: Dir3) => boolean;
     /** directions already spoken for, which a pick must also clear */
     reserved: readonly Dir3[];
@@ -420,10 +374,9 @@ export function pickLabelStars(
   return out;
 }
 
-/** The quote's heading: off the view axis into the upper left — clear of the
- *  strokes' centre-weighted picks, and the far corner from the caption band.
- *  The held fly pose looks down world +X with +Y up, so screen right is +Z and
- *  up-and-left is +Y, −Z. Unit by construction. */
+/** The quote's heading: off the view axis into the upper left, clear of the
+ *  strokes' centre-weighted picks. The held fly pose looks down world +X with
+ *  +Y up, so screen right is +Z and up-and-left is +Y, −Z. Unit. */
 const QUOTE_TILT_RAD = (25 * Math.PI) / 180;
 const QUOTE_UP = 0.8;
 const QUOTE_LEFT = 0.6;
@@ -433,10 +386,9 @@ export const QUOTE_DIR: Dir3 = [
   -Math.sin(QUOTE_TILT_RAD) * QUOTE_LEFT,
 ];
 
-/** The named stars, as indices into CANDIDATE_DIRS. One heading is RESERVED
- *  before the first pick — the quote's, since a name under that block of type
- *  would read as part of the sentence. FEWER THAN `LABELS.length` IS LEGAL:
- *  LABELS is a pool taken in order, not a table that has to be used up. */
+/** The named stars, as indices into CANDIDATE_DIRS; the quote's heading is
+ *  RESERVED before the first pick. Fewer than `LABELS.length` is legal —
+ *  LABELS is a pool taken in order, not a table to use up. */
 export const LABEL_STARS: number[] = pickLabelStars(
   CANDIDATE_DIRS,
   CANDIDATE_RHO,
@@ -446,37 +398,30 @@ export const LABEL_STARS: number[] = pickLabelStars(
 /** Look knobs for the type. */
 export const SKY_TYPE_LOOK = {
   /** the sphere the type sits on: inside the strokes' sphere, which is inside
-   *  the starfield's. Nothing optical depends on it (none of the three tests
-   *  depth); it is what orders the three in the transparent pass. */
+   *  the starfield's. None of the three tests depth, so this is what orders
+   *  them in the transparent pass. */
   radius: STARFIELD_LOOK.radius * 0.98,
-  /** canvas pixels per DESIGN pixel. Everything below is in design pixels and
-   *  every draw is scaled by this, so the textures are painted at 2× and stay
-   *  crisp when the framing puts a label near 1:1. */
+  /** canvas pixels per DESIGN pixel: everything below is in design pixels and
+   *  every draw is scaled by this, so the textures stay crisp near 1:1 */
   ss: 2,
-  /** design pixels to radians — the whole scale story for the labels: turn it
-   *  and every name resizes together. */
+  /** design pixels to radians — turn it and every name resizes together */
   pxRad: 0.0016,
   label: {
-    /** small: a chart's margin note rather than a caption. */
+    /** small: a chart's margin note rather than a caption */
     fontPx: 10,
-    /** letterspacing, em — the star-atlas tell, and what keeps small caps from
-     *  reading as a UI chip. SHARED RECIPE: the card titles and the star names
-     *  wear the same uppercase tracked mono (story/peelcards.ts LABEL_TYPE). */
+    /** letterspacing, em — shared with the card titles (peelcards LABEL_TYPE) */
     tracking: LABEL_TYPE.trackingEm,
-    /** …but NOT its weight: a name on the sky is a third of a card title's size
-     *  and LABEL_TYPE's weight reads as a bold chip there. */
+    /** …but not its weight: a name on the sky is a third of a card title's size */
     weight: 400,
     /** the sprite's full height in design px (the type is centred in it) */
     boxPx: 14,
     padPx: 3,
-    /** where the name sits relative to its star, in radians of screen: clear to
-     *  the right and a little below, so the disc keeps its own space. */
+    /** where the name sits relative to its star, in radians of screen */
     rightRad: 0.022,
     downRad: 0.022,
-    /** SUBTLE — the names sit under the star ink they are painted in. PER
-     *  THEME, and not as taste: the renderer composites in LINEAR space, so
-     *  cream ink over a near-black sky lands ABOVE its nominal alpha while dark
-     *  ink over paper lands far below it. */
+    /** the names' alpha, PER THEME: the renderer composites in LINEAR space, so
+     *  cream ink over a dark sky lands above its nominal alpha and dark ink over
+     *  paper far below it */
     ink: { dark: 0.37, light: 0.62 },
   },
   quote: {
@@ -487,20 +432,36 @@ export const SKY_TYPE_LOOK = {
     padPx: 14,
     fontPx: 34,
     leadingPx: 46,
-    // Design px in a canvas the sprite minifies ~2.3×: big enough to survive
-    // that and still read as subordinate to the quote.
     attrPx: 24,
     attrTracking: 0.22,
     attrGapPx: 30,
-    /** the sprite's angular WIDTH, radians — a quad of radius × this across.
-     *  About a third of the frame at the finale's fov: a passage of type on the
-     *  sky rather than a caption. */
+    /** the sprite's angular WIDTH, radians — a quad of radius × this across */
     widthRad: 0.5,
-    /** stronger than the labels in either theme: this one is meant to be read.
-     *  Per theme for the reason the labels' ink is. */
+    /** stronger than the labels in either theme; per theme for the same
+     *  linear-space reason */
     ink: { dark: 0.92, light: 0.97 },
   },
 };
+
+/** The clear sky a stroke must leave around the quote's heading: the sprite's
+ *  half-width plus the strokes' own clearance, radians. */
+export const QUOTE_CLEAR_RAD = SKY_TYPE_LOOK.quote.widthRad / 2 + CLEAR_RAD;
+
+/** The driver's clash test for a candidate stroke `i`→`j`: it runs through the
+ *  quote's disc, or crosses or crowds a stroke already on the sky. Not gated on
+ *  the quote's envelope — a stroke born before the words arrive outlives them. */
+export function strokeClashes(
+  i: number,
+  j: number,
+  onSky: readonly (readonly [number, number])[],
+): boolean {
+  const a = CANDIDATE_DIRS[i];
+  const b = CANDIDATE_DIRS[j];
+  if (arcDist(QUOTE_DIR, a, b) < QUOTE_CLEAR_RAD) return true;
+  return onSky.some(([c, d]) =>
+    arcsClash(a, b, CANDIDATE_DIRS[c], CANDIDATE_DIRS[d], CLEAR_RAD),
+  );
+}
 
 /** The alpha a piece of type is written at on the current stage. */
 export const inkOf = (
@@ -510,8 +471,7 @@ export const inkOf = (
 
 // ── WHERE EACH NAME GOES ────────────────────────────────────────────────────
 
-/** One name on the sky: what it says and what it points at. Every name sits at
- *  the same screen offset from its star (SKY_TYPE_LOOK.label). */
+/** One name on the sky: what it says and what it points at. */
 export interface LabelEntry {
   text: string;
   dir: Dir3;
@@ -620,8 +580,7 @@ function paintQuote(canvas: HTMLCanvasElement, light: boolean): void {
   }
   const lastBaseline = y - Q.leadingPx * ss;
   // the attribution in its own pinned terracotta (QUOTE_ATTR_INK), not the
-  // strokes' ink — it is the sky's one warm accent, and the light stage takes
-  // that orange darker, or it does not read on paper
+  // strokes' ink
   ctx.font = `${Q.attrPx * ss}px ${MONO}`;
   ctx.letterSpacing = `${Q.attrTracking}em`;
   ctx.fillStyle = cssHex(light ? QUOTE_ATTR_INK.light : QUOTE_ATTR_INK.dark);
@@ -654,7 +613,7 @@ function buildSprite(
     new THREE.Vector3(centre[0] * r, centre[1] * r, centre[2] * r),
   );
   // one uniform for the quad's whole placement: half-size in xy, screen shift
-  // in zw. Constant for the life of the sprite — nothing here is animated.
+  // in zw; constant for the life of the sprite
   const uBox = uniform(
     new THREE.Vector4(half[0], half[1], offset[0], offset[1]),
   );
@@ -671,8 +630,8 @@ function buildSprite(
     ),
   );
   const face = texture(tex);
-  // rgb and alpha SEPARATELY (story/peelcards.ts's note): a vec4 colorNode would
-  // land the glyph alpha in diffuseColor.a as well and square every edge.
+  // rgb and alpha SEPARATELY: a vec4 colorNode would land the glyph alpha in
+  // diffuseColor.a as well and square every edge
   mat.colorNode = face.rgb;
   mat.opacityNode = face.a.mul(uOpacity);
   mat.transparent = true;
@@ -696,28 +655,26 @@ export interface StoryConstellations {
 }
 
 /**
- * Start the sky chapter's ink. Registers a scene.onFrame callback for the life
- * of the page — like story/internals.ts there is no teardown, because the
- * hero's scene is never disposed.
+ * Start the sky chapter's ink. Registers a scene.onEvaluate callback for the
+ * life of the page; the hero's scene is never disposed, so there is no teardown.
  */
 export function createStoryConstellations(
   scene: SceneHandle,
 ): StoryConstellations {
   const lines = createConstellationLines({ light: isLightTheme() });
-  // ONE attached group for the whole chapter's ink, so the attach/detach
-  // bookkeeping below is written once.
+  // one attached group for the whole chapter's ink, so the attach/detach
+  // bookkeeping below is written once
   const group = new THREE.Group();
   group.name = "Lens_SkyInk";
   group.add(lines.object);
 
   // ── the type ───────────────────────────────────────────────────────────────
-  // Built once, here: everything above is pure and is imported by the test
-  // suite, so this is the first code in the module that knows about a document.
+  // Built once, here: everything above is pure, so this is the first code in
+  // the module that needs a document.
   const geo = new THREE.PlaneGeometry(2, 2); // ±1 corners: the offset IS the half-size
   const labels: Sprite[] = [];
-  /** repaint closures, one per sprite — a theme flip redraws the SAME canvas and
-   *  re-uploads it (story/peelcards.ts's precedent), so no material has to be
-   *  re-bound to a new texture object */
+  /** repaint closures, one per sprite — a theme flip redraws the SAME canvas
+   *  and re-uploads it, so no material is re-bound to a new texture */
   const repaints: ((light: boolean) => void)[] = [];
 
   const addLabel = (entry: LabelEntry) => {
@@ -769,17 +726,15 @@ export function createStoryConstellations(
     return sprite;
   })();
 
-  // THE TYPE'S ALPHAS, per stage — see SKY_TYPE_LOOK.label.ink. Held as plain
-  // numbers so the frame loop, which writes them every frame, need not branch.
+  // the type's alphas, per stage — held as plain numbers so the frame loop,
+  // which writes them every frame, need not branch
   let labelInk = inkOf(SKY_TYPE_LOOK.label.ink, isLightTheme());
   let quoteInk = inkOf(SKY_TYPE_LOOK.quote.ink, isLightTheme());
 
   for (const repaint of repaints) repaint(isLightTheme());
 
-  // THE FAMILIES ARE WEBFONTS: a canvas painted before they arrive keeps its
-  // fallback forever, so repaint once the document says they are in. Only the
-  // QUOTE can change shape — its wrap is recomputed inside a fixed canvas,
-  // while a label's canvas was sized on a metric the fallback stack shares.
+  // the families are webfonts: a canvas painted before they arrive keeps its
+  // fallback forever, so repaint once the document says they are in
   void document.fonts.ready.then(() => {
     for (const repaint of repaints) repaint(isLightTheme());
     scene.invalidate();
@@ -795,80 +750,61 @@ export function createStoryConstellations(
 
   const rng = lcg(SEED);
   const recent: string[] = [];
-  /** The strokes currently on the sky, oldest first, as the CANDIDATE INDICES
-   *  they join — both halves of the pick policy read this. A slot's alpha is
-   *  exactly 0 from `deadAt` on, which is when a stroke stops counting; the
-   *  list is pruned on the spawn tick. */
+  /** The strokes currently on the sky, OLDEST FIRST, as the candidate indices
+   *  they join. A stroke stops counting at its `deadAt`, where its alpha is
+   *  exactly 0; the list is pruned on the spawn tick. */
   const live: { pair: [number, number]; deadAt: number }[] = [];
   let tAcc = 0;
-  let last = performance.now();
   let nextSpawn = 0;
 
-  scene.onFrame(() => {
-    const now = performance.now();
-    const dt = Math.min(100, now - last);
-    last = now;
-
-    const p = scene.state.storyTarget;
+  scene.onEvaluate((p, dt) => {
     const env = constellationEnvAt(p);
     const qEnv = quoteEnvAt(p);
 
-    // ZERO FIRST, ALWAYS, for every piece of ink: a fast flick can take p from
-    // inside the chapter to outside it between two frames, and without an
-    // unconditional write the last opacity would hold — freezing a half-drawn
-    // stroke, or a name, on the sky.
+    // every opacity is written unconditionally: a fast flick can leave the
+    // chapter between two frames, and a held one freezes ink on the sky
     lines.setEnvelope(env);
-    // THE NAMES ARE THE STROKES' — one law, so they can never arrive or leave
-    // on their own.
+    // the names ride the strokes' own envelope, so they cannot arrive or leave
+    // on their own
     const labelO = labelEnvAt(p) * labelInk;
     for (const l of labels) l.uOpacity.value = labelO;
-    // the words outlive both, which is the whole point of their own envelope
+    // the words outlive both, on their own envelope
     quote.uOpacity.value = qEnv * quoteInk;
 
     if (env <= 0 && qEnv <= 0) {
-      // The clock stops here — nothing ages invisibly. Past the chapter's edges
-      // the group comes off the starfield entirely; inside them it stays
-      // attached at zero, which saves the re-attach on a small scrub.
+      // the clock stops here, so nothing ages invisibly. Past the chapter's
+      // edges the group comes off the starfield; inside them it stays attached
+      // at zero, saving the re-attach on a small scrub.
       if (group.parent && (p < SPAN_P0 || p > SPAN_P1))
         scene.starfieldDetach(group);
-      return;
+      return false;
     }
 
     tAcc += dt;
     lines.setTime(tAcc);
 
-    // THE STARFIELD CAN GO OUT FROM UNDER US: story/fly.ts mounts it
-    // asynchronously on the way in and unmounts it on the way out. Ask every
-    // active frame — a no-op once attached, and the whole re-attach story.
-    if (!scene.starfieldAttach(group)) return;
+    // story/fly.ts mounts and unmounts the starfield under us, so the attach is
+    // re-asked every active frame; it is a no-op once attached
+    if (!scene.starfieldAttach(group)) return true;
 
     // the strokes are done spawning while the quote holds through the trails
-    if (env <= 0) return;
-    if (tAcc < nextSpawn) return;
+    if (env <= 0) return true;
+    if (tAcc < nextSpawn) return true;
     nextSpawn = tAcc + SPAWN_MS;
     for (let k = live.length - 1; k >= 0; k--)
       if (live[k].deadAt <= tAcc) live.splice(k, 1);
-    // the pruned list, as the pick wants it: both the no-clash test and the
-    // growth policy read the same strokes, in the same order.
+    // the pruned list, as the pick wants it: the no-clash test and the growth
+    // policy read the same strokes, in the same order
     const onSky = live.map((s) => s.pair);
     const pair = pickPair(
       rng,
       CANDIDATE_DIRS,
       CANDIDATE_CDF,
       recent,
-      (i, j) =>
-        onSky.some(([a, b]) =>
-          arcsClash(
-            CANDIDATE_DIRS[i],
-            CANDIDATE_DIRS[j],
-            CANDIDATE_DIRS[a],
-            CANDIDATE_DIRS[b],
-            CLEAR_RAD,
-          ),
-        ),
+      (i, j) => strokeClashes(i, j, onSky),
       onSky,
     );
-    if (!pair) return; // a starved tick is silence, not a looser test
+    if (!pair) return true; // a starved tick is silence, not a looser test
     recent.push(pairKey(pair[0], pair[1]));
     if (recent.length > RECENT) recent.shift();
     const a = CANDIDATE_DIRS[pair[0]];
@@ -882,6 +818,7 @@ export function createStoryConstellations(
         CONST_LINES_LOOK.fadeMs,
     });
     lines.spawn(a, b, tAcc);
+    return true; // the strokes run on time
   });
 
   let warmed = false;
@@ -889,8 +826,8 @@ export function createStoryConstellations(
     warm() {
       if (warmed || group.parent) return;
       warmed = true;
-      // THROUGH THE PASS TOO: the ink first lands while the dive's pass is
-      // still up, so the canvas pipeline alone would not cover its first wear.
+      // through the pass too: the ink first lands while the dive's pass is
+      // still up, so the canvas pipeline alone would not cover it
       scene.warmDraw([group], true);
     },
   };

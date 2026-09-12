@@ -1,50 +1,62 @@
 import { describe, expect, it } from "vitest";
 import fs from "node:fs";
+import * as THREE from "three/webgpu";
 import { isSegWedge, isShellPart } from "../../core/parts";
+import {
+  EXTRA_BAND,
+  SHELL_FEATHER,
+  WINK_WIDTH,
+  winkOpacity,
+} from "../../core/visibility";
 import { NUM } from "../../ops/algebra";
 import { gate } from "../../ops/gate";
 import { makeRecipes } from "../../ops/recipes";
 import { STORY_R, atFrac, DIVE_P0, rangeOf, windowEdges } from "../story";
-import { frameZoom } from "../../core/scene";
+import { MODEL_BORE_X_Z, frameZoom, modelAnchorFor } from "../../core/scene";
 import {
   CARDS_APART,
   DIP,
   HUDDLE,
+  PEEL_ROLL_SPAN,
+  TURN_SPAN,
   UPRIGHT,
+  WINK_SPAN,
   assembleAt,
   huddleAt,
-  uprightAt,
-} from "../envelopes";
-import {
-  CARD_COUNT,
-  cardFadeAt,
-  cardGatherAt,
-  cardOrbitAt,
-  cardRollAt,
-  cardScaleAt,
-  cardsFadeOutAt,
   peelRollAt,
   peelRollFracAt,
   peelTurnAt,
+  peelTurnFracAt,
+  uprightAt,
+  winkLevelAt,
+  winkPAt,
+} from "../envelopes";
+import {
+  CARD_COUNT,
+  CARDS_IN_SPAN,
+  CARDS_OUT_SPAN,
+  cardFitOf,
+  cardGatherAt,
+  cardInAt,
+  cardOrbitAt,
+  cardOutAt,
+  cardRollAt,
+  cardScaleAt,
+  cardThresholdOf,
   MOUNT_HI,
   MOUNT_HYST,
   MOUNT_LO,
-  peelTurnFracAt,
-  ROLL_SPAN,
   segSectorAngle,
-  TURN_SPAN,
-  WINK_SPAN,
-  cardFitOf,
 } from "../peelcards";
 
 const peR = rangeOf("peel");
 const cdR = rangeOf("cards");
 const inR = rangeOf("internals");
 
-// The peel/cards LAWS, not their plumbing. What the scene depends on is that the
-// lens' turn is a saturating pure function of the scroll, that the sides are
-// gone before the cards arrive and the cards gone before the internals scene
-// settles, and that the orbit is reproducible.
+// The peel/cards LAWS, not their plumbing: the lens' roll and turn are
+// saturating pure functions of the scroll, each card opens as a wedge would
+// dissolve and is whole before the departure walks home, the field is gone
+// before the internals scene settles, and the sphere is reproducible.
 
 const KS = Array.from({ length: CARD_COUNT }, (_, k) => k);
 
@@ -60,24 +72,33 @@ const ASSEMBLE_GATE = ASSEMBLE.gateSpec(ASSEMBLE.knobDefaults);
  *  re-export ships. */
 const LAYER_PHASES = Array.from({ length: 11 }, (_, i) => i / 10);
 
-/** every peel-tube family's wedge indices, in TUBE_FAMILY_ORDER — the cut each
- *  is really segmented on (5-cut on the shell's seams, 7-cut on the cam's) */
+/** each card's threshold — the wedge band's own scatter */
+const CARD_TS = KS.map(cardThresholdOf);
+/** where card k opens: the p its threshold's dissolve begins at */
+const bornAt = (k: number) => winkPAt(cardThresholdOf(k));
 
 describe("the bore roll", () => {
   it("is asleep before it opens and spent after it closes", () => {
-    for (const p of [0, peR.p0, ROLL_SPAN[0]])
+    for (const p of [0, peR.p0, PEEL_ROLL_SPAN[0]])
       expect(peelRollFracAt(p), `p ${p}`).toBe(0);
-    for (const p of [ROLL_SPAN[1], cdR.p0, 1])
+    for (const p of [PEEL_ROLL_SPAN[1], cdR.p0, 1])
       expect(peelRollFracAt(p), `p ${p}`).toBe(1);
   });
 
   it("lands on a WHOLE number of revolutions, so the drop to 0 is exact", () => {
     // peelRollAt is hard 0 past its window because the model's orientation is
     // one snap-per-call write — the same law the turn carries.
-    const turns = peelRollAt(ROLL_SPAN[1] - 1e-9) / (2 * Math.PI);
+    const turns = peelRollAt(PEEL_ROLL_SPAN[1] - 1e-9) / (2 * Math.PI);
     expect(turns, "whole turns").toBeCloseTo(Math.round(turns), 6);
     expect(Math.round(turns), "and it actually rolls").not.toBe(0);
-    for (const p of [0, peR.p0, ROLL_SPAN[0], ROLL_SPAN[1], cdR.p0, 1])
+    for (const p of [
+      0,
+      peR.p0,
+      PEEL_ROLL_SPAN[0],
+      PEEL_ROLL_SPAN[1],
+      cdR.p0,
+      1,
+    ])
       expect(Math.abs(peelRollAt(p)), `p ${p}`).toBe(0);
   });
 
@@ -85,26 +106,17 @@ describe("the bore roll", () => {
     // it rides the model's `x`, which is a roll about the bore only while the
     // turn's `y` and the dip's `z` are 0 (the driver's one write composes
     // Rx·Ry·Rz). Both of those open at the cards scene's foot.
-    expect(ROLL_SPAN[1]).toBeLessThanOrEqual(TURN_SPAN[0]);
-    expect(ROLL_SPAN[1]).toBeLessThanOrEqual(windowEdges(DIP.rise)[0]);
+    expect(PEEL_ROLL_SPAN[1]).toBeLessThanOrEqual(TURN_SPAN[0]);
+    expect(PEEL_ROLL_SPAN[1]).toBeLessThanOrEqual(windowEdges(DIP.rise)[0]);
   });
 
   it("SETTLES on screen — the rate is 0 at both edges", () => {
     const rate = (p: number) =>
       (peelRollFracAt(p + 1e-6) - peelRollFracAt(p)) / 1e-6;
-    const span = ROLL_SPAN[1] - ROLL_SPAN[0];
-    const mid = rate(ROLL_SPAN[0] + 0.5 * span);
-    expect(rate(ROLL_SPAN[0] + 0.01 * span), "opening").toBeLessThan(mid * 0.2);
-    expect(rate(ROLL_SPAN[1] - 0.01 * span), "closing").toBeLessThan(mid * 0.2);
-  });
-
-  it("keeps the roll on the RAW p — its neighbours' own clock", () => {
-    const driver = fs.readFileSync(
-      new URL("../hero-driver.ts", import.meta.url),
-      "utf8",
-    );
-    expect(driver).toMatch(/peelRollAt\(lastP\)/);
-    expect(driver).not.toMatch(/peelRollAt\(pE\)/);
+    const span = PEEL_ROLL_SPAN[1] - PEEL_ROLL_SPAN[0];
+    const mid = rate(PEEL_ROLL_SPAN[0] + 0.5 * span);
+    expect(rate(PEEL_ROLL_SPAN[0] + 0.01 * span), "opening").toBeLessThan(mid * 0.2); // prettier-ignore
+    expect(rate(PEEL_ROLL_SPAN[1] - 0.01 * span), "closing").toBeLessThan(mid * 0.2); // prettier-ignore
   });
 });
 
@@ -170,62 +182,132 @@ describe("the turn", () => {
     expect(uprightAt(TURN_SPAN[1])).toBe(1);
   });
 
-  it("hands over MONOTONELY: the cards arrive while the lens is still going", () => {
-    // The crossfade's structure, pinned without pinning either envelope's
-    // edges: over the cards scene the field's opacity only ever rises, the turn
-    // only ever advances, and every card is fully out before the scene ends.
-    let prevFade = -1;
-    for (let i = 0; i <= 100; i++) {
-      const local = 0.3 + (i / 100) * 0.7;
-      const fade = Math.min(...KS.map((k) => cardFadeAt(k, local)));
-      expect(fade, `cards ${local}`).toBeGreaterThanOrEqual(prevFade);
-      prevFade = fade;
-    }
-    for (const k of KS)
-      expect(cardFadeAt(k, 1), `card ${k} by the scene's end`).toBe(1);
-  });
-});
-
-describe("the card cross-fade", () => {
-  it("holds off until the turn is under way", () => {
-    for (const k of KS) expect(cardFadeAt(k, 0.2), `card ${k}`).toBe(0);
-  });
-
-  it("is complete for every card before the field dissolves", () => {
+  it("carries the cards' arrival: the wedges dissolve into the turn", () => {
+    // the arrival runs from inside the peel across the boundary, so the last
+    // cards land while the lens is already turning — no bare-core beat
+    expect(CARDS_IN_SPAN[0]).toBeGreaterThan(WINK_SPAN[0]);
+    expect(CARDS_IN_SPAN[0]).toBeLessThan(peR.p1);
+    expect(CARDS_IN_SPAN[1]).toBeGreaterThan(cdR.p0);
+    expect(CARDS_IN_SPAN[1]).toBe(WINK_SPAN[1]);
+    expect(peelTurnFracAt(CARDS_IN_SPAN[1])).toBeGreaterThan(0);
+    // …and every card's whole fade-in lies inside it
     for (const k of KS) {
-      expect(cardFadeAt(k, 0.7), `card ${k}`).toBe(1);
-      expect(cardFadeAt(k, 1), `card ${k} past the end`).toBe(1);
+      expect(bornAt(k), `card ${k} opens`).toBeGreaterThanOrEqual(CARDS_IN_SPAN[0] - 1e-12); // prettier-ignore
+      expect(cardInAt(k, CARDS_IN_SPAN[1]), `card ${k} whole`).toBe(1);
+    }
+  });
+});
+
+// THE HAND-OFF: a card's opacity is the complement of a wedge's at the card's
+// own threshold — one law, two readers — so it rises as the wedges fall.
+// Pinned exact at both edges: a card window authored on its own scene fraction
+// (the old CARD_FADE_*) fails "0 while the wedge is whole"; a card that fades
+// ABOVE the threshold fails it too; one that lags the wedge fails "1 where the
+// wedge is gone".
+describe("the hand-off", () => {
+  const PS = Array.from(
+    { length: 400 },
+    (_, i) => WINK_SPAN[0] - 0.01 + ((WINK_SPAN[1] - WINK_SPAN[0] + 0.02) * i) / 399, // prettier-ignore
+  );
+
+  it("takes its thresholds from the wedge band, one per card, all distinct", () => {
+    for (const t of CARD_TS) {
+      expect(t).toBeGreaterThanOrEqual(WINK_WIDTH);
+      expect(t).toBeLessThan(EXTRA_BAND);
+    }
+    expect(new Set(CARD_TS).size).toBe(CARD_COUNT);
+  });
+
+  it("conserves the crossfade: card + wedge = 1 at every p", () => {
+    for (const k of KS)
+      for (const p of PS)
+        expect(cardInAt(k, p) + winkOpacity(CARD_TS[k], winkLevelAt(p)), `card ${k} p ${p}`).toBeCloseTo(1, 12); // prettier-ignore
+  });
+
+  it("is exactly 0 while the wedge is whole and exactly 1 where the wedge is gone", () => {
+    for (const k of KS) {
+      const born = bornAt(k);
+      expect(winkLevelAt(born), `card ${k} opening level`).toBeCloseTo(CARD_TS[k], 9); // prettier-ignore
+      for (const p of [0, WINK_SPAN[0], born - 1e-7])
+        expect(cardInAt(k, p), `card ${k} p ${p}`).toBe(0);
+      expect(cardInAt(k, born + 1e-4), `card ${k} just open`).toBeGreaterThan(0); // prettier-ignore
+      const gone = winkPAt(CARD_TS[k] - WINK_WIDTH);
+      for (const p of [gone + 1e-7, WINK_SPAN[1], cdR.p1])
+        expect(cardInAt(k, p), `card ${k} p ${p}`).toBe(1);
+      expect(cardInAt(k, gone - 1e-4), `card ${k} still going`).toBeLessThan(1); // prettier-ignore
     }
   });
 
-  it("is staggered — the cards arrive in order, never together", () => {
-    const mid = KS.map((k) => cardFadeAt(k, 0.4));
-    for (let k = 1; k < CARD_COUNT; k++)
-      expect(mid[k], `card ${k} vs ${k - 1}`).toBeLessThan(mid[k - 1]);
+  it("only ever rises, and in the casts' order — a higher threshold opens first", () => {
+    for (const k of KS) {
+      let prev = -1;
+      for (const p of PS) {
+        const v = cardInAt(k, p);
+        expect(v, `card ${k} p ${p}`).toBeGreaterThanOrEqual(prev);
+        prev = v;
+      }
+    }
+    const byT = [...KS].sort((a, b) => CARD_TS[b] - CARD_TS[a]);
+    for (let i = 1; i < byT.length; i++)
+      expect(bornAt(byT[i])).toBeGreaterThan(bornAt(byT[i - 1]));
+    // decals go before the wedges: the shell's top threshold opens before any
+    // card can
+    for (const k of KS) expect(winkPAt(SHELL_FEATHER)).toBeLessThan(bornAt(k));
   });
 });
 
+// THE EXIT: the cards leave on the tip's own rise, fanned along the bore so
+// they go the way the lens stands up, and the last is out before the field
+// unmounts at the scene's end.
 describe("the field's fade-out", () => {
-  it("hands back to the bare lens inside its OWN scene", () => {
-    for (const local of [0.97, 0.99, 1])
-      expect(cardsFadeOutAt(local), `local ${local}`).toBe(1);
+  it("is 0 until the tip opens and exactly 1 for every card by the scene's end", () => {
+    const [up0] = windowEdges(UPRIGHT.rise);
+    for (const k of KS) {
+      for (const p of [0, cdR.p0, atFrac(cdR, 0.5), up0])
+        expect(cardOutAt(k, p), `card ${k} p ${p}`).toBe(0);
+      expect(cardOutAt(k, cdR.p1), `card ${k} at the end`).toBe(1);
+      expect(cardOutAt(k, 1), `card ${k} past the end`).toBe(1);
+    }
+    expect(CARDS_OUT_SPAN[0]).toBeGreaterThanOrEqual(up0);
+    expect(CARDS_OUT_SPAN[1]).toBeLessThanOrEqual(cdR.p1);
+    expect(CARDS_OUT_SPAN[1]).toBeLessThan(windowEdges(UPRIGHT.rise)[1]);
   });
 
-  it("is still whole while the cards scene is the cards scene", () => {
-    expect(cardsFadeOutAt(0)).toBe(0);
-    expect(cardsFadeOutAt(0.8)).toBe(0);
-    expect(cardsFadeOutAt(0.92)).toBeGreaterThan(0);
-    expect(cardsFadeOutAt(0.92)).toBeLessThan(1);
+  it("is ordered along the bore: the +X end leaves first, one card at a time", () => {
+    const PS = Array.from(
+      { length: 401 },
+      (_, i) => CARDS_OUT_SPAN[0] + ((CARDS_OUT_SPAN[1] - CARDS_OUT_SPAN[0]) * i) / 400, // prettier-ignore
+    );
+    const xs = KS.map((k) => cardOrbitAt(k, 0).x);
+    /** the first sample a card has begun to go */
+    const opensAt = (k: number) => PS.find((p) => cardOutAt(k, p) > 0)!;
+    for (let k = 1; k < CARD_COUNT; k++) {
+      expect(xs[k], `card ${k} further along +X`).toBeGreaterThan(xs[k - 1]);
+      // further out at every p, and strictly earlier to open
+      for (const p of PS)
+        expect(cardOutAt(k, p), `card ${k} at ${p}`).toBeGreaterThanOrEqual(cardOutAt(k - 1, p)); // prettier-ignore
+      expect(opensAt(k), `card ${k} opens first`).toBeLessThan(opensAt(k - 1));
+    }
+    for (const k of KS) {
+      let prev = -1;
+      for (const p of PS) {
+        const v = cardOutAt(k, p);
+        expect(v).toBeGreaterThanOrEqual(prev);
+        prev = v;
+      }
+    }
+  });
+
+  it("goes with the huddle's release — the same gesture", () => {
+    expect(HUDDLE.fall).toBe(UPRIGHT.rise);
+    expect(huddleAt(CARDS_OUT_SPAN[0])).toBeLessThan(1);
   });
 });
 
-// THE CARD SHELL. The field's laws changed shape with the peel re-choreography
-// (the lens is replaced by the spinning cards, as a transition), so
-// these pin the NEW ones — a coherent spherical shell — rather than the old run
-// of hoops: eight stations on ONE sphere, ONE rotation axis, ONE direction, ONE
-// rate, and no second motion of any kind on top. Taste values (the radius, the
-// rate) are deliberately NOT pinned; the structure is.
-describe("the card shell", () => {
+// THE CARD SPHERE: eight stations on ONE sphere about the bore, ONE rotation
+// axis, ONE direction, ONE rate, and no second motion on top. Taste values (the
+// radius, the rate) are deliberately NOT pinned; the structure is.
+describe("the card sphere", () => {
   const TIMES = [0, 250, 1_000, 4_500, 12_000, 47_300, 600_000];
 
   it("is a pure function of (card, time)", () => {
@@ -237,10 +319,8 @@ describe("the card shell", () => {
   });
 
   it("is a SPHERE: every card is the same distance from the lens, always", () => {
-    // An identity, not a bound — that is what makes "the shell clears the model
-    // everywhere at once" a fact rather than a per-ring promise. MEASURED off
-    // the seated model in the browser: a 4.07 × 3.08 × 3.09 wu world box, i.e. a
-    // bounding sphere of √(2.04² + 1.54²) = 2.56 wu.
+    // An identity, not a bound, so the sphere clears the model everywhere at
+    // once. 2.56 wu is the seated model's own bounding-sphere radius.
     const r0 = Math.hypot(...Object.values(cardOrbitAt(0, 0)));
     expect(r0).toBeGreaterThan(2.56);
     for (const k of KS)
@@ -253,7 +333,7 @@ describe("the card shell", () => {
       }
   });
 
-  it("turns about the OPTICAL AXIS, so no card's axial station ever moves", () => {
+  it("turns about the BORE, so no card's axial station ever moves", () => {
     for (const k of KS) {
       const x = cardOrbitAt(k, 0).x;
       for (const t of TIMES)
@@ -271,10 +351,9 @@ describe("the card shell", () => {
       ).toBeGreaterThan(0.5 * r0);
   });
 
-  it("advances every card by the SAME angle: one rate, one direction", () => {
-    // The rewrite's whole point. The old field gave each card its own ω and
-    // ALTERNATED the direction by parity, which is why it read as aimless drift;
-    // a shell that turns as one body cannot have either.
+  it("advances every card by the SAME angle: one rate, one direction — a drift", () => {
+    // a sphere that turns as one body cannot give a card its own ω or reverse
+    // the direction by parity — either reads as aimless drift
     const step = (k: number, t0: number, t1: number) => {
       const a = cardOrbitAt(k, t0);
       const b = cardOrbitAt(k, t1);
@@ -291,14 +370,17 @@ describe("the card shell", () => {
         expect(ds[k], `card ${k} over [${t0}, ${t1}]`).toBeCloseTo(ds[0], 12);
         expect(Math.sign(ds[k]), `card ${k} direction`).toBe(Math.sign(ds[0]));
       }
-      expect(ds[0], "the shell is actually turning").not.toBe(0);
+      expect(ds[0], "the sphere is actually turning").not.toBe(0);
     }
+    // parked, a revolution takes longer than the reader's glance: under half a
+    // radian a second, so the scroll-driven turn is the motion that shows
+    expect(Math.abs(step(0, 0, 1000))).toBeLessThan(0.5);
   });
 
   it("carries NO second motion — no bob, no sway, nothing off the circle", () => {
-    // Anything added on top of the rotation (the old vertical bob, the old idle
-    // roll sway) shows up as a card leaving its own latitude circle. Sampled
-    // densely, because a slow wobble is exactly what a coarse sample misses.
+    // Anything added on top of the rotation (a bob, an idle sway) shows up as a
+    // card leaving its own latitude circle. Sampled densely: a slow wobble is
+    // what a coarse sample misses.
     for (const k of KS) {
       const ring = Math.hypot(cardOrbitAt(k, 0).y, cardOrbitAt(k, 0).z);
       for (let i = 0; i < 400; i++) {
@@ -309,8 +391,8 @@ describe("the card shell", () => {
         );
       }
     }
-    // …and the ROLL is a pure function of the scroll now, with no clock at all
-    expect(cardRollAt.length, "cardRollAt takes (k, cardsLocal)").toBe(2);
+    // …and the ROLL is a pure function of the card's fade, with no clock at all
+    expect(cardRollAt.length, "cardRollAt takes (k, fade)").toBe(2);
   });
 
   it("sweeps every card through a real range of camera depths", () => {
@@ -354,10 +436,7 @@ describe("the card shell", () => {
     expect(new Set(s).size).toBeGreaterThan(1);
   });
 
-  it("tips a card in on entry and settles it, on the SCROLL", () => {
-    // What survives from the old roll law (a card rolls on its side a little
-    // as it comes off): a card arrives tipped over and
-    // rights itself on its own fade window, so a scrub replays it exactly.
+  it("tips a card in on entry and settles it over its own fade", () => {
     for (const k of KS) {
       const entry = Math.abs(cardRollAt(k, 0));
       const rest = Math.abs(cardRollAt(k, 1));
@@ -368,13 +447,55 @@ describe("the card shell", () => {
   });
 });
 
-// WHAT COVERS THE CHAPTER'S ONE SNAP, now that nothing fades the lens out: the
-// departed casts' own wink. These are the containments — move a window and it
-// fails here rather than as a visible pop in a scroll nobody re-checks.
+// THE FIELD'S PARENT: the model overlay anchor is the identity at boot and the
+// model's live rotation about its visual centre thereafter, so a field authored
+// on the rest-world axes rides the lens without a frame conversion.
+describe("the model overlay anchor", () => {
+  const MODEL_SCALE = 0.05;
+  /** core/scene.ts's placement: bore onto +X, mm to world, recentred */
+  const placed = (centreLocal: THREE.Vector3) => {
+    const group = new THREE.Group();
+    group.rotation.z = MODEL_BORE_X_Z;
+    group.scale.setScalar(MODEL_SCALE);
+    group.updateWorldMatrix(true, true);
+    const centreWorld = centreLocal.clone().applyMatrix4(group.matrixWorld);
+    group.position.sub(centreWorld);
+    const bootQuatInv = group.quaternion.clone().invert();
+    const anchor = modelAnchorFor(centreWorld, bootQuatInv);
+    group.add(anchor);
+    group.updateWorldMatrix(true, true);
+    return { group, anchor, bootQuatInv, bootPosition: group.position.clone() };
+  };
+
+  it("is the identity under the boot placement", () => {
+    const { anchor } = placed(new THREE.Vector3(12, -30, 7));
+    const e = anchor.matrixWorld.elements;
+    const I = new THREE.Matrix4().identity().elements;
+    for (let i = 0; i < 16; i++) expect(e[i], `element ${i}`).toBeCloseTo(I[i], 9); // prettier-ignore
+  });
+
+  it("is the model's live rotation about the origin under a reorient", () => {
+    const { group, anchor, bootQuatInv, bootPosition } = placed(new THREE.Vector3(12, -30, 7)); // prettier-ignore
+    group.rotation.set(0.7, -1.9, MODEL_BORE_X_Z + 0.4);
+    // scene.ts applyModelPlacement: the recentre re-derived under the rotation
+    group.position
+      .copy(bootPosition)
+      .applyQuaternion(bootQuatInv)
+      .applyQuaternion(group.quaternion);
+    group.updateWorldMatrix(true, true);
+    const want = new THREE.Matrix4().makeRotationFromQuaternion(
+      group.quaternion.clone().multiply(bootQuatInv),
+    );
+    const e = anchor.matrixWorld.elements;
+    for (let i = 0; i < 16; i++) expect(e[i], `element ${i}`).toBeCloseTo(want.elements[i], 9); // prettier-ignore
+    // a point of the field maps by rotation alone — no translation, no scale
+    const p = new THREE.Vector3(5.2, 0, 0).applyMatrix4(anchor.matrixWorld);
+    expect(p.length()).toBeCloseTo(5.2, 9);
+  });
+});
+
 describe("the field's gather — what the middle of the scene is about", () => {
   it("forms as the field arrives, and is spent before it goes", () => {
-    // the gather is the shape the deck ARRIVES in, subordinate to the pieces
-    // still leaving: it runs under the fade-in and is done by the dissolve
     expect(cardGatherAt(0.35)).toBe(0);
     expect(cardGatherAt(1)).toBe(1);
     // monotone, and actually moving across the middle
@@ -388,10 +509,10 @@ describe("the field's gather — what the middle of the scene is about", () => {
     expect(cardGatherAt(0.6)).toBeLessThan(0.8);
   });
 
-  it("flattens the shell onto ONE ring and draws it in", () => {
+  it("flattens the sphere onto ONE ring and draws it in, short of the core", () => {
     // the sphere's stations converge to the equator and the radius pulls in, so
-    // the field reads as a carousel passing the lens rather than a shell around
-    // it. Same eight quads: no draw, no upload, no residency change.
+    // the field reads as a carousel passing the lens rather than a sphere
+    // around it. Same eight quads: no draw, no upload, no residency change.
     const axialSpread = (g: number) =>
       Math.max(...KS.map((k) => Math.abs(cardOrbitAt(k, 0, g).x)));
     expect(axialSpread(1)).toBeLessThan(axialSpread(0) * 0.05);
@@ -400,12 +521,14 @@ describe("the field's gather — what the middle of the scene is about", () => {
       return Math.hypot(o.x, o.y, o.z);
     };
     expect(radius(1)).toBeLessThan(radius(0));
-    expect(radius(1)).toBeGreaterThan(2.56); // still clears the model
+    // the ring never crosses the core: it clears the model's bounding sphere
+    // (≈ 2.56 wu) by more than a card's own reach (1.2 wu)
+    expect(radius(1)).toBeGreaterThan(2.56 + 1.2);
   });
 
   it("advances on the SCROLL, which is what the middle was missing", () => {
-    // the shell's own clock is time; the gather adds a scroll term, so a reader
-    // who stops sees it turn and a reader who scrolls flips the deck
+    // the sphere's own clock is time; the gather adds a scroll term, so a
+    // reader who stops sees it drift and a reader who scrolls flips the deck
     const still = cardOrbitAt(3, 0, 0.4);
     const scrolled = cardOrbitAt(3, 0, 0.6);
     expect(Math.hypot(still.y - scrolled.y, still.z - scrolled.z)).toBeGreaterThan(0.5); // prettier-ignore
@@ -416,13 +539,10 @@ describe("the field's gather — what the middle of the scene is about", () => {
 
 describe("how the sides disappear", () => {
   it("takes the OUTER casts only once they have flown, while the deep ranks still travel", () => {
-    // THE FAILURE THIS PINS: a wink that opens on the flight's outer ranks
-    // takes a cast off screen before it has visibly travelled, and the
-    // departure reads as a cut rather than an animation. The wink's bands run
-    // outside-in (core/visibility.ts), so the pieces it may take FIRST are the
-    // outer half of the rank range — checked against the GATE: at the frame the
-    // first cast may go they are already at their final departed pose (flight
-    // 1, stick 0, the channel-1 anchors).
+    // A wink that opens on the flight's outer ranks dissolves a cast before it
+    // has visibly travelled. The first pieces it may take are the outer half of
+    // the rank range — and at the frame the first cast may go they are already
+    // fully departed.
     const c = assembleAt(WINK_SPAN[0]);
     for (let r = 0.6; r <= 1.0001; r += 0.02)
       for (const layerPhase of LAYER_PHASES) {
@@ -435,28 +555,25 @@ describe("how the sides disappear", () => {
       }
     // …AND IT IS A RELAY: the deepest ranks are still flying here, so the band
     // never holds a stretch whose only motion is the bore roll. The per-piece
-    // law behind that overlap — every mesh's own wink lands after its own
-    // flight — is pinned against the shipped model in piece-flow.test.ts, which
-    // is the only place the name → rank map exists.
+    // form of that overlap is pinned in piece-flow.test.ts.
     const deep = gate(NUM, ASSEMBLE_GATE, c, { rank01: 0.25, layerPhase: 0 });
     expect(deep.flight, "the deep ranks are mid-flight").toBeLessThan(1);
-    // it opens inside the departure's own rise and is spent INSIDE THE PEEL, so
-    // the scene hands over on a still frame with the mechanism already bare —
-    // and a whole scene before the internals settles on it
+    // it opens inside the departure's rise and runs into the cards scene, under
+    // the turn, so the hand-over is one motion rather than a still frame
     expect(WINK_SPAN[0]).toBeGreaterThan(windowEdges(CARDS_APART.rise)[0]);
     expect(WINK_SPAN[0]).toBeLessThan(windowEdges(CARDS_APART.rise)[1]);
-    expect(WINK_SPAN[1]).toBeLessThanOrEqual(peR.p1);
+    expect(WINK_SPAN[1]).toBeGreaterThan(cdR.p0);
     expect(WINK_SPAN[1]).toBeLessThan(inR.p0);
   });
 
   it("takes the DEPARTURE'S CHANNEL home behind that wink", () => {
-    // the fall is the one snap the scene still has to cover, and the cover is
-    // the wink: every piece the departure moves is out of the visibility pass
-    // before the channel walks back to 0 (the mechanism it would otherwise move
-    // is scoped out — ops/recipes.ts keepScope).
+    // the fall is the one snap the scene has to cover, and the wink is the
+    // cover: every piece the departure moves is exactly gone before the
+    // channel walks back to 0.
     const [f0, f1] = windowEdges(CARDS_APART.fall);
     expect(f0).toBeGreaterThanOrEqual(WINK_SPAN[1]);
     expect(f1).toBeLessThanOrEqual(cdR.p1);
+    expect(winkLevelAt(f0)).toBe(0);
   });
 
   it("dies into its own edge, so the hard 0 past it is a rate identity too", () => {
@@ -464,25 +581,13 @@ describe("how the sides disappear", () => {
     expect(Math.abs(rate(TURN_SPAN[1] - 1e-4))).toBeLessThan(1);
     expect(rate(TURN_SPAN[1] + 1e-5)).toBe(0);
   });
-
-  it("keeps the cards' turn on the RAW p — its neighbours' own clock", () => {
-    const driver = fs.readFileSync(
-      new URL("../hero-driver.ts", import.meta.url),
-      "utf8",
-    );
-    expect(driver).toMatch(/peelTurnAt\(lastP\)/);
-    expect(driver).not.toMatch(/peelTurnAt\(pE\)/);
-  });
 });
 
 // --- the shipped geometry ---------------------------------------------------
-// The two claims this module makes ABOUT THE MODEL, pinned against the model
-// (core/__tests__/shell-parts.test.ts's reader, for its reason): which sector
-// each piece of the shell's cast sits on, and that a part offset written in the
-// gltf frame is a radial offset in the world frame. A lens_work re-export that
-// re-cuts the seams, renumbers them, moves a marking or introduces a rotation
-// anywhere above a strip must fail HERE, not as ink floating in mid-air in a
-// scroll nobody re-checks.
+// The two claims this module makes ABOUT THE MODEL, pinned against it: which
+// sector each piece of the shell's cast sits on, and that a part offset written
+// in the gltf frame is a radial offset in the world frame. A re-export that
+// re-cuts or renumbers the seams must fail HERE.
 
 interface Gltf {
   nodes: {
@@ -567,26 +672,31 @@ function centres(segOf: (name: string) => number | undefined): Strip[] {
 }
 
 describe("the card field's mount window", () => {
-  // Newly EXPORTED so story/cost.ts can count the eight draws at p without
-  // spelling this window a second time — pinned here, where it is owned.
+  // EXPORTED so story/cost.ts can count the eight draws without spelling the
+  // window twice; pinned here, where it is owned.
 
   it("mounts a whole scene early and leaves before the dive", () => {
-    // the eight texture uploads (~80ms) land in the zoom's quiet beat, not on
-    // the peel's first frames
+    // the eight texture uploads land in the zoom's quiet beat, not on the
+    // peel's first frames
     expect(MOUNT_LO).toBe(rangeOf("zoom").p0);
     expect(MOUNT_LO).toBeLessThan(peR.p0);
-    // …and the tail is the cards scene's own end: the field is spent inside the
-    // scene (it dissolves as the pieces fly home under it), so nothing is left
-    // to draw past this edge and no invisible card survives into the internals
-    // scene or the fly-through
+    // …and the tail is the cards scene's own end: the field dissolves inside
+    // the scene, so no invisible card survives into the internals or the dive
     expect(MOUNT_HI).toBe(cdR.p1);
     expect(MOUNT_HI).toBeLessThan(DIVE_P0);
     expect(MOUNT_HI).toBeLessThanOrEqual(inR.p0);
-    expect(cardsFadeOutAt(1), "the field is gone by the scene's end").toBe(1);
+    for (const k of KS)
+      expect(cardOutAt(k, MOUNT_HI), `card ${k} is gone by the scene's end`).toBe(1); // prettier-ignore
   });
 
   it("covers the whole span the cards are ever drawn over", () => {
-    for (const p of [cdR.p0, cdR.p1, atFrac(cdR, 0.5), peR.p0])
+    for (const p of [
+      CARDS_IN_SPAN[0],
+      cdR.p0,
+      cdR.p1,
+      atFrac(cdR, 0.5),
+      peR.p0,
+    ])
       expect(p, `card p ${p}`).toBeGreaterThanOrEqual(MOUNT_LO);
     expect(cdR.p1).toBeLessThanOrEqual(MOUNT_HI);
   });
@@ -618,9 +728,8 @@ describe("the shell's seam convention", () => {
   });
 
   it("puts every wedge on the sector segSectorAngle names for it", () => {
-    // 10°: the residual is the bounding box's own asymmetry. Half a sector is
-    // 36°, so this cannot admit the wrong sector. The card field's own
-    // longitudes are seeded off this law (cardPhaseAt).
+    // 10° is the bounding box's own asymmetry; half a sector is 36°, so this
+    // cannot admit the wrong sector.
     for (const w of wedges)
       expect(apart(w.angle, segSectorAngle(w.seg)), w.name).toBeLessThan(10);
   });
@@ -641,15 +750,6 @@ describe("the huddle — the compact core the cards turn", () => {
     expect(HUDDLE.fall).toBe(UPRIGHT.rise);
   });
 
-  it("is WRITTEN — the driver drives the channel every frame", () => {
-    // the bore roll's own census idiom: a channel nobody writes dies silently
-    const driver = fs.readFileSync(
-      new URL("../hero-driver.ts", import.meta.url),
-      "utf8",
-    );
-    expect(driver).toMatch(/huddleTarget = huddleAt\(p\)/);
-  });
-
   it("is full for the turn's middle and spent with the tip", () => {
     expect(huddleAt(atFrac(cdR, 0.3))).toBe(1);
     expect(huddleAt(atFrac(cdR, 0.7))).toBe(1);
@@ -662,7 +762,7 @@ describe("the huddle — the compact core the cards turn", () => {
   });
 });
 
-describe("the card fit — the shell sized to the frame", () => {
+describe("the card fit — the sphere sized to the frame", () => {
   const halfWAt = (w: number, h: number) => {
     // core/scene's zoom law + the cards row's own fov and settle distance
     const zoom = frameZoom(w, h);
@@ -680,7 +780,7 @@ describe("the card fit — the shell sized to the frame", () => {
     const phone = cardFitOf(halfWAt(390, 844));
     expect(phone).toBeLessThan(1);
     expect(phone).toBeGreaterThanOrEqual(0.6);
-    // the fitted shell still clears the model's bounding sphere (≈ 2.56 wu)
+    // the fitted sphere still clears the model's bounding sphere (≈ 2.56 wu)
     expect(5.2 * phone).toBeGreaterThan(2.9);
   });
 });

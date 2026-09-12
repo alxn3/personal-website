@@ -11,8 +11,8 @@ export const MODEL_URL = "/models/lens_web_segmented.glb";
 // the body scene at load so the accessory toggles find them by name.
 export const ACCESSORIES_URL = "/models/lens_web_accessories.glb";
 // The GLBs carry plain accessors and no glTF extensions, so a bare GLTFLoader
-// reads them — no Draco decoder. HOSTING REQUIREMENT, not an optimization:
-// `.glb` must be served with `Content-Encoding: br`.
+// reads them. Hosting requirement: `.glb` must be served with
+// `Content-Encoding: br`.
 
 // Front accessories ride the extending zoom barrel; the rear cap sits at root.
 const FRONT_ACCESSORIES = new Set([
@@ -22,11 +22,9 @@ const FRONT_ACCESSORIES = new Set([
   "Acc_Hood",
 ]);
 
-// Per-mesh material spec, tuned to the real lens. EVERY mesh is shaded here:
-// the GLBs ship bare geometry with zero materials, so anything skipped renders
-// in three's white DefaultMaterial. The decision is name → spec, and
-// loadLensModel memoizes on the spec signature so equal specs share one
-// instance.
+// Per-mesh material spec, keyed by name. Every mesh must be shaded here: the
+// GLBs ship bare geometry with zero materials, so anything skipped renders in
+// three's white DefaultMaterial.
 type LensMaterialSpec = {
   color: number;
   roughness: number;
@@ -80,10 +78,8 @@ function lensMaterialSpec(name: string): LensMaterialSpec {
   return { color: 0x191919, roughness: 0.55, metalness: 0.28 };
 }
 
-/** HOW MUCH THE ELEMENTS REFLECT — a scale on the dielectric Fresnel at both
- *  ends. A MULTICOATING number, not a default: three's 1.0 is bare glass, and
- *  thirteen bare surfaces composite to a milky white disc across the bore when
- *  shot down the axis. Must stay equal to core/scene.ts's
+/** Scale on the elements' dielectric Fresnel — a multicoating, where three's
+ *  1.0 is bare glass. Must stay equal to core/scene.ts's
  *  GLASS_TRANSMISSIVE_SPECULAR, or the dive's clone hand-back pops. */
 export const GLASS_SPECULAR = 0.15;
 
@@ -117,10 +113,9 @@ export interface LensModel {
    *  hero, so nothing downstream may expect hood/caps/filter nodes to exist. */
   hasAccessories: boolean;
   /** Resolves once the accessories GLB is merged into `scene`. Loaded in the
-   *  BACKGROUND after the body, so callers must await this before touching
-   *  hood/caps/filter nodes. Resolves immediately when `hasAccessories` is
-   *  false, so that await stays valid either way. Rejections are the
-   *  caller's. */
+   *  background after the body, so callers must await this before touching
+   *  hood/caps/filter nodes; resolves immediately when `hasAccessories` is
+   *  false. */
   accessoriesReady: Promise<void>;
 }
 
@@ -135,10 +130,9 @@ export async function loadLensModel({
 }: { accessories?: boolean } = {}): Promise<LensModel> {
   const loader = new GLTFLoader();
 
-  // Per-LOAD cache keyed by the spec signature: meshes with identical params
-  // share ONE source material, so the per-source caches downstream
-  // (materials/unified.ts) yield one deform material per look rather than one
-  // per mesh. Scoped to this call so disposeLensModel frees it cleanly.
+  // Per-load cache keyed by the spec signature: meshes with identical params
+  // share one source material, so the caches in materials/unified.ts yield one
+  // deform material per look rather than one per mesh.
   const matCache = new Map<string, THREE.Material>();
   const sharedMaterialFor = (name: string): THREE.Material => {
     const s = lensMaterialSpec(name);
@@ -151,7 +145,7 @@ export async function loadLensModel({
     return m;
   };
 
-  // EVERY mesh, no exceptions: the GLBs carry no materials, so anything
+  // Every mesh, no exceptions: the GLBs carry no materials, so anything
   // skipped renders in three's white default.
   const stylize = (root: THREE.Object3D) => {
     root.traverse((child) => {
@@ -165,8 +159,8 @@ export async function loadLensModel({
   const scene = body.scene;
   stylize(scene);
 
-  // Accessories in the BACKGROUND, off the critical path — deliberately not
-  // awaited here; the caller awaits `accessoriesReady`.
+  // Accessories off the critical path — not awaited here; the caller awaits
+  // `accessoriesReady`.
   const accessoriesReady = accessories
     ? loader.loadAsync(ACCESSORIES_URL).then((acc) => {
         // Both GLBs share one rest-pose space and Barrel_Inner is at the
@@ -200,7 +194,7 @@ export function setLensEnvironment(
 }
 
 /** Dispose every geometry/material under a loaded model root. Materials are
- *  SHARED across meshes, so the Set guards against a double-dispose. */
+ *  shared across meshes, so the Set guards against a double-dispose. */
 export function disposeLensModel(root: THREE.Object3D): void {
   const seenMat = new Set<THREE.Material>();
   root.traverse((child) => {

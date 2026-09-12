@@ -2,10 +2,8 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-// Pins host.ts law 5 to the source text: the fragment-facing reads off fold()
-// must cross on varyings. Dropping any of these silently re-doubles every
-// fragment shader (the whole recipe chain re-emitted per pixel) with every
-// other gate green — the goldens are CPU-side and cannot see stage placement.
+// Pins host.ts law 5 to the source text: fragment-facing reads off fold() must
+// cross on varyings, or the whole recipe chain re-emits per pixel.
 
 const src = (rel: string): string =>
   readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");

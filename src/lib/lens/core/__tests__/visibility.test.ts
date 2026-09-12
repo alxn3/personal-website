@@ -1,15 +1,27 @@
 import { describe, expect, it } from "vitest";
 import * as THREE from "three/webgpu";
-import { sweepVisibility, type VisibilityGates } from "../visibility";
-import { isAccessory } from "../parts";
+import {
+  DECAL_BAND,
+  EXTRA_BAND,
+  REST_BAND,
+  SHELL_FEATHER,
+  WINK_WIDTH,
+  makeWinkScatter,
+  packWink,
+  stampWinkLanes,
+  sweepVisibility,
+  unpackWink,
+  winkGone,
+  winkOpacity,
+  type VisibilityGates,
+} from "../visibility";
+import { isAccessory, isPeelExtra, isPeelTube } from "../parts";
+import { WINK_NONE } from "../../ops/frames";
 
-// THE DIRTY-FLAG LAW (perf batch): core/scene.ts no longer sweeps at every
-// gate mutation site — writers mark `visibilityDirty` and tick() composes ONCE
-// before the render. That deferral is only sound if the sweep is a pure
-// function of the CURRENT gate state: no history, no state of its own, each
-// gate an independent veto. These tests pin exactly that, on a miniature of
-// the real tree shapes (top-level meshes, a hull child riding its host, an
-// accessory subtree).
+// THE DIRTY-FLAG LAW: writers mark `visibilityDirty` and tick() composes once
+// before the render. That deferral is sound only while the sweep is a pure
+// function of the CURRENT gate state — no history, each gate an independent
+// veto — pinned here on a miniature of the real tree shapes.
 
 /** the real tree's shapes, in miniature */
 function fixture() {
@@ -90,10 +102,8 @@ describe("visibility sweep", () => {
     }
   });
 
-  // THE deferral equivalence: a run that mutates gates N times and sweeps once
-  // at the end lands on identical flags to a run that sweeps after every
-  // mutation — for a deterministic pseudo-random walk of mutation sequences.
-  // This is what makes coalescing passes behind a dirty flag a no-op.
+  // The deferral equivalence: N mutations then one sweep lands on identical
+  // flags to sweeping after each, over a deterministic random walk.
   it("one deferred sweep ≡ a sweep after every mutation (state, not history)", () => {
     const eager = fixture();
     const lazy = fixture();
@@ -134,8 +144,7 @@ describe("visibility sweep", () => {
     }
   });
 
-  // Accessories keep their own owner — the page's accessory choice writes those
-  // flags, and the sweep must never touch them, whatever the other gates say.
+  // Accessory flags belong to the page's accessory choice, not the sweep.
   it("never writes accessory flags", () => {
     const f = fixture();
     const s = freshState();
@@ -160,5 +169,131 @@ describe("visibility sweep", () => {
     f.hull.visible = true;
     sweepVisibility(f.root, gatesOf(s));
     expect(f.hull.visible).toBe(true);
+  });
+});
+
+// THE DISSOLVE LAW: one per-piece term, read by the materials off the stamped
+// lane and by scene.ts's cut. Pinned exact at both edges — a term that fades
+// ABOVE its threshold (smoothstep(t, t + w)) fails "whole at t"; one that never
+// reaches 0 inside the level fails "gone at t − w" and the band floor.
+describe("the wink's dissolve", () => {
+  const TS = [WINK_WIDTH, 0.3, 0.5, 0.62, 0.7, SHELL_FEATHER - 1e-6];
+
+  it("is exactly 1 at and above the threshold, exactly 0 at and below t − w", () => {
+    for (const t of TS) {
+      for (const lvl of [t, t + 1e-9, 1]) expect(winkOpacity(t, lvl), `t ${t} level ${lvl}`).toBe(1); // prettier-ignore
+      for (const lvl of [t - WINK_WIDTH, t - WINK_WIDTH - 1e-9, 0])
+        expect(winkOpacity(t, lvl), `t ${t} level ${lvl}`).toBe(0);
+      const mid = winkOpacity(t, t - WINK_WIDTH / 2);
+      expect(mid).toBeGreaterThan(0);
+      expect(mid).toBeLessThan(1);
+      // monotone in the level
+      let prev = -1;
+      for (let i = 0; i <= 100; i++) {
+        const v = winkOpacity(t, i / 100);
+        expect(v).toBeGreaterThanOrEqual(prev);
+        prev = v;
+      }
+    }
+  });
+
+  it("is gone exactly where the opacity reaches 0 — the visibility cut's edge", () => {
+    for (const t of TS) {
+      expect(winkGone(t, t - WINK_WIDTH)).toBe(true);
+      expect(winkGone(t, t - WINK_WIDTH + 1e-9)).toBe(false);
+      expect(winkOpacity(t, t - WINK_WIDTH + 1e-9)).toBeGreaterThan(0);
+    }
+  });
+
+  it("floors every band at WINK_WIDTH, so level 0 takes the last piece exactly", () => {
+    const wink = makeWinkScatter();
+    const names = [
+      ...Array.from({ length: 30 }, (_, i) => `Barrel_Base_Seg${i}`),
+      ...Array.from({ length: 12 }, (_, i) => `DecalT_Label${i}`),
+      ...Array.from({ length: 12 }, (_, i) => `Baffle_Front_Seg${i}`),
+      ...Array.from({ length: 12 }, (_, i) => `Cam_Barrel_Seg${i}`),
+      ...Array.from({ length: 12 }, (_, i) => `Baffle_G2_Seg${i}`),
+    ];
+    expect(names.some(isPeelExtra), "a baffle name is in the roster").toBe(true); // prettier-ignore
+    expect(names.some(isPeelTube), "a tube name is in the roster").toBe(true);
+    let governed = 0;
+    for (const n of names) {
+      const w = wink(n);
+      if (!w) continue;
+      governed++;
+      expect(w.threshold, n).toBeGreaterThanOrEqual(WINK_WIDTH);
+      expect(w.threshold, n).toBeLessThan(SHELL_FEATHER);
+      expect(winkOpacity(w.threshold, 0), `${n} at level 0`).toBe(0);
+      expect(winkOpacity(w.threshold, 1), `${n} at level 1`).toBe(1);
+    }
+    expect(governed).toBeGreaterThan(40);
+  });
+
+  it("orders the casts: decals above baffles above wedges; tubes above the rest", () => {
+    expect(SHELL_FEATHER).toBeGreaterThan(DECAL_BAND);
+    expect(DECAL_BAND).toBeGreaterThan(EXTRA_BAND);
+    expect(EXTRA_BAND).toBeGreaterThan(WINK_WIDTH);
+    expect(REST_BAND).toBeGreaterThan(WINK_WIDTH);
+    const wink = makeWinkScatter();
+    const t = (n: string) => wink(n)!.threshold;
+    expect(t("DecalT_Brand")).toBeGreaterThanOrEqual(DECAL_BAND);
+    expect(t("Baffle_Front_Seg0")).toBeGreaterThanOrEqual(EXTRA_BAND);
+    expect(t("Baffle_Front_Seg0")).toBeLessThan(DECAL_BAND);
+    expect(t("Barrel_Base_Seg0")).toBeLessThan(EXTRA_BAND);
+  });
+
+  it("packs the lane round-trip, and WINK_NONE to no gate", () => {
+    for (const w of [
+      { channel: "shell", threshold: 0.31 },
+      { channel: "interior", threshold: 0.74 },
+    ] as const) {
+      const back = unpackWink(packWink(w))!;
+      expect(back.channel).toBe(w.channel);
+      expect(back.threshold).toBeCloseTo(w.threshold, 12);
+    }
+    expect(unpackWink(packWink(null))).toBeNull();
+    expect(packWink(null)).toBe(WINK_NONE);
+    // an ungoverned lane reads as whole at every level
+    expect(winkOpacity(WINK_NONE, 0)).toBe(1);
+  });
+
+  it("stamps every framed top-level mesh's lane from one scatter in traversal order", () => {
+    const framed = (name: string) => {
+      const m = new THREE.Mesh(new THREE.BufferGeometry());
+      m.name = name;
+      m.geometry.setAttribute("_opY", new THREE.BufferAttribute(new Float32Array(3 * 4).fill(WINK_NONE), 4)); // prettier-ignore
+      return m;
+    };
+    const root = new THREE.Group();
+    const wedge0 = framed("Barrel_Base_Seg0");
+    const decal = framed("DecalT_Brand");
+    const tube = framed("Cam_Barrel_Seg0");
+    const kept = framed("Element_01");
+    const wedge1 = framed("Barrel_Base_Seg1");
+    const hull = framed("Barrel_Base_Seg1_hull"); // a mesh under a mesh: skipped
+    wedge1.add(hull);
+    const bare = new THREE.Mesh(new THREE.BufferGeometry()); // governed, unframed
+    bare.name = "Band_Mid_Seg0";
+    root.add(wedge0, decal, tube, kept, wedge1, bare);
+    const map = stampWinkLanes(root);
+    const lane = (m: THREE.Mesh, i = 0) =>
+      m.geometry.getAttribute("_opY").getW(i);
+    const fresh = makeWinkScatter();
+    // the map carries the float32 the lane holds, so the cut and the shader
+    // agree on the same number
+    const asLane = (n: string) => Math.fround(packWink(fresh(n)));
+    for (const m of [wedge0, decal, tube, kept, wedge1]) {
+      const l = asLane(m.name);
+      expect(lane(m), m.name).toBe(l);
+      expect(lane(m, 2), `${m.name} every vertex`).toBe(l);
+      expect(map.get(m) ?? null, `${m.name} in the map`).toEqual(unpackWink(l));
+    }
+    // the same scatter also counts the unframed mesh — it has a threshold to
+    // cut on, just no lane to dissolve on
+    expect(map.get(bare)).toEqual(unpackWink(asLane(bare.name)));
+    expect(lane(hull)).toBe(WINK_NONE);
+    expect(map.has(hull)).toBe(false);
+    expect(lane(kept)).toBe(WINK_NONE);
+    expect(lane(wedge0)).not.toBe(lane(wedge1));
   });
 });

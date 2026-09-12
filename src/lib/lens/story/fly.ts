@@ -1,30 +1,26 @@
-// The STORY's fly-through span: the /lens demo's dive (explore/demos.ts
-// d-flythrough) re-hosted on the scroll, from `flythrough` through
-// `constellations` and `trails`, ending inside `rewrap`.
-//
-// THE CAMERA IS NEVER OVERRIDDEN — the LENS travels. The camera parks on the
-// optical axis at the dive's opening pose and the model moves instead:
-// x_model = X_PARK − x_camera. The fov ramp is the only camera-side term.
-//
-// Every other law here is the demo's, transcribed over the same FLY knobs
-// (optics/fly-core.ts); if a number disagrees with the demo, the demo is right.
-// One exception: the STREAK fall is re-hosted onto the WORMHOLE's fall window
-// (flyStreakAt) so the ring and the smear it is made of end together.
-//
-// LAZY MODULE: statically imports optics/ uniform boxes (three/tsl node graphs
-// that must stay out of the homepage's initial chunk), so it is reachable ONLY
-// through hero-driver's dynamic import() and must NEVER be re-exported from
-// index.ts.
-//
-// WHAT IT OWNS: the aperture and focus channels (value AND target, so the
-// driver's per-frame writes cannot fight it), the sky/warp uniforms, the
-// realistic↔ink blend, the glass swap, the room light and glass glint, the
-// lens' dolly and body cover, and the camera's fov. It does NOT touch
-// zoom/explode/assemble, and it never PLACES the camera.
+// The story's fly-through span: from `flythrough` through `constellations` and
+// `trails`, ending inside `rewrap`. The camera is never placed — the LENS
+// travels: the camera parks on the optical axis at the dive's opening pose and
+// the model moves (x_model = X_PARK − x_camera); the fov ramp and the framing
+// centre are the only camera-side terms. Everything is written from
+// `evaluate(pE)`, called by the driver's evaluate step at the eased story p.
+// Laws and knobs are optics/fly-core.ts's (FLY); the streak fall is re-hosted
+// onto the wormhole's fall window (flyStreakAt).
+// Owns aperture and focus (value AND target), the sky/warp uniforms, the
+// realistic↔ink blend, glass swap, room light, glint, dolly, body cover, fov.
+// LAZY: statically imports optics/ node graphs, so reached only through
+// hero-driver's import(); never re-exported from index.ts.
 import type { CameraPose, SceneHandle } from "../core/scene";
 import { clamp01, lerp, smoothstep } from "../core/math";
 import { isLightTheme, watchTheme } from "../core/theme";
-import { rangeOf, atFrac, REVEAL_END, SKY_OUT_END, DIVE_P0 } from "./story";
+import {
+  rangeOf,
+  atFrac,
+  span,
+  REVEAL_END,
+  SKY_OUT_END,
+  DIVE_P0,
+} from "./story";
 import {
   FLY,
   flyPose,
@@ -35,7 +31,13 @@ import {
   GLASS_SPANS,
 } from "../optics/fly-core";
 import { uWormhole } from "../optics/wormhole-post";
-import { uStarMix, uStarStreak, uStarRing } from "../optics/starfield";
+import {
+  uStarMix,
+  uStarStreak,
+  uStarRing,
+  uStreakGain,
+  uStarSize,
+} from "../optics/starfield";
 
 const flyR = rangeOf("flythrough");
 const tR = rangeOf("trails");
@@ -43,50 +45,45 @@ const rwR = rangeOf("rewrap");
 /** Where the camera starts leaving the internals pose: the flythrough scene's
  *  own approach, over which the rig swings onto the axis and parks. */
 export const CAM_IN = flyR.p0;
-// DIVE_P0 — the end of that approach — lives in story/story.ts rather than
-// here, because hero-driver's body-fade tile must end on exactly that number
-// and cannot import from this lazy module.
+// DIVE_P0 — the end of that approach — lives in story/story.ts, since
+// hero-driver needs it and cannot import from this lazy module.
 /** The span's last frame, where the dive hands the scene back. It must sit PAST
  *  the fov hand-back (FOV_BACK): exit() writes a `null` override, which is a
  *  cut, so the two fovs have to already agree by here. */
 export const EXIT_END = atFrac(rwR, 0.58);
-/** Where the transmissive glass hands back — inside the span, after the blind
- *  journey home and before the reveal's crossfade, so the material cut lands
- *  under the full body cover. Any ink over the dive's clones would stomp them,
- *  so this must precede INK_RETURN[0]. */
+/** Where the transmissive glass hands back, under the full body cover so the
+ *  material cut is unseen. It must precede INK_RETURN[0]: ink over the dive's
+ *  clones would stomp them. */
 export const GLASS_OUT = atFrac(rwR, 0.055);
-/** The ink's way back, [start, end]. The start is the body-fade top
- *  (flyRevealAt saturates there), so the appearance itself plays realistic and
- *  the dissolve begins on the first frame the lens is wholly drawn. */
-export const INK_RETURN: [number, number] = [
+/** The ink's way back, [start, end]. The start is the body-fade top, so the
+ *  dissolve begins on the first frame the lens is wholly drawn. */
+export const INK_RETURN = span("fly.inkBack", [
   atFrac(rwR, 0.16),
   atFrac(rwR, 0.36),
-];
-/** scroll-p slack past each edge before the span's side effects are torn down,
- *  so a scrub sitting on an edge cannot thrash enter()/exit(). Every frame
- *  inside it is a frame of the WRONG look, so it stays about half a notch. */
+]);
+/** story-p slack past each edge before the span's side effects are torn down,
+ *  so a scrub sitting on an edge cannot thrash enter()/exit() */
 export const HYST = 0.005;
+span("fly.span", [DIVE_P0, EXIT_END]);
+span("fly.dive", [DIVE_P0, flyR.p1]);
+span("fly.glass", [DIVE_P0, GLASS_OUT]);
+span("fly.inkOut", [CAM_IN, DIVE_P0 - HYST]);
 
 /** The look's hand-over — 1 = the story's ink, 0 = the realistic lens the dive
- *  flies through. One material, so this is a blend, not a cut.
- *
- *  BOTH RAMPS SIT OUTSIDE THE GLASS SUB-SPAN, hysteresis included: the elements
- *  still swap a material for the transmissive clones, and any ink while those
- *  are mounted would stomp them. */
+ *  flies through. Both ramps must sit outside the glass sub-span, hysteresis
+ *  included: ink over the mounted transmissive clones would stomp them. */
 export const flyInkAt = (p: number) =>
   1 -
   smoothstep(CAM_IN, DIVE_P0 - HYST, p) *
     (1 - smoothstep(INK_RETURN[0], INK_RETURN[1], p));
 
 /** The framing's centre, the ink's ramp inverted: 1 = the optical axis is in
- *  the middle of the frame. Named rather than inlined so story/state.ts can
- *  report exactly what frame() writes. */
+ *  the middle of the frame. */
 export const flyCentreAt = (p: number) => 1 - flyInkAt(p);
 
-/** The sky's way out — the mirror of the dive's `pSkyIn` window. The stars ramp
- *  to nothing WHILE the backdrop blends to the rewrap stage's tint, so the
- *  unmount at the span's edge happens between two frames of the same color.
- *  1 through the whole dive and both sky scenes; 0 from SKY_OUT_END on. */
+/** The sky's way out: the stars ramp to nothing WHILE the backdrop blends to
+ *  the rewrap stage's tint, so the unmount lands between two frames of the same
+ *  color. 1 through the dive and both sky scenes; 0 from SKY_OUT_END on. */
 export const skyOutAt = (p: number) =>
   1 - smoothstep(atFrac(rwR, 0.02), SKY_OUT_END, p);
 
@@ -101,20 +98,17 @@ export const flySkyInAt = (pFly: number) =>
   smoothstep(FLY.pSkyIn[0], FLY.pSkyIn[1], pFly);
 
 /** What the sky fade uniforms get: the arrival, less the reveal's fade. Exactly
- *  0 outside the span, so it agrees with exit()'s teardown and story/state.ts
- *  can report it everywhere. */
+ *  0 outside the span, agreeing with exit()'s teardown. */
 export const flySkyMixAt = (p: number) => flySkyInAt(flyDiveP(p)) * skyOutAt(p);
 
 /** The darkness: the room and the glass' reflections going out with the barrel,
- *  on the dive's clock and RELEASED by the sky's fade (× skyOutAt) so the light
- *  is already back when exit() sets it to 1. Levels are lerped in frame(). */
+ *  on the dive's clock and released by the sky's fade (× skyOutAt) so the light
+ *  is already back when exit() sets it to 1. */
 export const flyDarkAt = (p: number) =>
   smoothstep(FLY.pDark[0], FLY.pDark[1], flyDiveP(p)) * skyOutAt(p);
 
-/** The pinch at story p: the demo's own arc, whole — alive exactly while the
- *  dive visibly travels, spent by 0.84 of it. Also drives the ring's ramp: the
- *  sprite band's swing from radial to tangential is half the same feature, so
- *  it must be exactly 0 through `trails` (the perfect circles). */
+/** The pinch at story p, the demo's own arc. Also drives the ring's ramp, which
+ *  must be exactly 0 through `trails` (the perfect circles). */
 export const flyWarpAt = (p: number) => {
   const pFly = flyDiveP(p);
   return (
@@ -123,10 +117,8 @@ export const flyWarpAt = (p: number) => {
   );
 };
 
-/** The streaks — the demo's rise (behind the pinch's: the smear wants a throat
- *  to smear into) and the PINCH's fall rather than the demo's own. The ring is
- *  MADE of the streaks, and a streak of zero length swings nothing, so both
- *  halves of the feature must end on the same frame. */
+/** The streaks — the demo's rise, but the PINCH's fall: the ring is made of the
+ *  streaks, so both halves of the feature must end on the same frame. */
 export const flyStreakAt = (p: number) => {
   const pFly = flyDiveP(p);
   return (
@@ -135,95 +127,78 @@ export const flyStreakAt = (p: number) => {
   );
 };
 
-/** Where the parked camera sits, world X. The dive's path opens with the camera
- *  `FLY.distFar` behind the lens, so parking there makes the model's dolly
- *  exactly 0 on the dive's first frame; the flythrough story row is authored
- *  from the same number. */
+/** The throat's swell: the streaks lengthen and the discs grow through the
+ *  wormhole's peak, so the torrent climaxes instead of holding one intensity.
+ *  Exactly 1 outside the window. */
+const THROAT_SWELL = { streak: 0.6, size: 0.3, window: [0.3, 0.44, 0.62] };
+export const flyThroatSwellAt = (p: number) => {
+  const pFly = flyDiveP(p);
+  const [w0, w1, w2] = THROAT_SWELL.window;
+  return smoothstep(w0, w1, pFly) * (1 - smoothstep(w1, w2, pFly));
+};
+
+/** Where the parked camera sits, world X: `FLY.distFar` behind the lens, so the
+ *  model's dolly is exactly 0 on the dive's first frame. */
 export const X_PARK = -FLY.distFar;
 
 /** The dive's pose at story p, through the interior remap (FLY.insideRate) —
- *  held at the first pose until the approach is over. Read TWICE: as the
- *  model's dolly below, and as the passage fade's ruler. */
+ *  held at the first pose until the approach is over. */
 export const flyPoseAt = (p: number) =>
   flyPose(travelRemap(flyDiveP(p), FLY.pInside, FLY.insideRate));
 
-/** Where the reveal is played, world X: the lens comes back to here, 3.5 units
- *  PAST home, so the exploded shell does not fill the frame on the dive's wide
- *  fov. Not a new home — the story's poses orbit the ORIGIN, so flySeatAt gives
- *  this distance back before the camera chain starts to move. */
+/** Where the reveal is played, world X: past home, so the exploded shell does
+ *  not fill the frame on the dive's wide fov. Not a new home — the story's
+ *  poses orbit the ORIGIN, and flySeatAt gives this distance back. */
 export const REVEAL_X = 3.5;
 
 /** The journey back — 0 while the lens is out on the dive, 1 once it reaches
- *  the reveal's park (REVEAL_X; not home yet, see flySeatAt). Its own ease, not
- *  a reversed dive, whose tail would slide 28 units in a hundredth of p.
- *
- *  IT RUNS BLIND: the lens travels through the camera's own position, so every
- *  frame of this window must sit under the body cover — hence it ends before
- *  the reveal window the cover lifts over, and starts in the trails' hold. */
+ *  the reveal's park (REVEAL_X; not home yet, see flySeatAt). The lens travels
+ *  through the camera's own position, so every frame of this window must sit
+ *  under the body cover. */
 export const flyReturnAt = (p: number) =>
   smoothstep(atFrac(tR, 0.9), atFrac(rwR, 0.05), p);
 
 /** …and the last leg, from the reveal's park to the origin: 0 through the whole
- *  reveal, 1 once the lens is exactly home. The last of the staggered movers
- *  (chain creep at CAM_RELEASE_F, fov push at FOV_BACK[0], then this).
- *
- *  IT MUST FINISH EARLY: the chain's poses orbit the ORIGIN, so a lens short of
- *  it is a lens off the frame's centre by the sine of the camera's swing, and
- *  the chain leaves at CAM_RELEASE_F, before this window even opens. */
+ *  reveal, 1 once the lens is exactly home. It must finish early — the chain's
+ *  poses orbit the ORIGIN, so a lens short of it sits off the frame's centre by
+ *  the sine of the camera's swing. */
 export const flySeatAt = (p: number) =>
   smoothstep(REVEAL_END, atFrac(rwR, 0.34), p);
 
 /** The reveal — the exploded lens coming back on screen, 0 = covered, 1 = fully
- *  drawn. The pieces arrive at full explosion, already rolling in the sky's own
- *  direction (story/reveal.ts revealRollAt), and the trails sweep on past this
- *  window's top so the exchange is not a blink.
- *
- *  IT IS PLAYED ON A DEAD-STILL CAMERA. Nothing camera-side moves for any frame
- *  of this window: the chain is held through CAM_RELEASE_F, the fov hand-back
- *  has not opened (FOV_BACK), and the lens is parked at REVEAL_X — so the
- *  pieces' spin, fade-in and assembly are the only motion in the frame. */
+ *  drawn. Nothing camera-side may move over this window: the chain is held
+ *  through CAM_RELEASE_F, the fov hand-back has not opened (FOV_BACK), and the
+ *  lens is parked at REVEAL_X. */
 export const flyRevealAt = (p: number) =>
   smoothstep(atFrac(rwR, 0.06), atFrac(rwR, 0.16), p);
 
 /** The body cover, this span's half of the `setBodyFade` channel: 1 = the model
- *  is drawn, 0 = it is not. Down over the dive's last tenth (the return crosses
- *  the camera), back up over the reveal.
- *
- *  EXACTLY 1 AT DIVE_P0: the driver holds a constant 1 below that edge (nothing
- *  hides the lens before the dive) and this owns it above, so there is an owner
- *  at every p and no step where they meet. */
+ *  is drawn, 0 = it is not. Down over the dive's last tenth, back up over the
+ *  reveal. Exactly 1 at DIVE_P0, where the driver's constant 1 hands over. */
 export const flyBodyFadeAt = (p: number) =>
   1 - smoothstep(0.9, 1, flyDiveP(p)) * (1 - flyRevealAt(p));
 
-/** Where the framing goes back to the story — the fly's fov (70) unwinding to
- *  the story chain's (42), a real 1.8× push-in.
- *
- *  It opens on SKY_OUT_END because the ramp SCALES the sky (the starfield is
- *  geometry on the camera), so that is the earliest frame it cannot bend a star
- *  or a live trail. It must FINISH before the span releases the override, since
- *  exit() writes `null`, which is a cut — hence EXIT_END sits past its end. */
-export const FOV_BACK: [number, number] = [SKY_OUT_END, atFrac(rwR, 0.52)];
+/** Where the framing goes back to the story — the fly's fov unwinding to the
+ *  story chain's. It may not open before SKY_OUT_END (the ramp scales the sky,
+ *  which is geometry on the camera) and must finish before EXIT_END, where
+ *  exit() releases the override with a cut. */
+export const FOV_BACK = span("fly.fovBack", [SKY_OUT_END, atFrac(rwR, 0.52)]);
 
 export const flyFovBackAt = (p: number) =>
   smoothstep(FOV_BACK[0], FOV_BACK[1], p);
 
 /** The override's mix: how much of the fly's fov is in force (1 = wholly the
- *  dive's, 0 = wholly the story chain's). Named so state.ts reads it. */
+ *  dive's, 0 = wholly the story chain's). */
 export const flyFovMixAt = (p: number) => 1 - flyFovBackAt(p);
 
 /** …and WHICH fov that is: the pose's own, or the park's where a path segment
  *  omits it. */
 export const flyFovOf = (pose: CameraPose) => pose.fov ?? FLY.fovFar;
 
-/** The dolly, world X: the model's placement under the parked camera. The dive
- *  is authored as a camera flying to `camX`; parked at X_PARK, the identical
- *  frame comes from putting the model at X_PARK − camX (nothing else in the
- *  scene is world-anchored — the sky rides the camera).
- *
- *  Then two legs back: the blind journey to the reveal's park (flyReturnAt) and
- *  the last units home (flySeatAt). Their windows do not overlap, so the
- *  composition holds in between. 0 outside the span, where the story owns
- *  the lens. */
+/** The dolly, world X: the model's placement under the parked camera, at
+ *  X_PARK − camX. Then two legs back — the blind journey to the reveal's park
+ *  (flyReturnAt) and the last units home (flySeatAt), on non-overlapping
+ *  windows. 0 outside the span, where the story owns the lens. */
 export const flyDollyAt = (p: number) =>
   lerp(
     lerp(X_PARK - poseCamX(flyPoseAt(p)), REVEAL_X, flyReturnAt(p)),
@@ -246,7 +221,8 @@ export const flyFocusAt = (pFly: number) =>
   smoothstep(FLY.pFocus[0], FLY.pFocus[1], pFly);
 
 export function createStoryFly(scene: SceneHandle): {
-  frame(p: number): void;
+  /** every write the span owns, at the eased story p */
+  evaluate(pE: number): void;
   warm(): Promise<void>;
 } {
   let active = false;
@@ -254,15 +230,15 @@ export function createStoryFly(scene: SceneHandle): {
    *  `active` in time, never true without it. */
   let glassOn = false;
   let warmed = false;
-  /** the dolly this module last wrote — it is the only writer, and the ruler
-   *  below may only be measured while it is 0 (see enter). */
+  /** the dolly this module last wrote — the ruler below may only be measured
+   *  while it is 0 (see enter) */
   let dollyNow = 0;
   let warnedOffRest = false;
   /** the elements REAR TO FRONT with their rearmost world X — the ruler the
    *  passage fade reads, measured once per page load at channel rest. */
   let passage: { id: string; x0: number }[] = [];
-  /** the measurement in `passage` was taken at rest, so it is the real ruler
-   *  and no later activation may re-take it. */
+  /** the measurement in `passage` was taken at rest, so no later activation may
+   *  re-take it */
   let passageAtRest = false;
   const fades: Record<string, number> = {};
   /** the tint the sky fades INTO: the rewrap scene's stage color, which is what
@@ -274,14 +250,11 @@ export function createStoryFly(scene: SceneHandle): {
 
   function enter(p: number) {
     // The spans come off the CPU geometry in its rest pose, so a measurement
-    // taken mid-move places the elements wrong. A good measurement is kept for
-    // the life of the page; a bad one (deep link into the span) serves its own
-    // activation only and is replaced by the first that catches rest.
+    // taken mid-move places the elements wrong. A good one is kept for the life
+    // of the page; a bad one is replaced by the first that catches rest.
     if (!passageAtRest) {
-      // AT REST INCLUDES AT HOME: worldAxialSpans measures the model where it
-      // stands, so a measurement with the lens dollied out would be up to 25
-      // world units off. This module is the dolly's only writer and it is 0
-      // outside the span, so the term states an invariant, not a live case.
+      // at rest includes at home: worldAxialSpans measures the model where it
+      // stands, so a dollied lens would be measured world units off
       const atRest =
         dollyNow === 0 &&
         Math.abs(scene.state.zoom) +
@@ -295,14 +268,12 @@ export function createStoryFly(scene: SceneHandle): {
       passage = passageOrder(scene.worldAxialSpans(Object.keys(GLASS_SPANS)));
       passageAtRest = atRest;
     }
-    // THE GLASS ONLY MOUNTS BELOW ITS OWN EDGE. Activating from above (a scrub
-    // back down across EXIT_END) must not clone meshes wearing ink — such a
-    // clone carries no transmission and would poison the clone cache. The gate
-    // in frame() remounts it under the body cover once p crosses GLASS_OUT.
+    // the glass only mounts below its own edge: activating from above must not
+    // clone meshes wearing ink, which would poison the clone cache
     if (p <= GLASS_OUT) mountGlass();
-    // The always-on dust would float in front of the sky.
+    // the always-on dust would float in front of the sky
     scene.setDust(false);
-    // Fire-and-forget: a mount that never lands leaves a dive minus the stars.
+    // fire-and-forget; a mount that never lands leaves a dive minus the stars
     void scene.enableStarfield(true).then((ok) => {
       if (!ok) console.warn("lens fly: starfield failed to start");
     });
@@ -311,19 +282,16 @@ export function createStoryFly(scene: SceneHandle): {
     });
   }
 
-  /** Compile the dive before it is needed: the wormhole pass' pipeline plus a
-   *  second pipeline per material, all of which three builds the first time the
-   *  look is DRAWN. warmFly draws that frame into a 1×1 off-screen target with
-   *  the same knobs enter() uses. Driven at idle from hero-driver prefetch. */
+  /** Compile the dive's pipelines before they are needed, by drawing one frame
+   *  into a 1×1 off-screen target. Driven at idle from hero-driver prefetch. */
   async function warm() {
     if (warmed || active) return;
     warmed = true;
     await scene.warmFly(GLASS_SPANS);
   }
 
-  /** The transmissive sub-span's two edges — see GLASS_OUT for why the swap has
-   *  a life of its own inside the span. Mount is idempotent-by-flag; both are
-   *  called from enter()/exit() AND from the gate in frame(). */
+  /** The transmissive sub-span's two edges (see GLASS_OUT). Idempotent by flag;
+   *  both are called from enter()/exit() AND from the gate in frame(). */
   function mountGlass() {
     if (glassOn) return;
     glassOn = true;
@@ -334,13 +302,12 @@ export function createStoryFly(scene: SceneHandle): {
   function releaseGlass() {
     if (!glassOn) return;
     glassOn = false;
-    // Per-element fades back to 1 BY ID: the setter only writes the ids it is
-    // handed, so an empty record restores nothing — and the write is a no-op
-    // once the swap is off, hence before setGlassTransmissive(false).
+    // per-element fades back to 1 by id — the setter only writes the ids it is
+    // handed, and the write is a no-op once the swap is off, so it must precede
+    // setGlassTransmissive(false)
     for (const id of Object.keys(GLASS_SPANS)) fades[id] = 1;
     scene.setGlassElementFade(fades);
-    // The elements' own materials go back on here, at GLASS_OUT on the
-    // scroll-through path: under the full body cover, so the cut is invisible.
+    // the elements' own materials go back on here, under the full body cover
     scene.setGlassTransmissive(false);
   }
 
@@ -350,9 +317,8 @@ export function createStoryFly(scene: SceneHandle): {
     scene.setRoomLight(1);
     scene.setGlassGlint(1);
     scene.setBodyFade(1);
-    // THE LENS GOES HOME WITH THE SPAN: a no-op on the way out, but a scrub
-    // back out of the dive can leave at any dolly and the story owns a lens at
-    // the origin.
+    // the lens goes home with the span: a scrub back out of the dive can leave
+    // at any dolly, and the story owns a lens at the origin
     dollyNow = 0;
     scene.setLensDolly(0);
     scene.setStoryFov(null);
@@ -360,8 +326,10 @@ export function createStoryFly(scene: SceneHandle): {
     uWormhole.value = 0;
     uStarStreak.value = 0;
     uStarRing.value = 0;
-    // BEFORE the unmount: setSkyDim is a no-op on an unmounted starfield, so a
-    // dim left on would still be there for the NEXT mount.
+    uStreakGain.value = 1;
+    uStarSize.value = 1;
+    // before the unmount: setSkyDim is a no-op on an unmounted starfield, so a
+    // dim left on would still be there for the next mount
     scene.setSkyDim(0, rewrapBg);
     void scene.enableStarfield(false);
     void scene.enableWormholePost(false);
@@ -369,52 +337,45 @@ export function createStoryFly(scene: SceneHandle): {
 
   return {
     warm,
-    frame(p) {
+    evaluate(p) {
       const pFly = flyDiveP(p);
       const pose = flyPoseAt(p);
-      // LEAVE FIRST, THEN THE LOOK, THEN ARRIVE. exit() hands the elements
-      // their materials back and must run BEFORE any ink returns to them;
-      // enter() clones those materials and must run AFTER the last of it is
-      // gone. The edges already guarantee this; the order keeps it true if one
-      // is ever moved.
+      // leave first, then the look, then arrive: exit() must return the
+      // elements' materials before any ink does, and enter() clones them only
+      // after the last of it is gone
       if (active && (p < DIVE_P0 - HYST || p > EXIT_END + HYST)) {
         active = false;
         exit();
       }
       scene.setInkMix(flyInkAt(p));
-      // …AND THE FRAMING CENTRES WITH IT, written every frame, active or not:
-      // the swing belongs to the approach and must be over before the first
-      // dive frame rather than at it.
+      // written active or not: the swing belongs to the approach
       scene.setStoryCentre(flyCentreAt(p));
       if (!active && p >= DIVE_P0 && p <= EXIT_END) {
         active = true;
         enter(p);
       }
       if (!active) return;
-      // THE GLASS SUB-SPAN'S OWN GATE (see GLASS_OUT): off at the edge, back on
-      // a hysteresis BELOW it, so a scrub parked on the edge cannot thrash the
-      // clones.
+      // the glass sub-span's own gate (see GLASS_OUT): off at the edge, back on
+      // a hysteresis below it, so a parked scrub cannot thrash the clones
       if (glassOn && p > GLASS_OUT) releaseGlass();
       else if (!glassOn && p < GLASS_OUT - HYST) mountGlass();
-      // Value AND target on both channels: the driver's own per-frame writes
-      // land before this call, and tick()'s ease would otherwise chase them.
+      // value AND target: the driver's iris writes land before this call
       const a = flyApertureAt(pFly);
       scene.state.aperture = a;
       scene.state.apertureTarget = a;
       const f = flyFocusAt(pFly);
       scene.state.focus = f;
       scene.state.focusTarget = f;
-      // No stars before the dive and one window back out, both folded into
-      // flySkyMixAt — this uniform is this module's on every active frame.
+      // no stars before the dive and one window back out, both folded into
+      // flySkyMixAt
       const sky = flySkyMixAt(p);
       const out = skyOutAt(p);
       uStarMix.value = sky;
       // the ground under the fading stars walks to the color of the stage that
       // is about to replace it — the unmount's cut lands on matching frames
       scene.setSkyDim(1 - out, rewrapBg);
-      // AND THE ROOM GOES OUT WITH IT, released by the sky's fade (× out) so
-      // the model is never a black silhouette on a light stage and exit()'s
-      // setRoomLight(1) lands as a no-op.
+      // the room goes out with it, released by the sky's fade so the model is
+      // never a black silhouette on a light stage
       const dark = flyDarkAt(p);
       scene.setRoomLight(lerp(1, FLY.darkFloor, dark));
       scene.setGlassGlint(lerp(1, FLY.glintFloor, dark));
@@ -425,26 +386,18 @@ export function createStoryFly(scene: SceneHandle): {
       const streak = flyStreakAt(p);
       uStarStreak.value = streak;
       uStarRing.value = warp;
-      // THE DIVE ITSELF: the lens slides past the parked camera, and its fov
-      // ramp is the one thing that stays camera-side. At DIVE_P0 the story
-      // row's own fov IS this pose's (FLY.fovFar), so the way in has no step.
+      const swell = flyThroatSwellAt(p);
+      uStreakGain.value = 1 + THROAT_SWELL.streak * swell;
+      uStarSize.value = 1 + THROAT_SWELL.size * swell;
+      // the dive itself: the lens slides past the parked camera. At DIVE_P0 the
+      // story row's fov IS this pose's (FLY.fovFar), so the way in has no step.
       dollyNow = flyDollyAt(p);
       scene.setLensDolly(dollyNow);
-      // …ON THE CAMERA'S OWN CLOCK. The fov is the one thing here that lands on
-      // the CAMERA, and core/scene samples the camera pose at the EASED
-      // `state.story`; the ending's flatten pairs a fov with a pullback
-      // (story/camera.ts `back`), so a mix read at the raw p would scale a
-      // frame the pose never asked for — 12x on a backward flick into the
-      // rewrap. Everything above is model-side and stays raw.
-      const pCam = clamp01(scene.state.story);
-      scene.setStoryFov(flyFovOf(flyPoseAt(pCam)), flyFovMixAt(pCam));
-      // THE BODY GOES WITH IT (flyBodyFadeAt carries the hand-over law).
+      scene.setStoryFov(flyFovOf(pose), flyFovMixAt(p));
       scene.setBodyFade(flyBodyFadeAt(p));
-      // …and each element goes down as the camera arrives at it: from inside an
-      // element three's screen-space transmission blows up, so the camera must
-      // never be inside visible glass. Nothing has to bring them back — the
-      // fade rides the CLONES, which are gone at GLASS_OUT, so the elements
-      // return with the BODY (the write below is a no-op once the swap is off).
+      // each element goes down as the camera arrives at it: screen-space
+      // transmission blows up from inside, so the camera must never be inside
+      // visible glass. The fade rides the clones, so nothing brings them back.
       const camX = poseCamX(pose);
       for (const e of passage)
         fades[e.id] = passageFade(camX, e.x0, FLY.passageLead, FLY.passageFade);

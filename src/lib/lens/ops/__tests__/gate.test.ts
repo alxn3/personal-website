@@ -2,10 +2,10 @@ import { describe, expect, it } from "vitest";
 import { NUM } from "../algebra";
 import { gate, type GateSpec } from "../gate";
 
-// The gate, run here on the NUM backend (the executable spec). The per-piece
-// phase term is the provided `layerPhase` input, not an angle-derived value.
+// The gate on the NUM backend; the per-piece phase term is the `layerPhase`
+// input, not an angle-derived value.
 
-// The calibrated "assemble" values from the brief — the identity anchor.
+// The calibrated "assemble" values — the identity anchor.
 const ASSEMBLE: GateSpec<number> = {
   layerStagger: 0.6,
   windowFrac: 0.4,
@@ -87,8 +87,7 @@ describe("gate — two-phase choreography", () => {
   });
 
   it("(e) layer-phase stagger is linear: phases 0 and 0.5 at partStagger 0.08 offset the window by 0.04", () => {
-    // Pure-linear regime: snap 1 + snapExp 1 makes ease(x) = x, and
-    // windowFrac 1 + split 1 + flightStart 0 makes flight = 1 − win directly.
+    // Pure-linear regime: ease(x) = x and flight = 1 − win.
     const spec: GateSpec<number> = {
       layerStagger: 0,
       windowFrac: 1,

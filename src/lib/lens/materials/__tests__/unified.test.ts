@@ -10,6 +10,9 @@ import {
   inkLineOpacity,
   inkOutput,
   inkTwinWorn,
+  uInteriorFade,
+  uShellFade,
+  winkFactor,
   type InkEdge,
   type UnifiedLook,
 } from "../unified";
@@ -43,14 +46,10 @@ function graphOf(root: unknown): { names: string[]; nodes: Set<unknown> } {
   return { names, nodes };
 }
 
-// THE BODY FADE REACHES THE OUTLINES TOO. core/scene's applyBodyFade writes
+// THE BODY FADE REACHES THE OUTLINES TOO: applyBodyFade writes
 // `material.opacity` on every material a non-glass mesh wears, edge lines
-// INCLUDED — but a NodeMaterial's opacityNode REPLACES that value, so a line
-// graph that does not read `materialOpacity` silently ignores the write. It cost
-// nothing while the only body fade on the page was the dive's (uInk is 0 there,
-// so the lines draw nothing); the story now fades the lens out under the card
-// shell with the ink fully on, where the same omission left a full-strength
-// wireframe ghost of the lens hanging in the frame.
+// included, but a NodeMaterial's opacityNode REPLACES that value — a line graph
+// that does not read `materialOpacity` leaves a wireframe ghost in the frame.
 describe("the ink edge-lines' opacity", () => {
   it("reads materialOpacity, so setBodyFade can fade the outlines with the fills", () => {
     expect(graphOf(inkLineOpacity()).names).toContain("MaterialNode:opacity");
@@ -58,21 +57,16 @@ describe("the ink edge-lines' opacity", () => {
 
   it("rides the whole ink ramp — the factor the fills mix on", () => {
     // one envelope for line and fill: the lines carry the raw uniform, with
-    // none of a half-ramp's clamped-sub-div shape.
+    // none of a half-ramp's clamped-sub-div shape
     const line = graphOf(inkLineOpacity()).names;
     for (const node of ["MathNode{sqrt}", "MathNode{clamp}", "OperatorNode[/]"])
       expect(line, `line lacks ${node}`).not.toContain(node);
   });
 });
 
-// THE ONE-OWNER LAW for `transparent` on the merged body materials. Two callers
-// want the flag at once — materials/unified.ts's setInk (the ink fills are
-// translucent) and core/scene.ts's applyBodyFade (which fades the same shared
-// instances) — and they used to write it independently, so whichever ran last
-// won: a look change mid-fade left the body opaque at opacity 0.5, and a fade
-// restore mid-story left it transparent through the dive, where three copies the
-// transmission backdrop from the OPAQUE pass only (the body would vanish inside
-// the glass). Neither writes it now; both move an input into this.
+// THE ONE-OWNER LAW for `transparent` on the merged body materials: setInk (the
+// ink fills are translucent) and applyBodyFade (which fades the same shared
+// instances) both want the flag, so neither writes it — both feed this.
 describe("the body's transparent flag", () => {
   it("is on while EITHER owner wants it — so neither can clear it under the other", () => {
     expect(bodyTransparent(true, false)).toBe(true); // ink showing, fade restored
@@ -88,21 +82,16 @@ describe("the body's transparent flag", () => {
 // ============================================================================
 // THE 1-EDGE: THE INK TWIN AND THE OPAQUE FLIP (materials/unified.ts's header).
 //
-// At uInk = 1 the merged material's output is its ink term alone — the whole
-// MeshStandard/Physical fragment path is computed and multiplied by zero — and
-// with the fills at alpha 1 the body is sorted and blended for nothing. Two
-// swaps take both back, and BOTH ARE ONLY LEGAL BECAUSE THE TWO SIDES ARE THE
-// SAME DRAWING: the twin is a MeshBasicNodeMaterial built from the SAME
-// builders, on the SAME colour uniform, wearing the SAME render state. What is
-// pinned below is exactly that identity — a twin that drifted by one flag or
-// one factor would be a look change nothing else in this repo would catch.
+// At uInk = 1 the merged material's output is its ink term alone and the body
+// is sorted and blended for nothing. The swaps that take both back are legal
+// only because the twin is the SAME drawing: a MeshBasicNodeMaterial from the
+// same builders, on the same colour uniform, in the same render state — which
+// is the identity pinned below.
 // ============================================================================
 
-/** One non-glass mesh, wearing the shared PBR spec core/model.ts builds.
+/** One non-glass mesh wearing the shared PBR spec core/model.ts builds.
  *  UNFRAMED by default (no `_op*` attributes), so the deform attach is out of
- *  the comparison and what is left is the pair's own graphs; `framed` adds the
- *  frame attribute `hasOpFrames` keys on, which is what puts the op deform on
- *  both materials. */
+ *  the comparison; `framed` adds the attribute `hasOpFrames` keys on. */
 function stubMesh(framed = false, color = 0x191919) {
   const geo = new THREE.BufferGeometry();
   geo.setAttribute(
@@ -130,10 +119,9 @@ function stubModel(framed = false) {
   return { root, mesh };
 }
 
-/** …with the twins built and warmed FOR THE CANVAS, which is the state the
- *  story runs in outside the dive: the warm-up wears each variant across one
- *  real render (here a no-op — no renderer is needed to build a node graph) and
- *  only then unlocks the swap, in that context alone. */
+/** …with the twins built and warmed FOR THE CANVAS: the warm-up wears each
+ *  variant across one render (a no-op here) and only then unlocks the swap, in
+ *  that context alone. */
 function wornLook(framed = false): { look: UnifiedLook; mesh: THREE.Mesh } {
   const { root, mesh } = stubModel(framed);
   const look = createUnified(root);
@@ -144,8 +132,8 @@ function wornLook(framed = false): { look: UnifiedLook; mesh: THREE.Mesh } {
 const asMat = (mesh: THREE.Mesh) => mesh.material as THREE.Material;
 
 beforeAll(() => {
-  // The deform ships as generated source per dialect (ops/emit), so a material
-  // build needs the dialect declared — core/scene.ts does it off the renderer.
+  // The deform ships as generated source per dialect, so a material build needs
+  // the dialect declared; core/scene.ts does it off the renderer.
   setDeformBackend("wgsl");
   // createUnified reads the site theme off the document; node has none.
   (globalThis as { document?: unknown }).document ??= {
@@ -154,14 +142,11 @@ beforeAll(() => {
 });
 
 // EVERYTHING A GLASS MESH CAN WEAR — TWO FILLS AND NOTHING ELSE. `transmission
-// > 0` pins a mesh in the transmission pass forever, so the elements cannot
-// blend the way the body does: they crossfade between the realistic material
-// and a flat mint fill at the middle of the ramp, and they grow no line-work at
-// either end. The body fade has to reach both — core/scene's bodyMaterials()
-// hands applyBodyFade the elements whenever the dive is not wearing its own
-// clones, and applyVisibility leaves glass VISIBLE at bodyFadedOut, so opacity
-// is the only thing that removes it. Miss `materialOpacity` on either and the
-// frame keeps a column of mint elements floating where the lens used to be.
+// > 0` pins a mesh in the transmission pass, so the elements crossfade between
+// the realistic material and a flat mint fill at the middle of the ramp and
+// grow no line-work. Glass stays VISIBLE at bodyFadedOut, so opacity is the
+// only thing that removes it — miss `materialOpacity` on either fill and a
+// column of mint elements floats where the lens used to be.
 describe("everything a glass mesh can wear", () => {
   function glassLook() {
     const mesh = stubMesh();
@@ -182,9 +167,8 @@ describe("everything a glass mesh can wear", () => {
   });
 
   it("carries the depth-fade factor through without dropping it", () => {
-    // the ink fill's own fade is attached to the material and passed IN, so the
-    // extraction has to keep it in the product rather than quietly defaulting.
-    // Pinned by IDENTITY — the node handed in must be the node in the graph.
+    // the fade is passed IN, so the product must keep it rather than default;
+    // pinned by IDENTITY — the node handed in must be the node in the graph
     const fade = float(0.5);
     expect(graphOf(glassInkOpacity(fade)).nodes).toContain(fade);
   });
@@ -211,9 +195,8 @@ describe("the ink twin's parity with the material it replaces", () => {
     const twin = asMat(mesh) as THREE.MeshBasicNodeMaterial;
     expect(twin).not.toBe(blend);
     expect(twin.isMeshBasicNodeMaterial).toBe(true);
-    // `lights = false` is what takes the lighting context, the irradiance and
-    // the environment out of the fragment shader. MeshBasicNodeMaterial ships
-    // it true (for the light map / env map an unlit material can still wear).
+    // `lights = false` takes the lighting context, irradiance and environment
+    // out of the fragment shader; MeshBasicNodeMaterial ships it true.
     expect(twin.lights).toBe(false);
     // …and the basic material's own setupNormal is what would drop the op
     // deform's normal and band celShade by the rest pose.
@@ -283,14 +266,9 @@ describe("the ink twin's parity with the material it replaces", () => {
     expect(twin.transparent).toBe(blend.transparent);
   });
 
-  // THE DEFORM IS THE ONE THING THE TWIN MAY NOT COPY. It is built by
-  // `m.copy(blend)` + overrides, and NodeMaterial.copy copies node REFERENCES —
-  // so on a FRAMED mesh (one carrying the op frame attributes, i.e. every piece
-  // the story moves) a twin that failed to re-attach would be pointing at the
-  // blend's own position/normal nodes. Two materials cannot share a node graph
-  // in three, and the symptom would be an undrawable material or a piece
-  // deforming on the wrong material's state — not something the unframed stub
-  // above can see, because there is nothing to attach there.
+  // THE DEFORM IS THE ONE THING THE TWIN MAY NOT COPY: NodeMaterial.copy copies
+  // node REFERENCES, and two materials cannot share a node graph in three, so a
+  // framed mesh's twin must re-attach its own deform.
   it("attaches its OWN op deform on a framed mesh — never the blend's nodes", () => {
     const { look, mesh } = wornLook(true);
     const blend = asMat(mesh) as THREE.NodeMaterial;
@@ -354,13 +332,10 @@ describe("when the twin is worn", () => {
   });
 });
 
-// THE WARM-UP IS PER KEY AND PER CONTEXT, and both halves of that are load-
-// bearing: a pipeline is compiled by a DRAW, keyed on the render context, and
-// this file mints body materials long after the first warm frame has run (the
-// accessories arrive a second or two into the page, and `integrate` re-keys any
-// mesh whose op frame landed late). One global "warmed" flag would hand those
-// materials out unwarmed, and their compile would land on the frame they are
-// first worn — mid-scroll, which is the one thing the warm-up exists to stop.
+// THE WARM-UP IS PER KEY AND PER CONTEXT: a pipeline is compiled by a DRAW,
+// keyed on the render context, and body materials are minted long after the
+// first warm frame (late accessories, re-keyed frames). One global "warmed"
+// flag would put their compile on the frame they are first worn, mid-scroll.
 describe("the twin's warm-up covers what it claims to", () => {
   it("keeps a material minted AFTER the warm frame on the blend, and asks for another", () => {
     const { root, mesh } = stubModel();
@@ -387,8 +362,7 @@ describe("the twin's warm-up covers what it claims to", () => {
 
   it("draws every body mesh in the warm frame, hidden ones included", () => {
     // three does not draw a hidden object, so a warm frame that skipped them
-    // would compile nothing for the accessories — which load hidden and can be
-    // toggled on at any moment from /lens.
+    // would compile nothing for the accessories, which load hidden.
     const { root, mesh } = stubModel();
     mesh.visible = false;
     const look = createUnified(root);
@@ -422,10 +396,9 @@ describe("the twin's warm-up covers what it claims to", () => {
     expect(asMat(mesh)).toBe(twin);
   });
 
-  // A DRAW THAT NEVER REACHED THE SCENE COMPILES NOTHING. core/scene's dive
-  // warm renders through a pass that draws its scene once per tick, so a second
-  // call inside one tick collapses to the output quad; marking the context warm
-  // on that would hand the twin out on a pipeline nobody built.
+  // A DRAW THAT NEVER REACHED THE SCENE COMPILES NOTHING: the dive's pass draws
+  // its scene once per tick, so marking that context warm would hand the twin
+  // out on a pipeline nobody built.
   it("refuses a context whose draw reported nothing drawn", () => {
     const { root, mesh } = stubModel();
     const look = createUnified(root);
@@ -470,10 +443,46 @@ describe("the body's two graphs, shared by the pair", () => {
     const g = graphOf(inkOutput(ink));
     expect(g.nodes).toContain(ink);
     expect(g.names).toContain("MathNode{mix}");
-    // …over `output` (the PropertyNode), and celShade's own band clamp — the
-    // banding rides the material's normal, which is why the twin restores the
-    // base setupNormal (MeshBasicNodeMaterial's would read the rest pose).
+    // …over `output` (the PropertyNode), and celShade's band clamp, which rides
+    // the material's normal
     expect(g.names).toContain("PropertyNode");
     expect(g.names).toContain("MathNode{clamp}");
+  });
+});
+
+// THE WINK REACHES EVERY DRAWN PIXEL OF A PIECE: the fill (both body variants)
+// and the edge lines multiply by the per-piece term, which reads the `_opY`
+// lane and the two level uniforms. A framed mesh's materials carry it; an
+// unframed one has no lane to read and must not declare the attribute.
+describe("the wink term", () => {
+  const readsLane = (root: unknown) =>
+    [...graphOf(root).nodes].some(
+      (n) => (n as { _attributeName?: string })._attributeName === "_opY",
+    );
+
+  it("reads the lane and BOTH level uniforms, by identity", () => {
+    const g = graphOf(winkFactor());
+    expect(readsLane(winkFactor())).toBe(true);
+    expect(g.nodes).toContain(uShellFade);
+    expect(g.nodes).toContain(uInteriorFade);
+    expect(g.names).toContain("MathNode{smoothstep}");
+  });
+
+  it("multiplies the fill and the line graphs, and is carried by identity", () => {
+    const wink = float(0.5);
+    expect(graphOf(bodyFillOpacity(float(1), wink)).nodes).toContain(wink);
+    expect(graphOf(inkLineOpacity(undefined, wink)).nodes).toContain(wink);
+    // …and without one the graphs are the plain ones
+    expect(readsLane(bodyFillOpacity(float(1)))).toBe(false);
+  });
+
+  it("is on a framed mesh's body materials and off an unframed one's", () => {
+    const framed = wornLook(true);
+    const blend = asMat(framed.mesh) as THREE.NodeMaterial;
+    expect(readsLane(blend.opacityNode)).toBe(true);
+    framed.look.setInk(1);
+    expect(readsLane((asMat(framed.mesh) as THREE.NodeMaterial).opacityNode)).toBe(true); // prettier-ignore
+    const bare = wornLook(false);
+    expect(readsLane((asMat(bare.mesh) as THREE.NodeMaterial).opacityNode)).toBe(false); // prettier-ignore
   });
 });

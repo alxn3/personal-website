@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import * as THREE from "three/webgpu";
-import { sampleStory } from "../camera";
+import { applyStoryFraming, sampleStory } from "../camera";
 import {
   CAM_RELEASE_F,
   RANGES,
@@ -47,17 +47,11 @@ const worldAt = (p: number) => {
 };
 
 describe("story camera", () => {
-  // TWO NOTES, AS ONE LAW. First: the reveal must not include camera movement
-  // — the camera is bit-for-bit still for every frame of the reveal's
-  // crossfade (rewrap-local [0.06, 0.16], story/fly.ts flyRevealAt), so the
-  // pieces turn on a parked frame. Second, the correction that moved the
-  // hold's far edge: the camera move from the end of trails to the start of
-  // reassemble read as jarring and had to be smoothed into reassemble — the
-  // chain used to stay parked clear through REVEAL_END and
-  // then onset TOGETHER with the fov push and the seat, a dead stop into a
-  // fast move. The hold now ends at CAM_RELEASE_F (the crossfade's own top)
-  // and the chain CREEPS from there — see the release test below for the
-  // sub-perceptual bound that keeps the reveal reading as camera-still.
+  // The reveal must not include camera movement: the camera is bit-for-bit
+  // still for every frame of the crossfade, so the pieces turn on a parked
+  // frame. The hold ends at CAM_RELEASE_F (the crossfade's own top) and the
+  // chain CREEPS from there — see the release test for the sub-perceptual
+  // bound that keeps the reveal reading as camera-still.
   it("holds the sky's parked pose, bit for bit, through the reveal crossfade", () => {
     const park = poseAt(atFrac(tR, 0.5));
     // the park itself is the authored dive pose, so a wrong `first` would show
@@ -74,24 +68,19 @@ describe("story camera", () => {
     expect(poseAt(rwR.p0)).toEqual(park);
   });
 
-  // The other half of the same law: the move is DELAYED, not deleted — and its
-  // start is a CREEP, not an onset. The chain's ease leaves at zero rate, so
-  // between the release and REVEAL_END the camera is moving in the analytic
-  // sense while still reading as parked: the whole displacement across the
-  // collapse stays sub-perceptual, which is what lets the ending's move be
-  // already under way when the fov push and the seat join it (the de-stack).
+  // The other half: the move is DELAYED, not deleted, and its start is a CREEP.
+  // The chain's ease leaves at zero rate, so between the release and REVEAL_END
+  // the displacement stays sub-perceptual and the ending's move is already
+  // under way when the fov push and the seat join it.
   it("creeps from the crossfade top and gets all the way to the settle", () => {
     const release = atFrac(rwR, CAM_RELEASE_F);
     const park = worldAt(release);
     // WORLD displacement, not `pos`: the ending slides its orbit target under
     // the same window, so an offset-space ruler no longer measures the camera.
     const off = (p: number) => worldAt(p).distanceTo(park);
-    // still exactly still ON the edge, and away on every frame past it —
-    // monotonically for the first stretch (the chain leaves the park and does
-    // not come back to it; further along it curves around the lens, so the
-    // distance from the park is no longer the right ruler — 0.3 of the scene's
-    // remainder stays inside the outbound leg now that the rewrap holds a
-    // larger share of the fused chain's span)
+    // still exactly still ON the edge, and away on every frame past it,
+    // monotonically for the first stretch — further along the chain curves
+    // around the lens and distance-from-the-park stops being the right ruler
     expect(off(release)).toBe(0);
     let prev = 0;
     for (let i = 1; i <= 20; i++) {
@@ -99,17 +88,9 @@ describe("story camera", () => {
       expect(d, `sample ${i}`).toBeGreaterThan(prev);
       prev = d;
     }
-    // THE CREEP'S BOUND, in world units the camera actually travels. The
-    // chain's ease leaves at zero rate (smoothstep foot — there is no frame on
-    // which motion begins as an event), so the whole displacement under the
-    // reveal stays sub-perceptual even with the collapse, the roll and the ink
-    // return in full motion over it.
-    //
-    // What must read as camera-still is the crossfade itself, and that is
-    // bit-for-bit still (test above — the pose at CAM_RELEASE is the park
-    // exactly). This bound is the tripwire against the release drifting
-    // EARLIER into that crossfade or the ease steepening, either of which
-    // would put real swing under the reveal.
+    // THE CREEP'S BOUND, in world units the camera actually travels: a tripwire
+    // against the release drifting earlier into the crossfade or the ease
+    // steepening, either of which would put real swing under the reveal.
     expect(off(REVEAL_END)).toBeLessThan(0.6);
     expect(off(release + (REVEAL_END - release) / 4)).toBeLessThan(0.1);
     // the chain still ENDS where it did: the tail scene's own settle pose, at
@@ -123,14 +104,11 @@ describe("story camera", () => {
 
   // THE ENDING'S VERTICAL FRAMING is the orbit TARGET, not `ys`: the rewrap
   // parks with the target up the bore and the last scene slides it home, so the
-  // frame comes down with the pieces. Nothing else in the suite observes a
-  // target, so these are the two laws that make the rewrap row's own
-  // `target` load-bearing rather than decorative.
+  // frame comes down with the pieces.
   describe("the ending frames on a sliding orbit target", () => {
     it("keeps the lens dead centre through the face-on pull-back", () => {
       // an on-axis target shift is only DISTANCE: the origin stays on the
-      // camera→target ray for every frame, which is what lets the whole leg be
-      // a pure dolly with no reframing under the reveal.
+      // camera→target ray, so the leg is a pure dolly with no reframing.
       for (let i = 0; i <= 400; i++) {
         const p = rwR.p0 + (rwR.p1 - rwR.p0) * (i / 400);
         const { target } = poseAt(p);
@@ -163,11 +141,10 @@ describe("story camera", () => {
         expect(t[0]).toBeLessThanOrEqual(prev);
         prev = t[0];
       }
-      // mid-MOVE it is in FLIGHT — with no target the camera would turn about a
+      // mid-MOVE it is in FLIGHT: with no target the camera would turn about a
       // static centre and the descent would have no vertical move. The sample
-      // is the move's own midpoint, not the scene's: the flatten's blend now
-      // holds the camera still over the scene's first `camHold`, and a fraction
-      // of the range would land inside that hold and measure nothing.
+      // is the MOVE's midpoint, not the scene's — a scene fraction would land
+      // inside the flatten's camHold and measure nothing.
       const hold = capR.scene.camHold ?? 0;
       const mid = poseAt(atFrac(capR, (hold + end) / 2)).target[0];
       expect(mid).toBeGreaterThan(0.2 * from[0]);
@@ -180,11 +157,9 @@ describe("story camera", () => {
     });
 
     it("turns the OTHER way round the column — onto the lens' −Z side", () => {
-      // THE DESCENT'S DIRECTION. From dead astern the quarter-orbit swings to
-      // −Z, so the standing column turns the opposite way and the reader
-      // follows the pieces down from that side. Everything else about the
-      // hand-off frame — its distance, its fov, its up-vector and its target —
-      // is the frame the bloom has always played in; only the side moved.
+      // THE DESCENT'S DIRECTION: from dead astern the quarter-orbit swings to
+      // −Z, so the standing column turns the other way and the reader follows
+      // the pieces down from that side.
       const land = poseAt(atFrac(capR, 0.7));
       expect(land.pos[2]).toBeLessThan(0);
       expect(land.pos[0]).toBeCloseTo(0, 9);
@@ -217,12 +192,10 @@ describe("story camera", () => {
   // and closed on the descent's (story/story.ts `orthoIn`/`orthoOut`), so ONE
   // flat frame spans the scene boundary and the depth is back before the turn.
   //
-  // WHAT IS PINNED HERE IS THE SCHEDULE — where the blend opens, where it is
-  // spent, and that the pose is parked under it. NOT its size on screen: the
-  // pullback is matched to the fov, so `|pos| · tan(fov/2)` is an identity and
-  // a law on it cannot fail for any ortho schedule at all. The no-pop property
-  // is a property of the FIGURE, and it is measured over the real cloud through
-  // the real projection in story-ending.test.ts.
+  // What is pinned here is the SCHEDULE — where the blend opens, where it is
+  // spent, and that the pose is parked under it. Not its size on screen: the
+  // pullback is matched to the fov, so `|pos| · tan(fov/2)` is an identity. The
+  // no-pop property is measured over the real cloud in story-ending.test.ts.
   describe("the ending's flat frame", () => {
     it("is wholly flat at the park and wholly flat across the boundary", () => {
       expect(rwR.scene.orthoIn).toBeDefined();
@@ -274,9 +247,8 @@ describe("story camera", () => {
       const blendEnd = capR.scene.orthoOut![1];
       // SEQUENCED: the projection is wholly back before anything moves…
       expect(blendEnd).toBeLessThanOrEqual(hold);
-      // …and NOT HELD after it is. The owner's note on this beat was that the
-      // view sits too long once it is no longer flat, so the gap between the
-      // blend's last frame and the turn's first is bounded, not just signed.
+      // …and NOT HELD after it is: the gap between the blend's last frame and
+      // the turn's first is bounded, not just signed.
       expect(hold - blendEnd).toBeLessThanOrEqual(0.011);
       // the turn's own first frame, and everything past it, is perspective
       for (const f of [hold, 0.25, 0.44, 0.7, 1])
@@ -284,24 +256,17 @@ describe("story camera", () => {
     });
   });
 
-  // The hold is authored ONCE (story/story.ts CAM_RELEASE_F) and read here and
-  // by the camera; this pins the camera's copy of it to the constant rather
-  // than to a number that happens to match today. (Its coupling to the reveal
-  // crossfade's top edge is pinned in story-fly.test.ts, which can import the
-  // lazy fly module.)
+  // The hold is authored ONCE (story.ts CAM_RELEASE_F); this pins the camera's
+  // copy to the constant rather than to a number that happens to match.
   it("takes its hold from the story's own constant", () => {
     expect(rwR.scene.camHold).toBe(CAM_RELEASE_F);
     expect(CAM_RELEASE_F).toBeLessThan(0.25); // strictly inside the old edge
   });
 
-  // THE PRECOMPUTE LAW (perf batch): the per-scene paths/chains sampleStory
-  // rides are resolved ONCE at module load from the static STORY table, so the
-  // function must stay a pure function of p — revisiting any p after sweeping
-  // the whole story (forward, backward, shuffled cross-scene jumps) must
-  // reproduce the first visit bit for bit, or the precomputed plans have
-  // picked up per-call state. (The refactor itself was verified bit-identical
-  // against the per-frame-rebuild implementation over a 4000-point sweep; this
-  // pin is what keeps the cache honest from here on.)
+  // THE PRECOMPUTE LAW: the per-scene plans sampleStory rides are
+  // resolved ONCE at module load, so revisiting any p after sweeping the story
+  // must reproduce the first visit bit for bit, or the plans hold per-call
+  // state.
   it("is a pure function of p — revisits reproduce first visits bit for bit", () => {
     const ps: number[] = [];
     for (let i = 0; i <= 400; i++) ps.push(i / 400);
@@ -316,15 +281,10 @@ describe("story camera", () => {
       expect(poseAt(ps[k]), `p=${ps[k]}`).toEqual(first[k]);
   });
 
-  // THE CHAPTER'S CAMERA LAW (story/story.ts peel row: "ONE ARC, NO
-  // WAYPOINTS"): from the zoom to the dive's park the camera wears the world
-  // up-vector, routes through no waypoint, and only ever swings FORWARD in
-  // azimuth — and it spends the whole 90° in the PEEL, which is what puts the
-  // lens' back to the reader for the hand-over and leaves every scene after it
-  // on the dive's own azimuth. The MOVEMENT from there on is the lens' own (the
-  // peel's bore roll, then story/peelcards.ts peelTurnAt), so a re-authored up,
-  // a re-added via or an azimuth reversal would put camera roll or a swoop back
-  // under it.
+  // THE CHAPTER'S CAMERA LAW ("ONE ARC"): from the zoom to the dive's park the
+  // camera wears the world up-vector and swings its whole 90° inside the PEEL —
+  // so every later scene sits on the dive's azimuth and the movement from there
+  // is the lens' own.
   describe("the zoom→dive chapter is one arc", () => {
     const CHAPTER = ["zoom", "peel", "cards", "internals", "flythrough"];
     const rows = CHAPTER.map((id) => rangeOf(id).scene);
@@ -333,22 +293,15 @@ describe("story camera", () => {
       (Math.atan2(pos[2], pos[0]) * 180) / Math.PI;
 
     it("wears the world up-vector — no authored roll anywhere in it", () => {
-      for (const s of rows) {
+      for (const s of rows)
         expect(s.cam.up, `${s.id} settle up`).toEqual([0, 1, 0]);
-        for (const v of s.via ?? [])
-          expect(v.up, `${s.id} via up`).toEqual([0, 1, 0]);
-      }
-    });
-
-    it("routes through no waypoints", () => {
-      for (const s of rows) expect(s.via, `${s.id} via`).toBeUndefined();
     });
 
     it("swings 90° to 180° in ONE leg and never comes back", () => {
       const az = rows.map((s) => azOf(s.cam.pos));
       expect(az[0], "zoom — the side profile").toBeCloseTo(90, 6);
-      // the peel is the leg, and it ends DEAD ASTERN: the scene hands over on
-      // the lens' mount, which is the pose the cards scene's turn opens from
+      // the peel is the leg and it ends DEAD ASTERN, on the lens' mount, which
+      // is the pose the cards scene's turn opens from
       expect(az[1], "peel — the lens' back").toBeCloseTo(180, 6);
       // …and nothing after it moves round, so there is no reversal to make
       for (let k = 2; k < az.length; k++)
@@ -359,15 +312,70 @@ describe("story camera", () => {
   it("refuses a camHold that could not do anything", () => {
     const one = (extra: Partial<StoryScene>): StoryScene[] =>
       STORY.map((s) => (s.id === "trails" ? { ...s, ...extra } : s));
-    // trails is not a linked head — a hold there would be silently dead
+    // trails has transit 0 — a hold there would be silently dead
     expect(() => validateStory(one({ camHold: 0.25 }))).toThrow(/camHold/);
-    expect(() => validateStory(one({ camHold: 1, linkNext: true }))).toThrow(
-      /camHold/,
-    );
-    expect(() => validateStory(one({ camHold: -0.1, linkNext: true }))).toThrow(
-      /camHold/,
-    );
+    expect(() => validateStory(one({ camHold: 1 }))).toThrow(/camHold/);
+    expect(() => validateStory(one({ camHold: -0.1 }))).toThrow(/camHold/);
     // the shipped table is the case that must pass
     expect(() => validateStory(RANGES.map((r) => r.scene))).not.toThrow();
+  });
+});
+
+describe("the dive's framing over the story pose", () => {
+  const W = 1440;
+  const H = 900;
+  /** one framed camera; `dive` undefined is the story's own framing */
+  const framedAt = (
+    p: number,
+    dive?: Parameters<typeof applyStoryFraming>[8],
+  ) => {
+    const cam = new THREE.PerspectiveCamera(50, W / H, 0.1, 100);
+    const pos = new THREE.Vector3();
+    const up = new THREE.Vector3();
+    const target = new THREE.Vector3();
+    const sample = sampleStory(p, pos, up, target);
+    const builds = vi.spyOn(cam, "updateProjectionMatrix");
+    applyStoryFraming(cam, sample, pos, up, target, W, H, 1, dive);
+    return { cam, sample, builds: builds.mock.calls.length };
+  };
+  // a scene with a real horizontal park, so the scaling laws are not vacuous
+  const p = RANGES.map((r) => atFrac(r, 0.95)).find(
+    (q) => framedAt(q).cam.view!.offsetX !== 0,
+  )!;
+  const framed = (dive?: Parameters<typeof applyStoryFraming>[8]) =>
+    framedAt(p, dive);
+  const dive = (over: Partial<NonNullable<Parameters<typeof framed>[0]>>) => ({
+    centre: 0,
+    fov: null,
+    fovMix: 0,
+    far: (d: number) => d,
+    ...over,
+  });
+
+  it("builds the projection exactly once per frame", () => {
+    expect(framed().builds).toBe(1);
+    expect(framed(dive({ centre: 0.5, fov: 80, fovMix: 0.5 })).builds).toBe(1);
+  });
+
+  it("scales the park toward zero by `centre`: half at 0.5, gone at 1", () => {
+    const story = framed().cam.view!;
+    expect(story.offsetX).not.toBe(0);
+    const half = framed(dive({ centre: 0.5 })).cam.view!;
+    expect(half.offsetX).toBe(story.offsetX * 0.5);
+    expect(half.offsetY).toBe(story.offsetY * 0.5);
+    const gone = framed(dive({ centre: 1 })).cam.view!;
+    expect(Math.abs(gone.offsetX)).toBe(0);
+    expect(Math.abs(gone.offsetY)).toBe(0);
+  });
+
+  it("ramps the fov by `fovMix` without moving the park, and follows `far`", () => {
+    const story = framed();
+    const ramped = framed(dive({ fov: 80, fovMix: 0.25, far: () => 123 }));
+    expect(ramped.cam.fov).toBe(story.cam.fov + (80 - story.cam.fov) * 0.25);
+    expect(ramped.cam.view!.offsetX).toBe(story.cam.view!.offsetX);
+    expect(ramped.cam.view!.offsetY).toBe(story.cam.view!.offsetY);
+    expect(ramped.cam.far).toBe(123);
+    // a null fov is the story's own, whatever the mix says
+    expect(framed(dive({ fov: null, fovMix: 1 })).cam.fov).toBe(story.cam.fov);
   });
 });

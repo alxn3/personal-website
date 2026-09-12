@@ -1,16 +1,13 @@
 // THE SHIPPED MODEL, READ AND FRAMED IN NODE — the fixture piece-flow.test.ts
-// and story-ending.test.ts both measure against.
-//
-// The GLB's vertices are plain float32 accessors in the BIN chunk, so this
-// slices them straight out and rebuilds the shipped node graph — names,
-// parenting, transforms, positions and indices — then runs the real
-// `deriveFrames` over it. That is the same measurement pass the browser runs at
-// load, on the same bytes, so the roster here IS the browser's roster.
+// and story-ending.test.ts measure against. Slices the BIN chunk's accessors,
+// rebuilds the shipped node graph and runs the real `deriveFrames` over it, so
+// the roster here is the browser's roster on the same bytes.
 
 import { readFileSync } from "node:fs";
 import * as THREE from "three/webgpu";
 import { deriveFrames } from "../../ops/frames";
 import { isAccessory } from "../../core/parts";
+import { stampWinkLanes } from "../../core/visibility";
 
 const MODEL = "public/models/lens_web_segmented.glb";
 
@@ -60,9 +57,7 @@ function glb(path: string): { json: Gltf; bin: Buffer } {
 }
 
 /** glTF `componentType` → the typed array that reads it. The shipped files use
- *  5126 for POSITION and 5123 for indices; the other two are here so a re-export
- *  that widens an index buffer past 65535 reads correctly instead of silently
- *  mis-slicing the BIN chunk. */
+ *  5126/5123; the other two keep a widened index buffer readable. */
 const COMPONENT = {
   5121: Uint8Array,
   5123: Uint16Array,
@@ -73,10 +68,8 @@ const COMPONENT = {
 const PER_ELEMENT: Record<string, number> = { SCALAR: 1, VEC3: 3 };
 
 /** One accessor as a typed array over the BIN chunk. The bytes are COPIED, not
- *  viewed: a bufferView's offset in the file need not be aligned to the
- *  component size, and a misaligned typed-array view over the shared buffer
- *  throws. Interleaved bufferViews (`byteStride`) would need a strided gather
- *  and these exports are tightly packed, so that case is refused loudly. */
+ *  viewed: a bufferView offset need not be component-aligned and a misaligned
+ *  view throws. Interleaved bufferViews are refused loudly. */
 function accessor(json: Gltf, bin: Buffer, i: number) {
   const a = json.accessors[i];
   const bv = json.bufferViews[a.bufferView];
@@ -124,13 +117,13 @@ export function shippedModel(): THREE.Object3D {
   root.name = "lens";
   for (const i of json.scenes[0].nodes) root.add(objs[i]);
   deriveFrames(root);
+  stampWinkLanes(root);
   return root;
 }
 
-/** core/scene.ts's placement of that graph, so a mesh's `matrixWorld` maps its
- *  own local millimetres to the WORLD the story's camera is posed in: the bore
- *  onto +X, mm to world units, and the bare lens' visual centre recentred on
- *  the origin. Returns the measured bounding-sphere radius with it — the ruler
+/** core/scene.ts's placement of that graph — bore onto +X, mm to world units,
+ *  visual centre on the origin — so a mesh's `matrixWorld` maps local
+ *  millimetres to the story camera's world. Returns the bounding-sphere radius
  *  the depth-fade band is written in. */
 export function placeModel(gltfScene: THREE.Object3D): {
   modelGroup: THREE.Group;

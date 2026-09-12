@@ -7,15 +7,14 @@ import {
 } from "../ops/cpu";
 import { recipeChannels, recipeKnobs, RECIPE_NAMES } from "../ops/host";
 
-// DEV ONLY — dynamically imported, so none of it reaches a visitor's bundle.
-// The whole-geometry CPU deform, for dev/inspect.ts. The evaluation itself
-// lives in ops/cpu.ts; what is here is the INSPECTOR's half — the per-vertex
-// sweep that fills a picking proxy, the decal shrink-wrap binding that sweep
-// reproduces, and the state key its rebuild policy settles on.
+// Dev only — dynamically imported. The whole-geometry CPU deform, for
+// dev/inspect.ts: the per-vertex sweep that fills a picking proxy, the decal
+// shrink-wrap binding it reproduces, and the state key its rebuild policy uses.
+// The evaluation itself lives in ops/cpu.ts.
 
 /** The live op state as one comparable string — every recipe channel and knob.
- *  The MECHANISM channels are deliberately ABSENT: they drive real object
- *  transforms, so no vertex moves in local space because of them. */
+ *  The mechanism channels are absent: they drive real object transforms, so no
+ *  vertex moves in local space because of them. */
 export function opsStateKey(): string {
   const ch = recipeChannels();
   const kn = recipeKnobs();
@@ -28,17 +27,14 @@ export function opsStateKey(): string {
 }
 
 /**
- * Write `geo`'s vertex positions AS THE SHADER PLACES THEM into `out`
- * (xyz-packed, length 3 × position.count), in the geometry's own MESH-LOCAL
- * space — object transforms are NOT applied, exactly as `opsLocalPosition()`
- * leaves them.
+ * Write `geo`'s vertex positions as the shader places them into `out`
+ * (xyz-packed, length 3 × position.count), in the geometry's own mesh-local
+ * space — object transforms are not applied.
  *
- * `mesh` is the geometry's owner, read for the one thing that varies the deform
- * per mesh here: its mechanism spin tag. Omit it and a spin-tagged mesh's
- * vertices land where they would WITHOUT the counter-rotation.
- *
- * A geometry without the `_op*` frame attributes (nothing for the deform to
- * read) is copied through seated.
+ * `mesh` is the geometry's owner, read for its mechanism spin tag; omit it and
+ * a spin-tagged mesh's vertices land where they would without the
+ * counter-rotation. A geometry without the `_op*` frame attributes is copied
+ * through seated.
  */
 export function displaceInto(
   geo: THREE.BufferGeometry,
@@ -67,8 +63,8 @@ export function displaceInto(
     }
     const sampleAt = fieldAt(i);
     if (wa && wb && wc) {
-      // THE SHRINK-WRAP BINDING, mirroring host.ts: rebuild this decal vertex
-      // from its host triangle's DEFORMED corners, so picking rides the same
+      // The shrink-wrap binding, mirroring host.ts: rebuild this decal vertex
+      // from its host triangle's deformed corners, so picking rides the same
       // faceted surface the render does.
       const c0 = [wa.getX(i), wa.getY(i), wa.getZ(i)];
       const c1 = [wb.getX(i), wb.getY(i), wb.getZ(i)];

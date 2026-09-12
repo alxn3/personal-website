@@ -23,12 +23,14 @@ import {
   LABEL_STARS,
   MAX_TOUCH,
   QUOTE_ATTR,
+  QUOTE_CLEAR_RAD,
   QUOTE_DIR,
   QUOTE_TEXT,
   SKY_TYPE_LOOK,
   SPAN_P0,
   SPAN_P1,
   SPAWN_MS,
+  arcDist,
   arcsClash,
   arcsCross,
   centreCdf,
@@ -43,6 +45,7 @@ import {
   quoteEnvAt,
   sampleCdf,
   sepOf,
+  strokeClashes,
 } from "../constellations";
 
 // The sky chapter's LAWS, not its plumbing. What the scene depends on is that a
@@ -144,9 +147,8 @@ describe("pair picking", () => {
     expect(CANDIDATE_DIRS.length).toBeGreaterThanOrEqual(60);
     const cos = Math.cos((55 * Math.PI) / 180);
     for (const d of CANDIDATE_DIRS) expect(d[0]).toBeGreaterThan(cos);
-    // EXACTLY the non-dim prefix of the catalog inside that cone, and the
-    // equality is the whole law: one short and a bright star is unreachable, one
-    // over and a backdrop speck can carry ink.
+    // EXACTLY the non-dim prefix inside that cone: one short and a bright star
+    // is unreachable, one over and a backdrop speck can carry ink
     let inCone = 0;
     for (let i = 0; i < BRIGHT_COUNT; i++)
       if (dirOf(SKY.stars[i].az, SKY.stars[i].alt)[0] >= cos) inCone++;
@@ -170,11 +172,8 @@ describe("pair picking", () => {
         ),
       );
     }
-    // 0.85 is a LAW bound, not a measurement: the shipped CENTRE_SIGMA_RAD lands
-    // at 0.63, widening it to 0.35 gives 0.71 and to 0.5 gives 0.81. Anything
-    // tighter would be a de-facto pin on that sigma and would fail on a routine
-    // bias tune, which is a look call. What has to hold is only that the
-    // weighted draw sits nearer the axis than a uniform one over the same pool.
+    // 0.85 is a loose LAW bound, not a pin on CENTRE_SIGMA_RAD: what has to hold
+    // is only that the weighted draw sits nearer the axis than a uniform one.
     expect(weighted / n).toBeLessThan((uniform / n) * 0.85);
     // the edge is rare, not barred: a pool this size still reaches its far half
     const far = CANDIDATE_DIRS.filter((_, i) => gamma(i) > 0.7).length;
@@ -235,12 +234,10 @@ describe("pair picking", () => {
   });
 
   it("never returns a stroke that is already on the sky", () => {
-    // A DUPLICATE PASSES EVERY OTHER GUARD, which is why it needs its own: the
-    // recent set remembers fewer spawns than a stroke stays visible for, and the
-    // clash test exempts a shared endpoint — so an exact repeat of a live pair
-    // would land as one doubled line. Driven over a pool small enough that the
-    // collision is not a rarity: six directions on a ring about the view axis,
-    // every pairing inside the separation window, three of them already up.
+    // A DUPLICATE PASSES EVERY OTHER GUARD: the recent set remembers fewer
+    // spawns than a stroke stays visible for, and the clash test exempts a
+    // shared endpoint. Driven over a six-direction ring where every pairing is
+    // drawable and three are already up, so the collision is not a rarity.
     const rho = (MIN_SEP + MAX_SEP / 2) / 2; // ≥ MIN_SEP, and 2ρ ≤ MAX_SEP
     const ring = Array.from({ length: 6 }, (_, k) => {
       const roll = (k / 6) * Math.PI * 2;
@@ -280,8 +277,9 @@ describe("pair picking", () => {
   });
 
   /** THE DRIVER'S SPAWN LOOP, in miniature: a sliding window of live strokes and
-   *  the clash test taken against all of them — the inputs
-   *  `createStoryConstellations` assembles each spawn tick. */
+   *  the driver's own clash test (`strokeClashes`) taken against it — the
+   *  inputs `createStoryConstellations` assembles each spawn tick. `clash`
+   *  swaps that test out, for measuring what a guard is worth. */
   const soak = (
     seed: number,
     ticks: number,
@@ -289,6 +287,11 @@ describe("pair picking", () => {
       pair: [number, number],
       live: readonly [number, number][],
     ) => void,
+    clash: (
+      i: number,
+      j: number,
+      live: readonly [number, number][],
+    ) => boolean = strokeClashes,
   ) => {
     const rng = lcg(seed);
     const live: [number, number][] = [];
@@ -299,16 +302,7 @@ describe("pair picking", () => {
         CANDIDATE_DIRS,
         CANDIDATE_CDF,
         [],
-        (i, j) =>
-          live.some(([a, b]) =>
-            arcsClash(
-              CANDIDATE_DIRS[i],
-              CANDIDATE_DIRS[j],
-              CANDIDATE_DIRS[a],
-              CANDIDATE_DIRS[b],
-              CLEAR_RAD,
-            ),
-          ),
+        (i, j) => clash(i, j, live),
         live,
       );
       if (!pair) continue; // a starved tick is a legal answer
@@ -339,11 +333,53 @@ describe("pair picking", () => {
     expect(picked).toBeGreaterThan(200);
   });
 
+  it("keeps every stroke out of the quote's disc, at every tick", () => {
+    // the words hang at QUOTE_DIR; a stroke through them is a line drawn across
+    // type. The clearance is the sprite's own half-width plus the strokes'
+    // clearance — derived, so a wider quote reserves more sky.
+    const Q = SKY_TYPE_LOOK.quote;
+    expect(QUOTE_CLEAR_RAD).toBeCloseTo(Q.widthRad / 2 + CLEAR_RAD, 12);
+    expect(QUOTE_CLEAR_RAD).toBeGreaterThan(Q.widthRad / 2);
+    const clear = ([i, j]: readonly [number, number]) =>
+      arcDist(QUOTE_DIR, CANDIDATE_DIRS[i], CANDIDATE_DIRS[j]);
+    const picked = soak(2026, 300, (pair, live) => {
+      expect(clear(pair), `pick ${pair}`).toBeGreaterThanOrEqual(
+        QUOTE_CLEAR_RAD,
+      );
+      // and nothing already on the sky is inside it either: the guard is not
+      // gated on the quote's envelope, so a stroke born early still clears it
+      for (const s of live)
+        expect(clear(s), `live ${s}`).toBeGreaterThanOrEqual(QUOTE_CLEAR_RAD);
+    });
+    // the guard does not starve the sky
+    expect(picked).toBeGreaterThan(200);
+    // …and it is doing the work: with only the stroke-on-stroke test, the same
+    // seed does put lines through the words
+    let through = 0;
+    soak(
+      2026,
+      300,
+      (pair) => {
+        if (clear(pair) < QUOTE_CLEAR_RAD) through++;
+      },
+      (i, j, live) =>
+        live.some(([a, b]) =>
+          arcsClash(
+            CANDIDATE_DIRS[i],
+            CANDIDATE_DIRS[j],
+            CANDIDATE_DIRS[a],
+            CANDIDATE_DIRS[b],
+            CLEAR_RAD,
+          ),
+        ),
+    );
+    expect(through).toBeGreaterThan(0);
+  });
+
   it("grows what is already on the sky far more often than it starts afresh", () => {
-    // THE RULE: prioritize stars that already have a connection, so that what
-    // is on screen reads as a few connected figures rather than as scattered
-    // singles. Counted over the driver's own loop: how many picks share a star
-    // with a stroke that is still up.
+    // stars that already have a connection are prioritized, so the sky reads as
+    // a few connected figures rather than scattered singles. Counted over the
+    // driver's own loop: picks that share a star with a live stroke.
     let joined = 0;
     const picked = soak(11, 300, (pair, live) => {
       if (live.some(([a, b]) => new Set([a, b, ...pair]).size < 4)) joined++;
@@ -515,9 +551,8 @@ describe("no two strokes may cross", () => {
 
 describe("the endpoint gap", () => {
   it("is the same angle whatever the stroke's length", () => {
-    // THE BUG THIS LAW FIXES: the gap used to be a FRACTION of the segment, so
-    // a long stroke stood off its stars further than a short one, which read
-    // wrong on the page.
+    // a gap written as a FRACTION of the segment would stand a long stroke off
+    // its stars further than a short one
     for (const sep of [MIN_SEP, 0.12, 0.2, MAX_SEP])
       expect(lineInsetAt(sep) * sep, `sep ${sep}`).toBeCloseTo(GAP_RAD, 12);
   });
@@ -607,8 +642,7 @@ describe("the names", () => {
   });
 
   it("are spread out — no two names inside LABEL_SEP of each other", () => {
-    // today's catalog seats every name in the pool (LABELS is a pool, not a
-    // quota — see LABEL_STARS); the floor is what makes a sky with names on it
+    // LABELS is a pool, not a quota; the floor is what makes a sky with names
     expect(LABEL_STARS.length).toBeGreaterThanOrEqual(4);
     expect(LABEL_STARS.length).toBeLessThanOrEqual(LABELS.length);
     expect(new Set(LABEL_STARS).size).toBe(LABEL_STARS.length);
@@ -650,8 +684,8 @@ describe("the names", () => {
   });
 
   it("stand off their star by the one shared offset", () => {
-    // EVERY name now hangs off a POINT, so there is one placement rule and no
-    // per-entry override left to drift: right of the star and a little below it.
+    // every name hangs off a POINT — right of the star and a little below —
+    // with no per-entry override to drift
     expect(SKY_TYPE_LOOK.label.rightRad).toBeGreaterThan(0);
     expect(SKY_TYPE_LOOK.label.downRad).toBeGreaterThan(0);
     for (const e of LABEL_ENTRIES)
@@ -659,8 +693,8 @@ describe("the names", () => {
   });
 
   it("share the strokes' envelope exactly", () => {
-    // ONE LAW: the names and the lines are the same gesture, and the alias is
-    // what a future edit has to break deliberately rather than by drift.
+    // the names and the lines are the same gesture, held by an alias so a
+    // future edit has to break it deliberately
     expect(labelEnvAt).toBe(constellationEnvAt);
     for (const f of [0, 0.1, 0.3, 0.6, 1])
       expect(labelEnvAt(atFrac(coR, f))).toBe(
@@ -674,9 +708,8 @@ describe("the type's ink", () => {
 
   it("is written stronger on paper than on the night sky", () => {
     // The renderer composites in LINEAR space: cream ink over a near-black sky
-    // lands above its nominal alpha, dark ink over paper far below it
-    // (~0.63 against ~0.26 of full contrast at one and the same 0.55). Parity
-    // is bought with a higher alpha on the light stage — never a lower one.
+    // lands above its nominal alpha, dark ink over paper far below it, so
+    // parity costs a HIGHER alpha on the light stage.
     expect(label.ink.light).toBeGreaterThan(label.ink.dark);
     expect(quote.ink.light).toBeGreaterThan(quote.ink.dark);
   });
@@ -735,8 +768,8 @@ describe("the quote envelope", () => {
 });
 
 describe("the sky ink's attach window", () => {
-  // Newly EXPORTED for story/cost.ts, which counts the stroke draw and the
-  // sprite slots at p and may not re-spell this window. Pinned where it lives.
+  // EXPORTED for story/cost.ts, which counts the stroke draw and the sprite
+  // slots and may not re-spell this window. Pinned where it lives.
 
   it("spans the whole chapter, padded at both ends", () => {
     expect(SPAN_P0).toBeLessThan(coR.p0);

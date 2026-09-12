@@ -3,7 +3,7 @@
 // `p`, camera path, mechanism curves, caption bands, stage tints, the HUD) is
 // derived from STORY below, so a scene edit here is the whole edit.
 //
-// SCOPE: story STRUCTURE only — beat order, durations, camera poses/waypoints,
+// SCOPE: story STRUCTURE only — beat order, durations, camera poses,
 // tints, rail flags, titles. Mechanism envelope tuning lives in
 // story/envelopes.ts, cinematic implementation in story/cinematics.ts, overlay
 // content in components/LensStory.astro. Don't consolidate those in here.
@@ -15,32 +15,22 @@ import { FLY } from "../optics/fly-core";
  *  units of this, and the park shifts (`xs`, `ys`) are in the same unit. */
 export const STORY_R = 11;
 
-/** The subset of a Pose a `via` waypoint contributes: story/camera.ts splines
- *  only these four. `ortho`, `ys` and `target` are endpoint-only — authoring
- *  them on a via is silently dead, hence the narrower type. */
-export type Waypoint = Pick<Pose, "pos" | "fov" | "up" | "xs">;
-
 /** THE REVEAL ENDS HERE — a fraction through `rewrap`: the frame the lens' last
  *  leg home opens (story/fly.ts flySeatAt). It must sit past the shell's
- *  crossfade in (rewrap-local [0.06, 0.16]); the camera-side movers downstream
- *  are staggered off it rather than all onsetting on it. */
+ *  crossfade in (rewrap-local [0.06, 0.16]). */
 export const REVEAL_END_F = 0.25;
 
 /** Where the rewrap's camera move leaves, as a fraction of the scene. The
  *  camera must be dead still through the reveal crossfade (story/fly.ts
- *  flyRevealAt's far edge; the coupling is pinned in story-fly.test.ts) and
- *  then creep off zero rate, so no frame is the one the motion begins on. */
+ *  flyRevealAt's far edge) and then creep off zero rate. */
 export const CAM_RELEASE_F = 0.16;
 
 /** Where the last of the sky is exactly gone — a fraction through `rewrap`:
  *  the far edge of the starfield's fade (story/fly.ts skyOutAt), the frame the
- *  fov hand-back may open (story/fly.ts FOV_BACK — the push-in scales the sky)
- *  and the frame the sky's turn may end (story/reveal.ts TURN_P1). It sits
- *  past REVEAL_END_F so the sweeping sky and the turning pieces share the
- *  frame for the whole exchange.
- *
- *  It lives in this table because fly.ts is lazy and reveal.ts is
- *  homepage-safe, so they may not import each other. */
+ *  fov hand-back may open (story/fly.ts FOV_BACK) and the frame the sky's turn
+ *  may end (story/reveal.ts TURN_P1). It must sit past REVEAL_END_F. Here
+ *  because fly.ts is lazy and reveal.ts homepage-safe: they cannot import each
+ *  other. */
 export const SKY_OUT_END_F = 0.32;
 
 export interface Pose {
@@ -53,16 +43,14 @@ export interface Pose {
   ys?: number; // vertical look-shift along camera-up: a 2D reframe on a detail
   target?: [number, number, number]; // orbit centre / look-at, WORLD units,
   // default [0,0,0] (lens centre is the origin; optical axis = world X, front
-  // at +X). Shifts the whole orbit sphere, so framing and transit arcs are
-  // preserved. Unlike ys, this changes the 3D pivot.
-  wide?: number; // THE FRAME WIDTH THIS SCENE NEEDS, in units of its own
-  // on-axis half-height. A viewport's frame is `aspect/zoom` of those wide,
-  // which is the aspect on a landscape screen but bottoms out at exactly 1 on
-  // every portrait one (core/scene's zoom law), so a subject wider than the
-  // lens is clipped left and right on a phone whatever its aspect. A scene
-  // that fills the frame sideways says so here and the camera pulls back until
-  // it fits; default 1 = never pulls back. Applied in applyStoryFraming, so it
-  // scales the pose rather than being part of it.
+  // at +X). Shifts the whole orbit sphere. Unlike ys, it moves the 3D pivot.
+  wide?: number; // the frame width this scene needs, in units of its own
+  // on-axis half-height; the camera pulls back until it fits. Default 1 = never
+  // pulls back. Applied in applyStoryFraming, so it scales the pose.
+  near?: number; // portrait push-in: the orbit offset scales by
+  // lerp(near, 1, parkScale), so it only exists on narrow frames. Default 1.
+  lift?: number; // portrait lift, a fraction of the canvas height, + = up;
+  // gated by (1 − parkScale) like `near`. Default 0.06.
 }
 
 // Scene CONTENT is not in this table — overlay markup is authored in
@@ -74,25 +62,18 @@ export interface StoryScene {
   hold: number; // duration weight, ≈ screenfuls of scroll
   transit: number; // 0..1 of the scene spent easing the camera IN from the previous pose
   cam: Pose; // settle pose (the parked "hold")
-  via?: Waypoint[]; // optional waypoints during the transit (multi-step orbits / up-vector routing)
   bg: [number, number, number]; // stage tint on the hold (dark theme)
   bgLight: [number, number, number]; // stage tint on the hold (light theme — warm paper family)
-  linkNext?: boolean; // fuse this scene's camera move with the NEXT scene's into
-  // ONE spline + ONE ease (this scene's start → the next's transit end), so the
-  // boundary is not a dead stop. This scene's own `transit` is then ignored for
-  // the camera; mechanism/caption ranges are unaffected.
-  // THE FLATTEN'S OWN WINDOW, scene-local fractions, when the flat frame is not
-  // the park: `orthoIn` eases the flatten on, `orthoOut` eases it off, and
-  // either one present replaces story/camera.ts's default parked schedule for
-  // this scene. An omitted side means the flatten arrives already open (no
-  // `orthoIn`) or never closes inside the scene (no `orthoOut`), which is how
-  // one flat frame spans a scene boundary. Both need `cam.ortho` > 0.
+  // The flatten's own window, scene-local fractions, when the flat frame is not
+  // the park: either one present replaces story/camera.ts's default parked
+  // schedule. An omitted side means the flatten arrives already open or never
+  // closes inside the scene. Both need `cam.ortho` > 0.
   orthoIn?: [number, number];
   orthoOut?: [number, number];
   camHold?: number; // fraction of THIS scene's range the camera move waits
-  // before starting. On a linkNext HEAD it delays the fused chain; on a plain
-  // transit it opens the scene's own move late, so the scene reads still →
-  // move → still. Validated below: under `transit` on an unlinked scene.
+  // before starting — it opens the move late. Validated below: under `transit`.
+  capEnd?: number; // scene-local fraction where the caption's band ends early,
+  // instead of running CAPTION_PAD past the scene. Validated: within (transit, 1].
 }
 
 // --- the story --------------------------------------------------------------
@@ -104,15 +85,24 @@ export const STORY: StoryScene[] = [
     transit: 0,
     bg: [29, 26, 20],
     bgLight: [244, 240, 230],
-    cam: { pos: [1.3, 0, 0], fov: 30, up: [0, 1, 0], ortho: 1, xs: -0.34 }, // dead-front elevation, lens right
+    // dead-front elevation, lens right; on a phone pushed in and dropped under
+    // the top-anchored intro type
+    cam: {
+      pos: [1.3, 0, 0],
+      fov: 30,
+      up: [0, 1, 0],
+      ortho: 1,
+      xs: -0.34,
+      near: 0.6,
+      lift: -0.1,
+    },
   },
   {
     id: "zoom",
     title: "ZOOM",
     rail: true,
     hold: 1.35,
-    // long, to keep the dead hold before the cards' transit short — scenes 1→3
-    // should read as one flow. The ortho flatten still reaches a full 1.
+    // long, so scenes 1→3 read as one flow; the ortho flatten still reaches 1
     transit: 0.6,
     bg: [29, 26, 20],
     bgLight: [244, 240, 230],
@@ -122,38 +112,27 @@ export const STORY: StoryScene[] = [
     id: "peel",
     title: "PEEL",
     rail: true,
-    // The chapter's showpiece: the departure plays across most of the scene
-    // (story/envelopes.ts CARDS_APART) and the wink walks out behind it
-    // (story/peelcards.ts WINK_SPAN), so the scene needs the screenfuls to play
-    // both in.
+    // long enough to play both the departure (story/envelopes.ts CARDS_APART)
+    // and the wink behind it (story/peelcards.ts WINK_SPAN)
     hold: 1.5,
-    // two thirds, so the camera is still swinging round while the sides come
-    // off and then holds the rear-on pose the scene hands over on. linkNext is
-    // not an option here — a linked head would pass THROUGH that pose and never
-    // hold it.
+    // the camera is still swinging round while the sides come off, then holds
+    // the rear-on pose the scene hands over on.
     transit: 0.66,
     bg: [26, 23, 17],
     bgLight: [240, 236, 226],
-    // ONE ARC, NO WAYPOINTS, AND IT SPENDS THE CHAPTER'S WHOLE AZIMUTH. The
-    // camera swings from the zoom's side profile (90°) round to DEAD ASTERN
-    // (180°, the dive's own azimuth) while the sides come off, and every scene
-    // from this settle to the dive's park holds that azimuth — so the scene
-    // ENDS WITH THE LENS' BACK (the mount) FACING THE READER, which is the pose
-    // the cards scene's turn picks up from. The chapter's remaining MOVEMENT is
-    // the lens' own: the bore roll under the departure
-    // (story/peelcards.ts peelRollAt), then the turntable turn (peelTurnAt),
-    // then the stand-up and the tilt into the bore.
-    // |pos|·STORY_R = 26 wu, the story's furthest pull-back: the expansion
-    // throws a piece 4.8 wu off its seat and from dead astern that throw is
-    // radial ON SCREEN, so the flower it opens into is ~12 wu across — nearly
-    // the frame's whole height even from here. Closer and the outer casts sweep
-    // past the camera instead of reading as one.
+    // One arc, no waypoints, spending the chapter's whole azimuth: from the
+    // zoom's side profile round to DEAD ASTERN (the dive's own azimuth), which
+    // every scene from here to the dive's park holds. The story's furthest
+    // pull-back, so the expansion's flower reads as one.
     cam: {
       pos: [-2.2774, 0.6328, 0],
       fov: 32,
       up: [0, 1, 0],
       ortho: 0,
       xs: -0.28,
+      // a phone gets the core at a third of the width; the cloud's outer pieces
+      // clip the sides
+      near: 0.65,
     },
   },
   {
@@ -164,13 +143,10 @@ export const STORY: StoryScene[] = [
     transit: 0.5,
     bg: [26, 23, 17],
     bgLight: [240, 236, 226],
-    // The turn's hold, |pos|·STORY_R = 16.2 wu — the push back IN off the
-    // peel's pull-back, onto the bare mechanism the wink left, on the peel's own
-    // rear azimuth so the turntable starts from the mount. The card shell
-    // turns about world X at 5.2 wu (story/peelcards.ts SHELL_R) on a clock of
-    // TIME alone, so a card passes within ~11 wu of the camera on every
-    // revolution for as long as the field is lit — the pose has to hold that
-    // swell for the whole scene. xs is POSITIVE (caption right, lens left).
+    // The turn's hold: the push back in off the peel's pull-back, onto the bare
+    // mechanism, on the peel's own rear azimuth. It must hold the card shell's
+    // swell (story/peelcards.ts SHELL_R) for the whole scene, since a card
+    // passes the camera on every revolution. xs POSITIVE = caption right.
     cam: {
       pos: [-1.4436, 0.3, 0],
       fov: 32,
@@ -184,18 +160,14 @@ export const STORY: StoryScene[] = [
     title: "INTERNALS",
     rail: true,
     hold: 1.4,
-    transit: 0.5,
+    transit: 0.3,
     bg: [30, 35, 24],
     bgLight: [238, 242, 229],
-    // Side elevation of the STANDING lens (story/envelopes.ts uprightAt), on
-    // the BARE MECHANISM the peel's wink left behind — the azimuth is the
-    // chapter's own 180°, already spent in the peel, so the only thing left
-    // between here and the dive's park is a tilt. The camera looks slightly
-    // DOWN at it, which is the pitch the fly-through's approach gives back.
-    // `target` pivots the orbit at the focus rig (world x ≈ −1.5…−0.9) so the
-    // zoom lands on the mechanism. Perspective, not the ortho flatten. Don't
-    // pull |pos| much below ~1.0 — closer, the depth fade shows the chassis
-    // through itself.
+    // Side elevation of the STANDING lens (story/envelopes.ts uprightAt) on the
+    // bare mechanism, at the chapter's own azimuth, looking slightly down —
+    // the pitch the fly-through's approach gives back. `target` pivots the
+    // orbit at the focus rig so the zoom lands on the mechanism. Don't pull
+    // |pos| much below ~1.0: the depth fade shows the chassis through itself.
     cam: {
       pos: [-1.0024, 0.34, 0],
       fov: 26,
@@ -203,8 +175,8 @@ export const STORY: StoryScene[] = [
       ortho: 0,
       xs: 0.1,
       ys: 0.03,
-      // the tip carries the focus rig round with the lens: the rear third was
-      // world x ≈ −1, and the tip about Z lands it at y ≈ −1.
+      // the tip carries the focus rig round with the lens, from world x ≈ −1 to
+      // y ≈ −1
       target: [0, -1.0, 0],
     },
   },
@@ -212,22 +184,20 @@ export const STORY: StoryScene[] = [
     id: "flythrough",
     title: "FLY-THROUGH",
     rail: true,
-    // 2.3 = the 0.5 approach below + the 1.8 the DIVE itself scrubs over.
+    // the 0.5 approach below plus the 1.8 the DIVE itself scrubs over
     hold: 2.3,
-    // THE APPROACH IS THIS SCENE'S TRANSIT, and the dive starts when it ends
-    // (DIVE_P0 below reads it) — hence the 0.5 screenfuls over this hold. It is
-    // ONE TILT UP INTO THE BORE and nothing else: no azimuth left to run,
-    // the camera settling from its down-look to the lens' own level while the
-    // orbit target rises off the focus rig, and the LENS tipping its nose down
-    // out of the internals scene to meet it (story/envelopes.ts UPRIGHT's
-    // fall). Then the camera PARKS: from here to the sky's end the LENS travels
-    // (SceneHandle.setLensDolly), not the camera.
+    // The approach IS this scene's transit, and the dive starts when it ends
+    // (DIVE_P0 below reads it). One tilt up into the bore, the lens meeting it
+    // on UPRIGHT's fall; then the camera PARKS and the LENS travels
+    // (SceneHandle.setLensDolly) from here to the sky's end.
     transit: 0.5 / 2.3,
+    // the caption leaves before the throat, so the climax carries no type
+    capEnd: 0.5,
     bg: [12, 11, 8],
     bgLight: [231, 227, 215],
     // THE DIVE'S PARK, exact: |pos| × STORY_R = FLY.distFar is the pose the
     // dive's own path (optics/fly-core flyPose) starts from, so the model's
-    // dolly is 0 on the dive's first frame. Pinned in story-fly.test.ts.
+    // dolly is 0 on the dive's first frame.
     cam: {
       pos: [-FLY.distFar / STORY_R, 0, 0],
       fov: FLY.fovFar,
@@ -259,15 +229,14 @@ export const STORY: StoryScene[] = [
     id: "trails",
     title: "TRAILS",
     rail: true,
-    // A long hold, because the sky turns a half revolution here
-    // (optics/star-trails.ts TRAIL_SWEEP_MAX) ramped over ~two thirds of the
-    // scene: shorter and it reads as a spin rather than a long exposure.
+    // long, because the sky turns a half revolution here
+    // (optics/star-trails.ts TRAIL_SWEEP_MAX) ramped over most of the scene
     hold: 1.7,
     transit: 0,
     bg: [10, 9, 7],
     bgLight: [238, 234, 222],
-    // Still the same parked pose — and the pose the fused rewrap→capsOn chain
-    // leaves FROM, so the ending's first move starts where the sky ended.
+    // still the same parked pose, and the pose the ending's first move leaves
+    // from
     cam: {
       pos: [-FLY.distFar / STORY_R, 0, 0],
       fov: FLY.fovFar,
@@ -279,47 +248,32 @@ export const STORY: StoryScene[] = [
   {
     id: "rewrap",
     title: "REWRAP",
-    // The trails→reveal hand-over lives in this scene's early fractions and
-    // needs room: at a fast scroll a short one compresses to a blink.
-    hold: 1.7,
-    // THE PULL-BACK RUNS ALMOST THE WHOLE SCENE and then parks. The camera
-    // waits out the reveal's crossfade (CAM_RELEASE_F) and creeps off zero
-    // rate, and it is still again well before the ending's own move opens.
-    transit: 0.95,
+    // the trails→reveal hand-over lives in this scene's early fractions and
+    // needs room
+    hold: 1.9,
+    // the pull-back runs almost the whole scene and then parks, waiting out the
+    // reveal's crossfade (CAM_RELEASE_F) before it creeps off zero rate
+    transit: 0.92,
     camHold: CAM_RELEASE_F,
-    // THE ENDING GOES FLAT, and stays flat across the boundary into the descent
-    // (the capsOn row's `orthoOut` is the other half): the face-on cloud reads
-    // as the concentric 2D figure the star trails handed over, and the depth
-    // comes back before the descent's turn. It may not open before rewrap 0.52
-    // — the flatten IS a fov change, and the dive's fov hand-back
-    // (story/fly.ts FOV_BACK) is only wholly released there; a fov moved under
-    // the sky or under that mix scales what the other owner is drawing.
+    // The ending goes flat, and stays flat across the boundary into the descent
+    // (the capsOn row's `orthoOut` is the other half). It may not open before
+    // the dive's fov hand-back is wholly released (story/fly.ts FOV_BACK) —
+    // the flatten IS a fov change, and would scale what the other owner draws.
     orthoIn: [0.52, 0.8],
     bg: [22, 20, 14],
     bgLight: [238, 234, 222],
-    // STILL ON THE DIVE'S AXIS — the sky's parked direction to the last digit,
-    // pulled back and nothing else: no azimuth, no up-vector turn, no
-    // waypoints. The reader stays face-on down the bore while the shell wraps
-    // home, so the cloud reads as the concentric rings it is, and the ONE
-    // gesture that takes the camera round to the side is the next scene's.
-    // The reach frames the cloud at its WIDEST — nothing wraps here any more,
-    // so the whole unwrapped spread is what the pose has to hold.
+    // Still on the dive's axis — the sky's parked direction, pulled back and
+    // nothing else: no azimuth, no up-vector turn, no waypoints. The reach
+    // frames the unwrapped cloud at its widest.
     //
-    // THE TARGET SITS UP THE BORE, and its distance is the FLATTEN'S MATCHING
-    // PLANE, not a taste: the flatten holds `dist · tan(fov/2)` constant
-    // (story/camera.ts `back`), so content at the target plane keeps its screen
-    // size exactly and everything else moves by its own depth ratio. Placed
-    // where the cloud's outermost pieces are, the whole figure's screen RADIUS
-    // is the same before and after the blend, which is what keeps a projection
-    // change from reading as a zoom. The next scene's move then slides it back
-    // to the lens — which is how the ending's frame comes DOWN with the pieces.
-    // It is invisible on THIS leg: dead ahead, an on-axis target shift is only
-    // distance.
-    // …AND ON A PHONE THE FRAME IS ONLY AS WIDE AS IT IS DEEP. The held spread
-    // is as wide as it is tall, so the portrait frame — not the pose — is what
-    // binds: `wide` pulls the camera back until the cloud fits, eased in with
-    // the pull-back itself and handed back over the descent's turn (the capsOn
-    // row leaves it at the default 1). Landscape is untouched.
+    // The target sits up the bore, and its distance is the FLATTEN'S MATCHING
+    // PLANE: the flatten holds `dist · tan(fov/2)` constant (story/camera.ts
+    // `back`), so content at the target plane keeps its screen size exactly.
+    // Placed at the cloud's outermost pieces, so the projection change does not
+    // read as a zoom. On this leg the shift is on-axis, hence invisible.
+    //
+    // `wide` pulls the camera back until the cloud fits a portrait frame, which
+    // is the binding constraint here; landscape is untouched.
     cam: {
       pos: [-2.8, 0, 0],
       fov: 30,
@@ -332,25 +286,18 @@ export const STORY: StoryScene[] = [
   },
   {
     id: "capsOn",
-    // The id stays `capsOn` though the beat is the BLOOM and no cap is shown:
-    // the id is a contract (REQUIRED_IDS below, the caption slot in
-    // components/LensStory.astro, /lens's preview span) and renaming it takes
-    // /lens down. Only the display label differs.
+    // The id stays `capsOn` though the beat is the BLOOM: the id is a contract
+    // (REQUIRED_IDS below, the caption slot in components/LensStory.astro,
+    // /lens's preview span). Only the display label differs.
     title: "BLOOM",
-    // Long enough to hold five beats in order: the first pieces leaving on a
-    // still face-on frame, the quarter-turn to the side view, the fall, the
-    // rock (story/envelopes.ts ROCK) with the last pieces landing, and the
-    // bloom (ROSE_PULSE) with a held frame of the open flower.
+    // long enough for five beats: the first pieces leaving, the quarter-turn,
+    // the fall, the rock (story/envelopes.ts ROCK), and the bloom (ROSE_PULSE)
     hold: 2.2,
-    // FLAT AND STILL → TURN → STILL. The camera holds the rewrap's face-on park
-    // while the middle pieces start down (story/envelopes.ts CONSTRUCT opens at
-    // this scene's foot) and the flatten drains out of it, then makes ONE
-    // quarter-orbit onto the lens' side, landing on the frame the rock starts
-    // on. It is the only camera move in the ending, and the lens' own turn from
-    // disc to standing column is that move's doing — the up-vector rolls
-    // +Y → +X as the azimuth swings. The hold outlasts the flatten's blend by
-    // ONE BREATH (0.01 of the scene): the projection is wholly back before the
-    // turn opens, and nothing is held still after it is.
+    // Flat and still → turn → still. The camera holds the rewrap's face-on park
+    // while the flatten drains, then makes ONE quarter-orbit onto the lens'
+    // side — the ending's only camera move, rolling the up-vector +Y → +X. The
+    // hold outlasts the flatten's blend, so the projection is wholly back
+    // before the turn opens.
     camHold: 0.11,
     transit: 0.44,
     // the other half of the rewrap's `orthoIn`: the flat frame arrives already
@@ -358,27 +305,30 @@ export const STORY: StoryScene[] = [
     orthoOut: [0.02, 0.1],
     bg: [29, 26, 20],
     bgLight: [244, 240, 230],
-    // THE FRAME THE BLOOM PLAYS IN, and the page's hand-off frame: far enough
-    // out to hold the whole column and centred on the stack the pieces build.
-    // NO WAYPOINTS — one 90° leg at a near-constant radius off the rewrap's
-    // park, which is the whole ending's camera. It swings to the lens' −Z side,
-    // so the descent turns the opposite way round the standing column and the
-    // reader follows the pieces down from there; distance, fov, up and target
-    // are the frame the bloom has always played in.
-    // upright, centred, a notch closer so the rain fills the frame — the page
-    // hand-off frame. The distance is portrait's: any nearer and the mid-fall
+    // The frame the bloom plays in, and the page's hand-off frame: upright,
+    // centred, far enough out to hold the whole column. No waypoints — one 90°
+    // leg at a near-constant radius off the rewrap's park, swinging to the
+    // lens' −Z side. The distance is portrait's: any nearer and the mid-fall
     // spread clips a phone's one-half-height-wide frame.
-    cam: { pos: [0, 0, -2.0], fov: 30, up: [1, 0, 0], ortho: 1, xs: 0 },
+    // `near` is the portrait-only way in; `lift` 0 centres the bloom between
+    // the nav and the caption
+    cam: {
+      pos: [0, 0, -2.0],
+      fov: 30,
+      up: [1, 0, 0],
+      ortho: 1,
+      xs: 0,
+      near: 0.85,
+      lift: 0,
+    },
   },
 ];
 
 // --- authoring validation ----------------------------------------------------
-// Table invariants, checked at module load so a bad edit fails loudly at boot
-// rather than as subtly wrong motion.
+// Table invariants, checked at module load so a bad edit fails at boot.
 
 // Scene ids consumers resolve BY NAME — story/camera.ts, story/envelopes.ts,
-// story/reveal.ts and pages/lens.astro's preview span. Renaming one without
-// updating them takes /lens down too.
+// story/reveal.ts and pages/lens.astro's preview span.
 const REQUIRED_IDS = [
   "hero",
   "zoom",
@@ -408,20 +358,23 @@ export function validateStory(story: StoryScene[]): void {
       throw new Error(
         `lens story: scene "${sc.id}" transit must be within [0,1] (got ${sc.transit})`,
       );
-    if (sc.linkNext && i === story.length - 1)
-      throw new Error(
-        `lens story: final scene "${sc.id}" must not set linkNext — there is no next scene to fuse with`,
-      );
     if (sc.camHold !== undefined) {
       if (!Number.isFinite(sc.camHold) || sc.camHold < 0 || sc.camHold >= 1)
         throw new Error(
           `lens story: scene "${sc.id}" camHold must be within [0,1) (got ${sc.camHold})`,
         );
-      // On a plain transit the hold eats the move's own window, so a hold at or
-      // past `transit` would leave no move at all.
-      if (!sc.linkNext && sc.camHold >= sc.transit)
+      // the hold eats the move's own window, so a hold at or past `transit`
+      // leaves no move at all
+      if (sc.camHold >= sc.transit)
         throw new Error(
           `lens story: scene "${sc.id}" camHold (${sc.camHold}) must be below its transit (${sc.transit}) — the hold opens the move late, it does not replace it`,
+        );
+    }
+    if (sc.capEnd !== undefined) {
+      // a caption may leave early, never before its own camera move has landed
+      if (!(sc.capEnd > sc.transit && sc.capEnd <= 1))
+        throw new Error(
+          `lens story: scene "${sc.id}" capEnd (${sc.capEnd}) must lie within (transit ${sc.transit}, 1]`,
         );
     }
     for (const [name, w] of [
@@ -438,12 +391,6 @@ export function validateStory(story: StoryScene[]): void {
           `lens story: scene "${sc.id}" ${name} ${JSON.stringify(w)} must be a forward window inside [0,1]`,
         );
     }
-    // camera.ts looks back exactly ONE scene for a chain's head, so a chain
-    // spans two scenes; a second consecutive linkNext never fuses.
-    if (sc.linkNext && story[i + 1]?.linkNext)
-      throw new Error(
-        `lens story: scenes "${sc.id}" and "${story[i + 1].id}" are consecutive linkNext scenes — camera.ts only looks back one scene, so chains longer than two never fuse`,
-      );
   }
   const missing = REQUIRED_IDS.filter((id) => !ids.has(id));
   if (missing.length)
@@ -459,16 +406,13 @@ export function validateStory(story: StoryScene[]): void {
 validateStory(STORY);
 
 // --- derived pacing ---------------------------------------------------------
-// Track length is the total duration in screenfuls → svh, clamped so a short
-// viewport isn't rushed and a huge one isn't a marathon.
+// Track length is the total duration in screenfuls → svh, clamped at both ends.
 //
 // THE UNIT LAW: svh for all story GEOMETRY (this file, the caption bands, the
-// sticky slots in LensSceneContent.astro). dvh moves by ~10% when a mobile
-// toolbar collapses, which would re-lay-out the whole track mid-scroll. The
-// two deliberate dvh survivors are the pinned stage (LensStory.astro's `h-dvh`
-// — 100dvh IS window.innerHeight, which is what hero-driver.ts subtracts to
-// form p's denominator, so the stage unpins at exactly p = 1) and the caption
-// fade-IN anchors, which time against the live viewport edge.
+// sticky slots in LensSceneContent.astro), since dvh re-lays-out the track when
+// a mobile toolbar collapses. The two deliberate dvh survivors are the pinned
+// stage (LensStory.astro's `h-dvh`, which is what hero-driver subtracts to form
+// p's denominator) and the caption fade-IN anchors.
 export const TOTAL_HOLD = STORY.reduce((s, sc) => s + sc.hold, 0);
 const PER_SCREENFUL_MIN_PX = 460;
 const PER_SCREENFUL_MAX_PX = 1000;
@@ -503,24 +447,20 @@ export const rangeOf = (id: string): SceneRange => {
 
 // --- caption bands ----------------------------------------------------------
 // The HTML layout of the hero's captions: each captioned scene gets a band
-// element in the scroll track (components/LensSceneContent.astro) with a
-// sticky caption inside, so captions appear, pin and leave by DOCUMENT
-// POSITION — no runtime system raises them.
+// element in the scroll track (components/LensSceneContent.astro) with a sticky
+// caption inside, so captions appear, pin and leave by DOCUMENT POSITION.
 //
-// The geometry is SCROLL space, NOT a percentage of track. p = scrollY /
-// (track − 100svh), since the last pinned viewport buys no progress, so a band
-// for [a, b] starts a·(100% − 100svh) down and is (b − a) of that plus one
-// viewport. The extra viewport is the sticky caption's pin room, and it is
-// what puts the band's edges at the viewport edges exactly at p = a and p = b.
-// Sizing as a plain percentage of the track puts every band p·100svh late.
+// The geometry is SCROLL space, NOT a percentage of track: p = scrollY /
+// (track − 100svh), so a band for [a, b] starts a·(100% − 100svh) down and is
+// (b − a) of that plus one viewport of pin room. Sizing as a plain percentage
+// of the track puts every band p·100svh late.
 
 /** Overlap pad on each side of a scene's range, in normalized story p — the
  *  slight lead-in/lead-out that makes neighbouring captions cross-fade. */
-export const CAPTION_PAD = 0.02;
+export const CAPTION_PAD = 0.01;
 
 /** The track's SCROLLABLE length, as CSS: everything but the viewport the stage
- *  is pinned to. p = scrollY / this, so it is the unit the bands are laid out
- *  in and the unit the fades are timed in. */
+ *  is pinned to. p = scrollY / this. */
 export const TRACK_SCROLL_CSS = `calc(${TRACK_HEIGHT_CSS} - 100svh)`;
 
 /** How long a caption crossfade runs, in scroll pixels — the bands' overlap.
@@ -537,9 +477,8 @@ export interface CaptionBand {
   height: string;
   /** this band ends AT the track end: nothing follows it to hand over to */
   final: boolean;
-  /** `final` as an Astro attribute value. Astro stringifies a `false` on a
-   *  data-* attribute rather than dropping it, so `data-final={band.final}`
-   *  would mark every band final — both call sites read this instead. */
+  /** `final` as an Astro attribute value: Astro stringifies a `false` on a
+   *  data-* attribute rather than dropping it, so call sites read this. */
   finalAttr: true | undefined;
 }
 
@@ -551,7 +490,11 @@ export const CAPTION_BANDS: CaptionBand[] = RANGES.map(({ scene, p0, p1 }) => {
   const a = Math.max(0, p0 - CAPTION_PAD);
   // the final scene's band runs to the END of the track — nothing follows it
   const final = p1 >= 0.999;
-  const b = final ? 1 : p1 + CAPTION_PAD;
+  const b = final
+    ? 1
+    : scene.capEnd !== undefined
+      ? p0 + (p1 - p0) * scene.capEnd
+      : p1 + CAPTION_PAD;
   return {
     id: scene.id,
     a,
@@ -584,9 +527,7 @@ export const atFrac = (r: SceneRange, f: number): number => {
 };
 
 /** A scene's HOLD CENTRE — the settle region's midpoint, past the camera
- *  transit: where a reader parked in the scene rests. One formula for both the
- *  `?story` scrubber's jump targets and story/cost.ts's hold rows, which must
- *  sample the same positions. */
+ *  transit: where a reader parked in the scene rests. */
 export const holdCentreOf = (r: SceneRange): number =>
   atFrac(r, (r.scene.transit + 1) / 2);
 
@@ -599,11 +540,8 @@ export const SKY_OUT_END = atFrac(rangeOf("rewrap"), SKY_OUT_END_F);
 
 /** THE DIVE'S FIRST FRAME as an absolute story p: the end of the `flythrough`
  *  scene's camera approach, where the camera parks and the LENS starts moving.
- *
- *  Also the seam in the range-tiled writer map for the body-fade channel —
- *  hero-driver owns it below this p, story/fly.ts above, and the two tiles must
- *  meet EXACTLY or the channel holds whatever it had. It lives here because
- *  fly.ts is lazy and hero-driver may not import it. */
+ *  Also the body-fade channel's writer seam — hero-driver below, story/fly.ts
+ *  above, and the two tiles must meet EXACTLY. */
 const FLY_RANGE = rangeOf("flythrough");
 export const DIVE_P0 = atFrac(FLY_RANGE, FLY_RANGE.scene.transit);
 
@@ -615,9 +553,7 @@ export type StoryPoint = [id: string, f: number];
 export type StoryWindow =
   [id: string, f0: number, f1: number] | [StoryPoint, StoryPoint];
 
-/** A window's absolute story p edges. Exported so readers that need to know
- *  where a window SITS (story/state.ts, the STORY-MAP) resolve it here rather
- *  than keeping a second copy of the resolution. */
+/** A window's absolute story p edges. */
 export const windowEdges = (w: StoryWindow): [number, number] => {
   if (typeof w[0] === "string") {
     const [id, f0, f1] = w as [string, number, number];
@@ -655,15 +591,44 @@ export const pulse = (
   return rise * (1 - smoothstep(f0, f1, p));
 };
 
-/** The same envelope with its windows resolved ONCE, as a scalar function of p.
- *  The render loop reads these channels every frame, and `pulse` re-resolves
- *  both windows per call — an array and a `RANGES` scan per edge. */
-export const pulseFn = (w: {
-  rise: StoryWindow;
-  fall?: StoryWindow;
-}): ((p: number) => number) => {
-  const [r0, r1] = pulseEdges(w.rise, "rise");
+/** The same envelope with its windows resolved ONCE, as a scalar function of p
+ *  — `pulse` re-resolves both windows on every call. Registers `name.rise` and
+ *  `name.fall` in the window registry. */
+export const pulseFn = (
+  w: { rise: StoryWindow; fall?: StoryWindow },
+  name: string,
+): ((p: number) => number) => {
+  const [r0, r1] = span(`${name}.rise`, pulseEdges(w.rise, "rise"));
   if (!w.fall) return (p: number) => smoothstep(r0, r1, p);
-  const [f0, f1] = pulseEdges(w.fall, "fall");
+  const [f0, f1] = span(`${name}.fall`, pulseEdges(w.fall, "fall"));
   return (p: number) => smoothstep(r0, r1, p) * (1 - smoothstep(f0, f1, p));
 };
+
+// --- the window registry -----------------------------------------------------
+
+/** A named window in absolute story p, recorded where it is authored. */
+export interface StoryWindowSpan {
+  name: string;
+  p0: number;
+  p1: number;
+}
+
+const WINDOWS = new Map<string, StoryWindowSpan>();
+
+/** Record a named window and hand its edges back, so every window is
+ *  reportable by construction. A name registers once; re-registering (HMR)
+ *  replaces it. */
+export const span = (
+  name: string,
+  edges: [number, number],
+): [number, number] => {
+  WINDOWS.set(name, { name, p0: edges[0], p1: edges[1] });
+  return edges;
+};
+
+/** Every window registered so far, sorted by (p0, p1, name). Complete once
+ *  every story module has loaded — story/state.ts imports them all. */
+export const storyWindows = (): StoryWindowSpan[] =>
+  [...WINDOWS.values()].sort(
+    (a, b) => a.p0 - b.p0 || a.p1 - b.p1 || a.name.localeCompare(b.name, "en"),
+  );

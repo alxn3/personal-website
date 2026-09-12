@@ -9,11 +9,8 @@ import {
   crease,
   rot,
   runPipeline,
-  selAxialBand,
   selFront,
-  stickPress,
   straight,
-  twist,
   PART_CLASS,
   type OpCtx,
   type OpItem,
@@ -34,7 +31,6 @@ const R = 10;
 const HALF = 0.4;
 const T0 = 0.3;
 const L = R * 2 * HALF; // 8
-const FROM = -1; // stickPress's contact end (+Y), the only `from` left
 
 // Where `rot(halfSpan); anchor()` starts a chain: the seam meridian, and the
 // tangent the chain walks along there.
@@ -70,7 +66,7 @@ function ctxAt(d: number, over: Partial<OpCtx<number>> = {}): OpCtx<number> {
     off: 0,
     rung: 0,
     axi: 0,
-    layerN: 5, // one wedge of a 5-cut layer
+    depth: 0, // a thin sheet
     adopted: 0, // frames its own sector; rides no host shell
     flight: 0,
     stick: 1,
@@ -91,12 +87,10 @@ function seatedAt(ctx: OpCtx<number>): VertexState<number> {
   });
 }
 
-// A modifier does not take the selection weight: `walk` folds it into the ctx it
-// hands over (the modifier weight law). So the weight arrives here the way a
-// recipe states it — as a selector in front of the ops — and the pipeline runner
-// does the fold. `selFront` is intrinsic, so the frame below is inert for the
-// modifiers; `rot` reads its `orient` (the piece's own meridian, T0) to place a
-// chain on the seam.
+// A modifier does not take the selection weight: `walk` folds it into the ctx.
+// The weight therefore arrives as a selector in front of the ops. The frame
+// below is inert for the modifiers; `rot` reads its `orient` (the piece's own
+// meridian, T0) to place a chain on the seam.
 const FRAME: PieceFrame<number> = frameAt(T0, R, { axial: 0, orient: T0 });
 
 function runM(
@@ -212,8 +206,7 @@ describe("anchor / arc — the developable bend chain", () => {
     //   chord = bent·sinc(psi/2) = 2R·sin(0.2) = 3.9733866159012243
     //   nMid = N0 − psi/2 = 0.5             nEnd = N0 − psi = 0.3
     // P = R·n̂(N0) + chord·t̂(nMid) + slip·t̂(nEnd), t̂(a) = (sin a, −cos a).
-    // Hand-evaluated ONCE; the numbers below are literals on purpose — moving the
-    // slip to the mid-arc tangent (or dropping it) must break them.
+    // The literals below break if the slip moves to the mid-arc tangent.
     const op: OpItem<number>[] = [
       ...SEAM(),
       arc<number>(1, undefined, { participation: 0.5 }),
@@ -310,11 +303,9 @@ describe("crease — the hard fold between two panels", () => {
         expect(a.x).toBe(b.x);
         expect(a.z).toBe(b.z);
         expect(a.rot).toBe(b.rot);
-        // …and that is the seated state to float rounding: the ARC itself
-        // rebuilds the seat through trig (rot carries ~1e-16 of residue on
-        // some grid points), which is host law 3's business — the idle gate
-        // force-zeroes it at channel 0. Crease adds nothing on top; the
-        // strict a-vs-b pins that.
+        // …and that is the seated state to float rounding: the arc rebuilds the
+        // seat through trig, and the idle gate force-zeroes the residue at
+        // channel 0.
         expect(a.rot).toBeCloseTo(0, 12);
         expect(polarOf(a).radius).toBeCloseTo(ctx.R + off, 12);
       }
@@ -350,9 +341,8 @@ describe("crease — the hard fold between two panels", () => {
     );
     expect(outBack.rot).toBeGreaterThan(0); // turned the opposite way
 
-    // Material is conserved: the band consumes exactly W, so a crease and an
-    // arc of the same length leave the same cursor for what follows. A vertex
-    // BEFORE the band cannot feel it at all.
+    // Material is conserved: the band consumes exactly W, so a vertex BEFORE it
+    // cannot feel it at all.
     const early = ctxAt(1.5);
     const short: OpItem<number>[] = [...SEAM(), arc<number>(0, 3)];
     const a = runM(op, seatedAt(early), 1, early);
@@ -362,8 +352,7 @@ describe("crease — the hard fold between two panels", () => {
   });
 
   it("(h″) the tent: flat panels stay dead straight and the whole turn sits in the two folds", () => {
-    // The rose's own fold pattern in miniature: panel, crease, panel, crease,
-    // panel — the reference photo's petal cross-section.
+    // The rose's fold pattern in miniature: panel, crease, panel, crease, panel.
     const RAD = 0.5;
     const p1 = 2,
       p2 = 3; // panel lengths; the last is the remainder
@@ -429,9 +418,8 @@ describe("straight — the chain's flat run", () => {
       ]),
     ).toBeLessThan(1e-13);
 
-    // arc(0) says the same thing but walks `len·sinc(ε)` — the singularity
-    // guard's clamp, which is the whole reason this op exists. It is SHORT,
-    // never long, and short by the clamp exactly.
+    // arc(0) walks `len·sinc(ε)` — the singularity guard's clamp — so it is
+    // SHORT, never long, and short by the clamp exactly.
     const viaArc = runM(
       [...SEAM(), arc<number>(0, len)],
       seatedAt(ctx),
@@ -503,8 +491,8 @@ describe("straight — the chain's flat run", () => {
   });
 });
 
-describe("coil / twist / stickPress", () => {
-  it("(e) identity at flight 0 / stick 1, and twist adds rad·flight·w·yN to the meridian AND rot", () => {
+describe("coil", () => {
+  it("(e) identity at flight 0 / stick 1, and the constant-arc radius morph", () => {
     const idle = ctxAt(2, { flight: 0, stick: 1, yN: 0.4 });
     const vP = { theta: 0.42, radius: 10.6 };
     const v: VertexState<number> = vertexAt(vP.theta, vP.radius, {
@@ -513,26 +501,11 @@ describe("coil / twist / stickPress", () => {
       aim: T0,
       rem: 0,
     });
-    for (const op of [
-      coil<number>(0.5),
-      twist<number>(0.7),
-      stickPress<number>(4, 0.3, FROM),
-    ]) {
-      const out = runM([op], v, 1, idle);
-      expect(out.x).toBe(v.x);
-      expect(out.z).toBe(v.z);
-      expect(out.axial).toBe(v.axial);
-      expect(out.rot).toBe(v.rot);
-    }
-
-    // twist: the angle is rad · flight · w · yN, on theta AND rot.
-    const ctx = ctxAt(2, { flight: 0.8, yN: 0.4 });
-    const tw = runM([twist<number>(0.7)], v, 0.5, ctx);
-    const ang = 0.7 * 0.8 * 0.5 * 0.4;
-    expect(polarOf(tw).theta).toBeCloseTo(vP.theta + ang, 12);
-    expect(tw.rot).toBeCloseTo(v.rot + ang, 12);
-    expect(polarOf(tw).radius).toBeCloseTo(vP.radius, 12);
-    expect(tw.axial).toBe(v.axial);
+    const out = runM([coil<number>(0.5)], v, 1, idle);
+    expect(out.x).toBe(v.x);
+    expect(out.z).toBe(v.z);
+    expect(out.axial).toBe(v.axial);
+    expect(out.rot).toBe(v.rot);
 
     // coil: constant-arc radius morph — the wedge-local angle opens ∝ 1/factor.
     const coilCtx = ctxAt(2, { flight: 0.5 });
@@ -542,19 +515,9 @@ describe("coil / twist / stickPress", () => {
     expect(polarOf(co).theta).toBeCloseTo(vP.theta + open, 12);
     expect(co.rot).toBeCloseTo(v.rot + open, 12);
     expect(polarOf(co).radius).toBeCloseTo(vP.radius + R * (coilF - 1), 12);
-
-    // stickPress: the hover S-bend sweeps along the axis from the contact end.
-    const pressCtx = ctxAt(2, { stick: 0.4, yN: 0.1 });
-    const pr = runM([stickPress<number>(4, 0.3, FROM)], v, 1, pressCtx);
-    const u = 0.5 - pressCtx.yN * FROM;
-    const front = pressCtx.stick * 1.3;
-    const amt = 4 * NUM.smoothstep(0, 0.3, u - front + 0.3);
-    expect(polarOf(pr).radius).toBeCloseTo(vP.radius + amt, 12);
-    expect(polarOf(pr).theta).toBeCloseTo(vP.theta, 12);
-    expect(pr.rot).toBe(v.rot);
   });
 
-  it("(e′) the gate law at an INTERMEDIATE w: flightEff = flight·w, stickEff = mix(1, stick, w)", () => {
+  it("(e′) the gate law at an INTERMEDIATE w: flightEff = flight·w", () => {
     const vP = { theta: 0.42, radius: 10.6 };
     const v: VertexState<number> = vertexAt(vP.theta, vP.radius, {
       axial: 1.1,
@@ -571,28 +534,13 @@ describe("coil / twist / stickPress", () => {
     expect(polarOf(co).theta).toBeCloseTo(0.47, 12);
     expect(polarOf(co).radius).toBeCloseTo(8.6, 12);
     expect(co.rot).toBeCloseTo(0.12, 12);
-
-    // stickPress at w = 0.5, stick 0.4, yN 0.26, hover 4, blendFrac 0.3:
-    //   stickEff = mix(1, 0.4, 0.5) = 0.7 ⇒ front f = 0.7·1.3 = 0.91
-    //   u = 0.5 − yN·from = 0.76 ⇒ smoothstep(0, 0.3, 0.76 − 0.91 + 0.3) =
-    //   smoothstep at t = 0.5 = 0.5 ⇒ hoverAmt = 2 exactly.
-    const pr = runM(
-      [stickPress<number>(4, 0.3, FROM)],
-      v,
-      0.5,
-      ctxAt(2, { stick: 0.4, yN: 0.26 }),
-    );
-    expect(polarOf(pr).radius).toBeCloseTo(12.6, 12);
-    expect(polarOf(pr).theta).toBeCloseTo(vP.theta, 12);
-    expect(pr.rot).toBe(v.rot);
   });
 });
 
 describe("modifier weight law — a masked piece stays seated", () => {
-  // A chain that only reduces to the seated barrel at flight 0 / stick 1: the
-  // flat run grows with flight and the anchor lifts off the barrel as the sheet
-  // unsticks. Under w = 0 every Live argument below must read flightEff = 0 /
-  // stickEff = 1 off the ctx `walk` hands it, giving the exact seated state.
+  // A chain that reduces to the seated barrel only at flight 0 / stick 1, so
+  // under w = 0 every Live argument must read flightEff = 0 / stickEff = 1 off
+  // the ctx `walk` hands it.
   const liveChain = (): OpItem<number>[] => [
     rot<number>((c) => c.halfSpan),
     anchor<number>((c) => c.R * (1 + 0.3 * (1 - c.stick))),
@@ -618,16 +566,9 @@ describe("modifier weight law — a masked piece stays seated", () => {
   });
 
   it("(f″) the chain at a FRACTIONAL w is the GATE FOLD, pinned to closed form", () => {
-    // The law that (f) alone cannot see: at w = 0 an amplitude mix
-    // (`mix(seated, bent, w)`) also lands on the seated state, so only an
-    // INTERMEDIATE weight tells the two apart. Everything below is derived by
-    // hand from the gate fold — flightEff = flight·w, stickEff = mix(1, stick,
-    // w) — and hardcoded, so a mutant that blends amplitudes (or scales κ by w)
-    // misses these numbers by centimetres.
-    //
-    // The weight is a `selFront(() => 0.5)` in front of the chain (runM), so this
-    // exercises the fold where it now lives — in `walk` — rather than a call
-    // convention the ops no longer have.
+    // At w = 0 an amplitude mix would also land on the seated state, so only an
+    // INTERMEDIATE weight tells the two apart. The numbers below are derived
+    // from the gate fold — flightEff = flight·w, stickEff = mix(1, stick, w).
     //
     // Inputs: flight 1, stick 0, w = 0.5 ⇒
     //     flightEff = 1·0.5   = 0.5
@@ -669,18 +610,16 @@ describe("modifier weight law — a masked piece stays seated", () => {
     for (const g of GOLDEN) {
       const ctx = ctxAt(g.d, { flight: 1, stick: 0 });
       const out = runM(op, seatedAt(ctx), 0.5, ctx);
-      // 10 places (≈1e-10 rad / model-mm) — the chain rebuilds these through
-      // trig, so the last couple of ULPs are float noise, not the law.
+      // 10 places: the chain rebuilds these through trig, so the last couple of
+      // ULPs are float noise.
       expect(polarOf(out).theta, `d = ${g.d} theta`).toBeCloseTo(g.theta, 10);
       expect(polarOf(out).radius, `d = ${g.d} radius`).toBeCloseTo(g.radius, 10); // prettier-ignore
       expect(out.rot, `d = ${g.d} rot`).toBeCloseTo(g.rot, 12);
     }
 
-    // The forbidden mutant, spelled out: half-way between the seated state and
-    // the w = 1 shape is a DIFFERENT point — off the developable surface, and
-    // 0.79mm from the pinned one. Small in millimetres, but nine orders of
-    // magnitude past the 1e-10 the pins above are held to, so the goldens
-    // reject it outright. (At w = 1 the whole 8mm is flat run.)
+    // The forbidden mutant: half-way between the seated state and the w = 1
+    // shape is a DIFFERENT point, off the developable surface, far outside the
+    // 1e-10 the pins above are held to.
     const ctx = ctxAt(8, { flight: 1, stick: 0 });
     const seated = seatedAt(ctx);
     const full = runM(op, seated, 1, ctx);
@@ -692,7 +631,7 @@ describe("modifier weight law — a masked piece stays seated", () => {
     expect(dist(mixed, [pinned.x, pinned.z])).toBeGreaterThan(0.5);
   });
 
-  it("(f′) coil / twist / stickPress at w = 0 are exact identities at full channel", () => {
+  it("(f′) coil at w = 0 is an exact identity at full channel", () => {
     const ctx = ctxAt(2, { flight: 1, stick: 0, yN: 0.4 });
     const vP = { theta: 0.42, radius: 10.6 };
     const v: VertexState<number> = vertexAt(vP.theta, vP.radius, {
@@ -701,33 +640,10 @@ describe("modifier weight law — a masked piece stays seated", () => {
       aim: T0,
       rem: 0,
     });
-    for (const op of [
-      coil<number>(0.5),
-      twist<number>(0.7),
-      stickPress<number>(4, 0.3, FROM),
-    ]) {
-      const out = runM([op], v, 0, ctx);
-      expect(out.x).toBe(v.x);
-      expect(out.z).toBe(v.z);
-      expect(out.axial).toBe(v.axial);
-      expect(out.rot).toBe(v.rot);
-    }
-  });
-});
-
-describe("selAxialBand — open bypass", () => {
-  const F0: PieceFrame<number> = frameAt(0.3, 1, { axial: 0, orient: 0.3 });
-
-  it("(g) a band wider than the ±1e5 sentinel is exactly 1 anywhere", () => {
-    const sel = selAxialBand<number>(-1e5, 1e5);
-    if (sel.kind !== "selector") throw new Error("not a selector");
-    const ctx = ctxAt(0);
-    for (const axial of [-4321, 0, 12.5, 987]) {
-      expect(sel.weight({ ...F0, axial }, ctx)).toBe(1);
-    }
-    // A real (finite) band still bands.
-    const narrow = selAxialBand<number>(0, 1, 0.1);
-    if (narrow.kind !== "selector") throw new Error("not a selector");
-    expect(narrow.weight({ ...F0, axial: 5 }, ctx)).toBe(0);
+    const out = runM([coil<number>(0.5)], v, 0, ctx);
+    expect(out.x).toBe(v.x);
+    expect(out.z).toBe(v.z);
+    expect(out.axial).toBe(v.axial);
+    expect(out.rot).toBe(v.rot);
   });
 });

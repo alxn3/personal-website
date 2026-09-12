@@ -3,7 +3,16 @@ import { NUM } from "../algebra";
 import { atPolar, polarOf } from "./fixture-state";
 import { gate } from "../gate";
 import { fixtureGateAt } from "./fixture-gate";
-import { EXPLODE_HOVER_RANK, makeRecipes, type Recipe } from "../recipes";
+import {
+  EXPLODE_AXIAL_GAIN,
+  EXPLODE_HOVER,
+  EXPLODE_HOVER_RANK,
+  PEEL_CURL,
+  PEEL_RANK_LO,
+  makeRecipes,
+  type Recipe,
+} from "../recipes";
+import { DEPTH_THIN, WRAP_DIR } from "../house";
 import {
   group,
   ladder,
@@ -31,7 +40,6 @@ import {
 
 const RECIPES = makeRecipes(NUM);
 const HALF = 0.4; // wedge half-span (rad) — L = R·2·halfSpan
-const WRAP_DIR = -1; // the house peel handedness
 
 interface Piece {
   t0: number;
@@ -61,28 +69,20 @@ const VERTS = [
 ];
 type Vert = (typeof VERTS)[number];
 
-// Real wedges OVERRUN the nominal half-span on both edges, and a bend chain's
-// first/last segments are unbounded for exactly that reason — so the identity
-// has to hold outside [0, L] too. The one exception is `peel`'s negative
-// overrun: the travelling-front chain leads with a non-seated arc by
-// construction (the inverted curl), so seam overrun there leaves the barrel
-// instead of following it.
+// Real wedges OVERRUN the nominal half-span on both edges, so the identity has
+// to hold outside [0, L] too. `peel` is the exception: its chain leads with a
+// non-seated arc, so seam overrun there leaves the barrel.
 const OVERRUN = [
   { frac: -0.2, yN: 0.15, off: 0 },
   { frac: 1.2, yN: -0.35, off: 0.25 },
 ];
 
 // `over` re-labels the piece's PARTICIPATION intrinsics (partClass / axi /
-// halfSpan / adopted) so a probe can ask what a glass column, a full ring or a
-// bolted screw sees. The default is the sheet-like shell every other probe in
-// this file is about: one wedge of a 5-cut layer.
-//
-// A `halfSpan` override is applied BEFORE the material coordinates, so an
-// overridden span stays consistent with the d/L/phi the ops read.
-//
-// `channel` / `gateAt` are the recipe's OWN clock and gate — the same spec the
-// pair below was computed from — so a `during` scope inside a recipe re-gates
-// through the real thing.
+// halfSpan / adopted); the default is a sheet-like shell, one wedge of a 5-cut
+// layer. A `halfSpan` override is applied BEFORE the material coordinates, so
+// an overridden span stays consistent with the d/L/phi the ops read.
+// `channel` / `gateAt` are the recipe's OWN clock and gate, so a `during` scope
+// inside a recipe re-gates through the real thing.
 function ctxOf(
   p: Piece,
   v: Vert,
@@ -113,7 +113,7 @@ function ctxOf(
     off: v.off,
     rung: p.rung,
     axi: 0,
-    layerN: 5,
+    depth: 0,
     adopted: 0,
     flight: phase.flight,
     stick: phase.stick,
@@ -216,10 +216,7 @@ describe("every recipe is the seated identity at channel 0", () => {
 
 // GateSpec's law: split < rollEnd + overlap, i.e. the stick ramp's denominator
 // (rollEnd − split + min(overlap, split)) is POSITIVE. At exactly zero the
-// seated state (win = 1) computes stick = 0/0 = NaN where the identity anchor
-// demands an exact 1 — explode's split = 1 was precisely that bug. Asserting
-// the denominator for EVERY recipe makes the whole class unrepresentable, not
-// just the one instance.
+// seated state computes stick = 0/0 where the identity anchor demands 1.
 const GATE_RANKS = [0, 0.25, 0.5, 0.75, 1];
 const GATE_PHASES = [0, 0.37, 0.82, 1];
 
@@ -243,14 +240,10 @@ describe("every recipe's gate spec keeps the stick ramp non-degenerate", () => {
   }
 
   it("(a″) assemble's window is DERIVED from the live knobs, not the defaults", () => {
-    // windowFrac = 1 − stagger − partStagger is a LAW, so a moved slider moves
-    // the window with it and offset + window ≡ 1 still holds — the identity
+    // windowFrac = 1 − stagger − 0.25 is a LAW, so a moved slider moves the
+    // window with it and offset + window ≡ 1 still holds — the identity
     // survives knob values the defaults never visit.
-    const knobs = {
-      ...RECIPES.assemble.knobDefaults,
-      stagger: 0.8,
-      partStagger: 0.05,
-    };
+    const knobs = { ...RECIPES.assemble.knobDefaults, stagger: 0.6 };
     const spec = RECIPES.assemble.gateSpec(knobs);
     expect(spec.windowFrac).toBeCloseTo(0.15, 12);
     for (const rank01 of GATE_RANKS) {
@@ -297,10 +290,9 @@ describe("assemble at channel 1", () => {
     return chain;
   }
 
-  // A modifier reads the EFFECTIVE ctx `walk` hands it, so a standalone probe
-  // runs the chain through the pipeline at an unmasked weight rather than
-  // calling the ops directly — the fold at w = 1 is part of the arithmetic these
-  // goldens pin, and so is the ONE effective ctx the chain's terms memoize on.
+  // A modifier reads the EFFECTIVE ctx `walk` hands it, so a probe runs the
+  // chain through the pipeline at an unmasked weight rather than calling the
+  // ops directly.
   function runChain(
     items: OpItem<number>[],
     p: Piece,
@@ -320,9 +312,9 @@ describe("assemble at channel 1", () => {
   });
 
   it("(b′) the wrap's roll consumes the material: at stick 0 the sheet lies straight off the seam", () => {
-    // At stick = 0 the curl ramp is 0, so NONE of the roll arc bends — every
-    // vertex slips along the seam tangent (the classic's relaxed-flat waiting
-    // sheet). breath = 0 there too, so the anchor is the seated seam point.
+    // At stick = 0 the curl ramp is 0, so none of the roll arc bends — every
+    // vertex slips along the seam tangent, and breath = 0 puts the anchor on
+    // the seated seam point.
     const chain = wrapOf(ctxOf(rank0, VERTS[0], { flight: 1, stick: 0 }));
     const anchorAng = rank0.t0 + HALF; // the house winding puts the seam here
     const anchor: [number, number] = [
@@ -339,31 +331,17 @@ describe("assemble at channel 1", () => {
   });
 
   // ── (b‴) the wrap's calibration constants, pinned mid-gate ───────────────
-  // Every other probe in this file sits at a DEGENERATE stick, where the breath
-  // (smoothstep(0.75, 1, stick)), the shear envelope (4·stick·(1 − stick)) and
-  // the curl ramp (smoothstep(0.05, 0.55, stick)) multiply to zero — so 2.4,
-  // 1.1, 0.06, 5.13, the 0.9 shear and mix(0.45, 0.18) are never observed. No
-  // SINGLE gate value lights them all: the breath only wakes above stick 0.75,
-  // where the curl ramp has already saturated to 1 and stops reporting its own
-  // edges. So the probes split the difference:
+  // Every other probe in this file sits at a DEGENERATE stick, where the breath,
+  // the shear envelope and the curl ramp all multiply to zero. No single gate
+  // value lights them all, so the probes split the difference:
   //
   //   • stick 0.85 on a rank01 = 1 piece, on the main arc — the breath owns the
-  //     anchor radius, q and the seam angle there, so 2.4, 1.1, 0.06 and the
-  //     smoothstep(0.75, 1) edges are the only things the vertex reads.
+  //     anchor radius, q and the seam angle there.
   //   • stick 0.35 past the travelling contact, at yN of BOTH signs — breath is
-  //     0, so the roll alone answers: 5.13 (the per-shell shear sign), the 0.9
-  //     shear, smoothstep(0.05, 0.55) and mix(0.45, 0.18).
+  //     0, so the roll alone answers.
   //
-  // CHARACTERIZATION: the literals were printed from the verified
-  // implementation — a change detector, not an independent derivation.
-  // These probe SHEET ctxs (ctxOf's default partClass structure / axi 0), which
-  // is what the wrap group selects, and they drive the chain at w = 1 directly
-  // — so the goldens are unchanged by the participation split.
-  //
-  // They also survived the profile → op decomposition UNCHANGED at the ten
-  // places below, which was that refactor's acceptance test: the rewrite is
-  // worth ~1e-14 of float re-association and nothing else. A golden that has to
-  // move means the recomposition is wrong, not that the numbers are stale.
+  // The literals are a change detector printed from the implementation, not an
+  // independent derivation.
   const wrapProbe = (
     p: Piece,
     v: Vert,
@@ -436,11 +414,8 @@ describe("assemble at channel 1", () => {
     const seated = seatedAt(ctx);
     const frame = frameAt(rank0);
 
-    // Hand-composed: the same ops, the same arguments, the same order, the same
-    // SCOPING — the sheet pipeline inside its participation group, the ladder
-    // outside it. The wrap CHAIN itself is the recipe's own; everything AROUND
-    // it is written out here, so a changed argument, a changed order or a
-    // changed scope breaks this.
+    // Hand-composed: the same ops, arguments, order and SCOPING. The wrap CHAIN
+    // is the recipe's own; everything around it is written out here.
     const sheet = sheetOf(items);
     const hand: OpItem<number>[] = [
       group<number>([
@@ -524,11 +499,8 @@ describe("assemble at channel 1", () => {
 
   // ── (b⁗) the DEFAULT SELECTION: who wraps and who only rides the ladder ──
   // The shrink-wrap runs on "is a segmented shell, or rides one", while the
-  // tier ladder moves everything. Without that split every ring, lens element
-  // and PCB throws and swirls with the shells and the reassembly reads as
-  // chaos; with it drawn too tight, the decals stay behind while the shells
-  // they are painted on fly 140-190mm. frames.ts measures per MESH, so the
-  // derived rule reads the piece's SHAPE:
+  // tier ladder moves everything. frames.ts measures per MESH, so the derived
+  // rule reads the piece's SHAPE:
   //
   //   SHEET  ⇔  (adopted = 1 OR class = decal OR (span ≤ 2.5 AND axi = 0))
   //             AND class ∉ {glass, iris, accessory}
@@ -590,8 +562,7 @@ describe("assemble at channel 1", () => {
   it("(b⁶) the KEEP-SCOPE freezes the mechanism the cards scene reveals", () => {
     // story/envelopes.ts drives `keepScope` to 1 across the cards chapter so the
     // departure uncovers the mechanism in place. Driven through the pipeline
-    // here, because the goldens' grid is all structure: a sign error in
-    // ops/house selNotKept would leave every row of it green.
+    // here, because the goldens' grid is all structure.
     const KEPT: { name: string; over: Partial<OpCtx<number>> }[] = [
       { name: "a kept structure piece", over: { partClass: PART_CLASS.kept } },
       { name: "a glass element", over: { partClass: PART_CLASS.glass } },
@@ -633,10 +604,8 @@ describe("assemble at channel 1", () => {
   });
 
   it("(b⁵) participants get the WHOLE sheet composition — sector-shaped structure, the hardware bolted to it, and the decals painted on it", () => {
-    // Three ways in, one composition. The sector piece is in on its measured
-    // span; the screw is in on the adopted flag (its frame IS its host wedge's,
-    // so its span would carry it anyway — the flag is what makes that
-    // deliberate); the decal is in on its class, the classic's 140-190mm ride.
+    // Three ways in, one composition: the sector piece on its measured span,
+    // the screw on the adopted flag, the decal on its class.
     const WRAPPERS: { name: string; over: Partial<OpCtx<number>> }[] = [
       { name: "a cut shell wedge (the file's default)", over: {} },
       { name: "a bolted screw (adopted frame)", over: { adopted: 1 } },
@@ -673,13 +642,11 @@ describe("assemble at channel 1", () => {
 
 describe("explode's default selection", () => {
   const recipe = RECIPES.explode;
-  const knobs = recipe.knobDefaults;
   const CHANNELS = [0, 0.2, 0.5, 0.8, 1];
 
   it("(e) an ACCESSORY is untouched at every channel — no orbit, no ladder", () => {
-    // Accessories come OFF; they never rode the teardown. Both the bare class
-    // and the axisymmetric case are probed, and the ladder is checked too: the
-    // head selector scopes the WHOLE pipeline, not just the spin group.
+    // Accessories come OFF, so they never ride the teardown; the ladder is
+    // checked too, since the head selector scopes the WHOLE pipeline.
     const ACCESSORIES: { name: string; over: Partial<OpCtx<number>> }[] = [
       { name: "an accessory ring", over: { partClass: PART_CLASS.accessory } },
       {
@@ -715,12 +682,9 @@ describe("explode's default selection", () => {
   });
 
   it("(e′) GLASS and the iris MECHANISM take the ladder and the HOVER only", () => {
-    // The optical column and the blade pack never turn round the bore — that
-    // is what keeps the elements reading as one column while the shells swirl
-    // around them. They DO ride the hover: the parked pose is a cloud held
-    // above the lens and the glass is part of it, so their whole displacement
-    // is axial — the rung plus the rise — with x and z exactly untouched (an
-    // orbit would move them).
+    // The optical column and the blade pack never turn round the bore, but they
+    // DO ride the hover: their whole displacement is axial — the rung plus the
+    // rise — with x and z exactly untouched.
     const OPTICS: { name: string; over: Partial<OpCtx<number>> }[] = [
       { name: "a glass element", over: { partClass: PART_CLASS.glass } },
       {
@@ -753,11 +717,14 @@ describe("explode's default selection", () => {
             // the whole displacement is axial: the rung plus the hover's rise,
             // both scaled by the slot's own flight
             const hoverRise =
-              knobs.hover * (1 + EXPLODE_HOVER_RANK * p.rank01) * slotFlight;
+              EXPLODE_HOVER * (1 + EXPLODE_HOVER_RANK * p.rank01) * slotFlight;
             expect(
               r.out.axial - r.seated.axial,
               `${name} @ ${channel}: the rung and the rise`,
-            ).toBeCloseTo(p.rung * knobs.axialGain * slotFlight + hoverRise, 9);
+            ).toBeCloseTo(
+              p.rung * EXPLODE_AXIAL_GAIN * slotFlight + hoverRise,
+              9,
+            );
             expect(r.out.rot, `${name} @ ${channel}: no spin`).toBeCloseTo(
               0,
               9,
@@ -776,8 +743,8 @@ describe("explode's default selection", () => {
         expect(dist(xz(r.out), xz(r.seated))).toBeGreaterThan(1);
         // axially: the rung plus the hover's rise, like everything else
         expect(r.out.axial - r.seated.axial).toBeCloseTo(
-          (p.rung * knobs.axialGain +
-            knobs.hover * (1 + EXPLODE_HOVER_RANK * p.rank01)) *
+          (p.rung * EXPLODE_AXIAL_GAIN +
+            EXPLODE_HOVER * (1 + EXPLODE_HOVER_RANK * p.rank01)) *
             r.flight,
           9,
         );
@@ -800,15 +767,11 @@ describe("explode's default selection", () => {
 
 // ── (f) peel's DEFAULT SELECTION: the story's SCOPED unroll ─────────────────
 // `peel` is the sticker roll step under two participation selectors, so the
-// recipe's whole content is WHO unrolls: the sheet cast (selSheet) intersected
-// with the outer rank band (selRank at the [0.93, 1] default). Everything below
-// probes that admission, at every channel — the story drives this channel over
-// a whole scene, so a piece that leaks in mid-scrub is as wrong as one that
-// leaks in at 1.
+// recipe's content is WHO unrolls: the sheet cast intersected with the outer
+// rank band. Probed at every channel, since the story scrubs this one.
 
 describe("peel's scoped selection", () => {
   const recipe = RECIPES.peel;
-  const knobs = recipe.knobDefaults;
   const OUTER = PIECES[2]; // rank01 1 — inside the default band
   const CHANNELS = [0.25, 0.5, 0.75, 1];
 
@@ -842,11 +805,8 @@ describe("peel's scoped selection", () => {
   });
 
   it("(f′) glass, the iris mechanism, accessories and bodies of revolution NEVER unroll", () => {
-    // The reason the story needs a SCOPED recipe: these are
-    // in the outer ranks too (the front element sits at rank 1 with the front
-    // shell), so the rank band alone would admit them. Probed at rank01 1 on
-    // purpose — the band is wide open here, and selSheet is the only thing
-    // holding them.
+    // These sit in the outer ranks too, so the rank band alone would admit
+    // them; probed at rank01 1, where selSheet is the only thing holding them.
     const BARRED: { name: string; over: Partial<OpCtx<number>> }[] = [
       { name: "a glass element", over: { partClass: PART_CLASS.glass } },
       { name: "an iris blade", over: { partClass: PART_CLASS.iris } },
@@ -880,9 +840,9 @@ describe("peel's scoped selection", () => {
   });
 
   it("(f″) the rank band keeps the INNER sheet-like structure seated", () => {
-    // rankLo 0.93 with the house 0.1 feather: rank01 0.5 (PCB wings, chassis
-    // plates — sector-shaped structure that would otherwise unroll) is well
-    // below the ramp's foot, so its weight is exactly 0 at every channel.
+    // rank01 0.5 (PCB wings, chassis plates — sector-shaped structure that
+    // would otherwise unroll) is well below PEEL_RANK_LO's ramp foot, so its
+    // weight is exactly 0 at every channel.
     for (const p of [PIECES[0], PIECES[1]]) {
       for (const channel of CHANNELS) {
         for (const v of VERTS) {
@@ -898,35 +858,66 @@ describe("peel's scoped selection", () => {
   });
 
   it("(f‴) the freed run CURLS BACK — the sticker law", () => {
-    // What the sticker chain does that a FLAT unroll does not: over the freed
-    // material it turns the OTHER WAY from the seated barrel, by exactly q·d/R
-    // with q = −curl. A flat unroll's freed run is q = 0 — it adds no turn at
-    // all beyond the anchor's own seam-to-here seed (d/R), which is the flatten
-    // the scene rejected. So the freed run's total rot is (1 + curl)·d/R and
-    // the back-roll is the `curl·d/R` term. Probed at channel 1, where flight
-    // is 1 for every piece and the whole sheet is therefore freed.
-    //
-    // The rank band is opened so the law is about the CHAIN, not about who is
-    // admitted — (f)…(f″) above are the scope's own statements.
-    const open: Recipe<number> = {
-      ...recipe,
-      knobDefaults: { ...knobs, rankLo: 0, rankHi: 1 },
-    };
+    // Over the freed material the chain turns the OTHER WAY from the seated
+    // barrel, by q·d/R with q = −curl, so the total rot is (1 + curl)·d/R (a
+    // flat unroll would be q = 0). Probed at channel 1 with every piece moved
+    // INTO the rank band, so the law is about the CHAIN rather than admission.
     for (const p of PIECES) {
       for (const v of VERTS) {
-        const a = runAt(open, p, v, 1);
-        const at = `rank ${p.rank01} frac=${v.frac}`;
+        const a = runAt(recipe, { ...p, rank01: PEEL_RANK_LO }, v, 1);
+        const at = `t0 ${p.t0} frac=${v.frac}`;
         const d = v.frac * a.ctx.L;
         expect(a.flight, `${at}: fully freed`).toBe(1);
         expect(a.out.rot, `${at}: flat seed + back-roll`).toBeCloseTo(
-          ((1 + knobs.curl) * d) / p.R,
+          ((1 + PEEL_CURL) * d) / p.R,
           12,
         );
       }
     }
     // …and the back-roll is TIGHTER than the barrel it left: over one wedge's
     // material the seated shell turns 2·halfSpan, the freed lip curl× that.
-    expect(knobs.curl).toBeGreaterThan(1);
+    expect(PEEL_CURL).toBeGreaterThan(1);
+  });
+});
+
+describe("explode's bend cast — thinness, not class", () => {
+  const recipe = RECIPES.explode;
+  const CHANNELS = [0, 0.2, 0.5, 0.8, 1];
+  const same = (a: VertexState<number>, b: VertexState<number>): boolean =>
+    Object.is(a.x, b.x) && Object.is(a.z, b.z) && Object.is(a.axial, b.axial) && Object.is(a.rot, b.rot); // prettier-ignore
+
+  it("(e‴) with the rebend up, a DEEP piece slides exactly as it does without it; a THIN one bends — whatever its class", () => {
+    let bends = 0;
+    for (const cls of [PART_CLASS.structure, PART_CLASS.kept]) {
+      for (const channel of CHANNELS) {
+        for (const p of PIECES) {
+          for (const v of VERTS) {
+            const rigid = runAt(recipe, p, v, channel, { partClass: cls }, { rebend: 0 }); // prettier-ignore
+            for (const depth of [DEPTH_THIN, DEPTH_THIN + 0.01, 1])
+              expect(same(runAt(recipe, p, v, channel, { partClass: cls, depth }, { rebend: 1 }).out, rigid.out), `deep ${depth} class ${cls} @ ${channel}`).toBe(true); // prettier-ignore
+            const thin = runAt(recipe, p, v, channel, { partClass: cls, depth: DEPTH_THIN - 0.01 }, { rebend: 1 }); // prettier-ignore
+            if (!same(thin.out, rigid.out)) bends++;
+            // …and the class is not in the cast at all: a kept thin shell
+            // bends exactly as a structure one does.
+            expect(same(thin.out, runAt(recipe, p, v, channel, { partClass: PART_CLASS.structure, depth: DEPTH_THIN - 0.01 }, { rebend: 1 }).out)).toBe(true); // prettier-ignore
+          }
+        }
+      }
+    }
+    expect(bends).toBeGreaterThan(20);
+  });
+
+  it("(e⁗) at the /lens defaults (rebend 0, curl 0) the deform reads no depth and no class — bitwise", () => {
+    for (const channel of CHANNELS) {
+      for (const p of PIECES) {
+        for (const v of VERTS) {
+          const ref = runAt(recipe, p, v, channel).out;
+          for (const depth of [0, DEPTH_THIN - 0.01, DEPTH_THIN + 0.01, 1])
+            for (const partClass of [PART_CLASS.structure, PART_CLASS.kept])
+              expect(same(runAt(recipe, p, v, channel, { depth, partClass }).out, ref), `depth ${depth} class ${partClass} @ ${channel}`).toBe(true); // prettier-ignore
+        }
+      }
+    }
   });
 });
 

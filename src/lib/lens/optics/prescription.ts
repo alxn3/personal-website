@@ -1,20 +1,15 @@
 // The prescription: the 13 optical elements as an authored constant table, in
-// gltf-frame millimetres (optical axis = gltf +Y, front at +Y; core/scene's
-// MODEL_SCALE = 0.05 puts the front at world +X).
+// gltf-frame millimetres (optical axis = gltf +Y, front at +Y). Authored, never
+// re-derived at runtime; re-measure with `window.__lensPrescriptionProbe()`.
 //
-// Authored, never re-derived at runtime. Re-measure with
-// `window.__lensPrescriptionProbe()` (dev/prescription-probe.ts) on the /lens
-// bench with every channel at rest, and paste its JSON over the table below.
-//
-// SIGN CONVENTION (this file's, not a textbook's): a surface is
-//     f(q) = c·|q|² − 2·q_y = 0,   q = p − (0, yMm, 0)
-// so its centre of curvature sits at y = yMm + 1/c, and positive c puts that
-// centre toward the FRONT (+Y). c = 0 is flat — the trace is written in
-// curvature, never in radius, so there is no branch anywhere.
+// Sign convention: a surface is f(q) = c·|q|² − 2·q_y = 0 for q = p − (0,yMm,0),
+// so its centre of curvature sits at y = yMm + 1/c and positive c puts that
+// centre toward the front (+Y). Written in curvature, never radius, so c = 0 is
+// flat with no branch.
 
 /** One refracting surface. */
 export interface OpticalSurface {
-  /** curvature 1/mm; centre of curvature at yMm + 1/c. 0 encodes FLAT. */
+  /** curvature 1/mm; centre of curvature at yMm + 1/c. 0 encodes flat. */
   c: number;
   /** axial vertex position, gltf Y mm */
   yMm: number;
@@ -33,45 +28,25 @@ export interface PrescriptionEntry {
   focusRide: 0 | 1;
 }
 
-/** The focus throw, in mm of axial element travel at focus = 1.
- *
- *  A LITERAL, deliberately not an import of MECHANISM.focusMm: ops/mechanism.ts
- *  pulls in three/webgpu, and optics/ stays three-free so its tests run with no
- *  renderer. __tests__/prescription.test.ts (f) keeps the two equal. */
+/** The focus throw, in mm of axial element travel at focus = 1. A literal, not
+ *  an import of MECHANISM.focusMm: optics/ stays three-free. A test keeps the
+ *  two equal. */
 export const FOCUS_MM: number = 1.5;
 
 /** The iris stop — a stop plane, not glass, so not a member of the table below.
  *  The clear semi-diameter runs irisMaxMm → irisMinMm as the aperture channel
- *  rises (0 = f/2.8 wide open → 1 = f/22). Rays outside it die.
- *
- *  irisMaxMm is CAPPED by the smaller clear aperture straddling the stop
- *  (Element_06's rear); open wider and the glass is the narrowest thing in the
- *  gap, so the dial's open end would clip nothing. Held by
- *  __tests__/prescription.test.ts (g). */
+ *  rises (0 = f/2.8 wide open → 1 = f/22); rays outside it die. irisMaxMm is
+ *  capped by the smaller clear aperture straddling the stop (Element_06's
+ *  rear). */
 export const IRIS = {
   yMm: 37.5,
   irisMinMm: 1.2,
   irisMaxMm: 5.8,
 };
 
-/** The physics knobs, live-tunable through `window.__lensOptics`.
- *  ORPHANED: the per-pixel refraction trace that read them is gone, so nothing
- *  consumes this table today. */
-export const OPTICS_KNOBS = {
-  /** exaggerates bend angles: 0 = vacuum, 1 = honest physics, >1 = drama */
-  warpGain: 1,
-  /** per-channel IOR offset (R = ior−d, G = ior, B = ior+d); 0 = no fringing */
-  dispersion: 0.015,
-  /** how far the focus channel moves focusRide surfaces; 0 = ignore the dial */
-  focusCouple: 1,
-  /** fades the warp background in; 0 = the sky is black behind the lens */
-  skyMix: 0,
-};
-
-// `ior` and `focusRide` are authored on top of the probe's output — look/rig
-// facts the probe cannot see. The cemented pairs (E01/E02, E04/E05, E09/E10)
-// have each interface's two yMm clamped to their mean on paste, so the two
-// surfaces share one plane; curvatures stay exactly as measured.
+// `ior` and `focusRide` are authored on top of the probe's output. The cemented
+// pairs (E01/E02, E04/E05, E09/E10) have each interface's two yMm clamped to
+// their mean, so the two surfaces share one plane.
 /* prettier-ignore */
 export const PRESCRIPTION: PrescriptionEntry[] = [
   { id: "Element_01", front: { c: -0.037001, yMm: 73.208, apertureMm: 18.210 }, rear: { c: -0.047592, yMm: 71.832, apertureMm: 18.210 }, ior: 1.52, focusRide: 0 }, // cemented

@@ -1,32 +1,17 @@
 import * as THREE from "three/webgpu";
 import { isGlassElement } from "../core/parts";
 
-// DEV ONLY — dynamically imported, so none of it reaches a visitor's bundle.
-// Measures the shipped model's optical elements and prints a paste-ready
-// PRESCRIPTION table for optics/prescription.ts. Console-invocable, read-only.
-//
-// METHOD: for each `Element_*` mesh, take its vertices into the GLB ROOT's
-// frame (optical axis +Y, real millimetres) and split them by the direction
-// their OUTWARD NORMAL faces — FRONT above +NORMAL_MIN, REAR below −NORMAL_MIN,
-// rim/chamfer excluded in between. Each surface is fitted with Coope's linear
-// least squares; the fitted centre lies on the axis at yMm + 1/c, so the
-// curvature comes out signed for free. A surface whose Y spread is under
-// FLAT_SPREAD_MM is a plane, c = 0.
-//
-// Normals rather than Y-extreme cap bands because the elements are DOMED and
-// NESTED: on a dome the mesh's Y-minimum is the RIM RING, so an extremes band
-// fits a sphere to a ring. A rear surface faces −Y wherever it lies.
-//
-// The group empties SLIDE with zoom and focus, so the numbers are only the rest
-// prescription when every channel sits at its default. Run it on a freshly
-// loaded bench with no demo selected.
+// Dev only — dynamically imported. Measures the shipped model's optical
+// elements and prints a paste-ready PRESCRIPTION table for
+// optics/prescription.ts. Per `Element_*` mesh: vertices into the GLB root's
+// frame, split front/rear by outward-normal Y (rim excluded), each surface
+// sphere-fitted by Coope's least squares (centre on the axis at yMm + 1/c); a
+// Y spread under FLAT_SPREAD_MM is a plane. Valid only at default channels.
 
 /**
- * Outward-normal Y threshold that separates the optical surfaces from the rim.
- * A vertex counts as FRONT above +NORMAL_MIN and REAR below −NORMAL_MIN;
- * everything between is rim/chamfer and is thrown away. 0.35 ≈ 70° off axis:
- * loose enough to keep the steep skirt of a fast dome, tight enough that a
- * cylindrical edge (normal.y ≈ 0) never contaminates a fit.
+ * Outward-normal Y threshold that separates the optical surfaces from the rim:
+ * front above +NORMAL_MIN, rear below −NORMAL_MIN, everything between thrown
+ * away. 0.35 ≈ 70° off axis, so a cylindrical edge never contaminates a fit.
  */
 const NORMAL_MIN = 0.35;
 /** A surface flatter than this (mm of Y spread) is reported as a plane, c = 0. */
@@ -41,12 +26,12 @@ export interface ProbeSurface {
   yMm: number;
   /** clear semi-diameter (max radial extent of the surface), mm */
   apertureMm: number;
-  /** DIAGNOSTIC, not pasted into the prescription: RMS of ||p − centre| − r|
-   *  over the surface's vertices, mm. Small = the sphere really fits. 0 = flat. */
+  /** Diagnostic, not pasted into the prescription: RMS of ||p − centre| − r|
+   *  over the surface's vertices, mm. Small = the sphere fits. 0 = flat. */
   rmsMm: number;
-  /** DIAGNOSTIC, not pasted into the prescription: how far the fitted centre
+  /** Diagnostic, not pasted into the prescription: how far the fitted centre
    *  sits off the optical axis, mm. Small = the surface is a figure of
-   *  revolution about +Y as the model assumes. 0 = flat. */
+   *  revolution about +Y. 0 = flat. */
   axisOffMm: number;
 }
 
@@ -127,9 +112,8 @@ function probeSurface(pts: number[]): ProbeSurface {
   let yMin = Infinity;
   let yMax = -Infinity;
   let apertureMm = 0;
-  // The VERTEX of the surface is its AXIAL point — the vertex closest to the
-  // optical axis, which on a dome is the pole, wherever it sits in Y. (The
-  // mesh's Y extreme is the rim ring, which is why v1 measured the wrong thing.)
+  // The vertex of the surface is its axial point — the vertex closest to the
+  // optical axis, which on a dome is the pole, wherever it sits in Y.
   let bestR = Infinity;
   let yMm = 0;
   for (let i = 0; i < pts.length; i += 3) {
@@ -153,7 +137,7 @@ function probeSurface(pts: number[]): ProbeSurface {
   if (yMax - yMin < FLAT_SPREAD_MM) return flat;
   const fit = fitSphere(pts);
   if (!fit) return flat;
-  // Centre at yMm + 1/c ⇒ c = 1/(centre.y − yMm). Signed for free.
+  // Centre at yMm + 1/c ⇒ c = 1/(centre.y − yMm), signed.
   const dy = fit.cy - yMm;
   if (Math.abs(dy) < 1e-6) return flat;
   let sum = 0;
@@ -215,7 +199,7 @@ export function probePrescription(root: THREE.Object3D): ProbeEntry[] {
   return out;
 }
 
-/** Expose the probe on the console. DEV-only caller (core/scene.ts). */
+/** Expose the probe on the console. Dev-only caller. */
 export function installPrescriptionProbe(root: THREE.Object3D): void {
   (window as unknown as Record<string, unknown>).__lensPrescriptionProbe =
     () => {

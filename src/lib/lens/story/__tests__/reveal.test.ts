@@ -13,11 +13,8 @@ import {
 import { trailSweepAt } from "../trails";
 import { TRAIL_SWEEP_MAX } from "../../optics/star-trails";
 import { flyBodyFadeAt, flyRevealAt } from "../fly";
-// THE CHANNELS THEMSELVES, not copies. These used to be hand-rebuilt
-// smoothsteps with the note "rebuilt here rather than imported because the
-// driver is DOM-bound" — which was true until the envelopes moved out of
-// startHeroStory's closure into story/envelopes.ts. The laws below are now
-// pinned against the expressions the hero actually writes.
+// THE CHANNELS THEMSELVES, not copies: the laws below are pinned against the
+// expressions the hero actually writes.
 import { assembleAt, explodeAt, shellFadeAt } from "../envelopes";
 
 const tR = rangeOf("trails");
@@ -29,10 +26,8 @@ const rate = (f: (p: number) => number, p: number, h = 1e-6) =>
 
 describe("the chapter's turn", () => {
   it("is exactly still before its foot — the dive's identity", () => {
-    // toBe, not toBeCloseTo: story/constellations.ts's ink is anchored to
-    // UNROTATED star directions, and optics/starfield.ts's rodrigues is the
-    // identity only at a literal 0. Everything upstream of the trails scene
-    // renders bit-for-bit as it did.
+    // toBe, not toBeCloseTo: the constellation ink is anchored to UNROTATED
+    // star directions and the rodrigues turn is the identity only at literal 0.
     for (const p of [
       0,
       0.5,
@@ -46,10 +41,8 @@ describe("the chapter's turn", () => {
   });
 
   it("completes at SKY_OUT_END — the frame the last of the sky is gone — and stays there", () => {
-    // NOT REVEAL_END any more (the fluid-transition correction): the
-    // sky now outlives the reveal, so the turn must cruise as long as any arc
-    // or disc is drawn, and its one rate step lands where nothing that turns
-    // is visible (story/reveal.ts TURN_P1's comment).
+    // The sky outlives the reveal, so the turn cruises as long as any arc or
+    // disc is drawn and its one rate step lands where nothing turning is shown.
     expect(TURN_P1).toBe(SKY_OUT_END);
     expect(TURN_P1).toBeGreaterThan(REVEAL_END);
     expect(turnAt(TURN_P1)).toBeCloseTo(1, 12);
@@ -58,8 +51,8 @@ describe("the chapter's turn", () => {
   });
 
   it("accelerates then CRUISES — it does not decelerate into its edge", () => {
-    // the whole point of the shape — the trails keep spinning through the
-    // transition. A smoothstep would read ~0 at both of the outer samples here.
+    // the trails keep spinning through the transition; a smoothstep would read
+    // ~0 at both of the outer samples here
     const cruise = rate(turnAt, atFrac(tR, 0.8));
     expect(rate(turnAt, atFrac(tR, 0.26))).toBeLessThan(0.2 * cruise); // leaves at rest
     expect(rate(turnAt, atFrac(tR, 0.9))).toBeCloseTo(cruise, 6); // holding
@@ -80,14 +73,8 @@ describe("the chapter's turn", () => {
 
 describe("the reveal's rotation", () => {
   it("turns the lens in the SKY'S OWN DIRECTION, on its own window and rate", () => {
-    // THE CORRECTION (third round on this beat — the lens still did not read
-    // as spinning on its axis). The roll used to be the sky's sweep by identity
-    // — and that identity is exactly what kept it unreadable: the shared
-    // window spent ~83% of the turn under the body cover and the explode gate
-    // killed the rest by rewrap-local 0.22, while the visible reassembly ran
-    // five times longer with no rotation at all.
-    // So the DIRECTION stays the sky's (the arcs hand the figure over with the
-    // turn's sense unbroken), the shape is the same accel-and-cruise, and the
+    // The DIRECTION is the sky's (the arcs hand the figure over with the turn's
+    // sense unbroken) and the shape is the same accel-and-cruise, but the
     // window and amplitude are the roll's own.
     expect(TURN_MAX).toBe(TRAIL_SWEEP_MAX); // the sky's half revolution, still pinned
     for (let i = 0; i <= 40; i++) {
@@ -107,11 +94,9 @@ describe("the reveal's rotation", () => {
   });
 
   it("ends the roll where the REWRAP does — the descent opens on a still model", () => {
-    // THE CARRIER IS THE EXPLODE CHANNEL, which is a saturated 1 across this
-    // whole scene, so the roll's far edge is the TURN's alone: `rollTurnAt`
-    // reaches exactly 1 on the scene boundary and comes off cruise into it
-    // (reveal.ts ROLL_WIND_DOWN), which is what lands the angle AND the rate on
-    // zero without a second factor to do it.
+    // The carrier (explode) is a saturated 1 across this scene, so the roll's
+    // far edge is the TURN's alone: `rollTurnAt` reaches exactly 1 on the scene
+    // boundary and comes off cruise into it, landing angle AND rate on zero.
     expect(ROLL_P1).toBe(rwR.p1);
     expect(ROLL_P1).toBe(rangeOf("capsOn").p0);
     expect(rollTurnAt(ROLL_P1)).toBe(1);
@@ -128,13 +113,10 @@ describe("the reveal's rotation", () => {
   });
 
   it("keeps the WRAP out of the ending entirely — one recipe holds the cloud", () => {
-    // THE OWNER'S LAW for the ending's third round: the parked pose has to be
-    // RIGID, and it cannot be while two saturated recipes sum their deltas onto
-    // one wedge (ops/host.ts folds them, so the sum of two rigid motions is not
-    // one). The wrap therefore runs over the cards chapter and NOWHERE else:
-    // the assemble channel is a literal 0 for every frame of the ending, so the
-    // cloud and its descent are the explode recipe's alone. Paired with the
-    // explode law below, this is "one recipe, held at full spread".
+    // The parked pose must be RIGID, and it cannot be while two saturated
+    // recipes sum their deltas onto one wedge. The wrap therefore runs over the
+    // cards chapter and nowhere else: assemble is a literal 0 through the
+    // ending, so the cloud and its descent are the explode recipe's alone.
     for (let i = 0; i <= 40; i++) {
       expect(assembleAt(atFrac(rwR, i / 40)), `rewrap ${i / 40}`).toBe(0);
       expect(assembleAt(atFrac(capR, i / 40)), `capsOn ${i / 40}`).toBe(0);
@@ -148,44 +130,34 @@ describe("the reveal's rotation", () => {
 
   it("winds up NEGATIVE, is UNMISTAKABLE while visible, and gives it all back", () => {
     // the direction: growing toward 0 runs the same way on screen as the sky's
-    // turn: +0.3 rad of roll advances every tracked piece's screen angle by
-    // +17.2°, and uSkySpin grows the same way.
+    // turn, and uSkySpin grows the same way
     expect(revealRollAt(atFrac(rwR, 0.06), 1)).toBeLessThan(0);
     expect(revealRollAt(atFrac(rwR, 0.06), 1)).toBeGreaterThan(
       revealRollAt(tR.p0, 1),
     );
-    // THE VISIBLE BUDGET — the number the "not spinning" complaint was about.
-    // On the
-    // frame the crossfade opens, the roll still to be given back must be a
-    // clear half revolution's worth (> 90° is the floor; the shipped default
-    // is ~180°), because everything spent before this frame is spent under
-    // the body cover and might as well not exist.
+    // THE VISIBLE BUDGET: on the frame the crossfade opens, the roll still to
+    // be given back must be a clear half revolution's worth, since everything
+    // spent before it is spent under the body cover.
     const atOpen = Math.abs(
       revealRollAt(atFrac(rwR, 0.06), explodeAt(atFrac(rwR, 0.06))),
     );
     expect(atOpen).toBeGreaterThan(Math.PI / 2);
-    // …and it is still visibly alive DEEP into the reassembly (the old gate
-    // was dead here at < 1°, which is what read as "not spinning"). The floor
-    // is 15°: the roll now ends with the wrap inside the rewrap, so the same
-    // angle is given back over a shorter window and more of it is spent by
-    // this frame.
+    // …and still visibly alive DEEP into the reassembly. The 15° floor is what
+    // is left once the same angle is given back over the shorter window.
     const midAssembly = Math.abs(
       revealRollAt(atFrac(rwR, 0.6), explodeAt(atFrac(rwR, 0.6))),
     );
     expect(midAssembly).toBeGreaterThan(Math.PI / 12);
-    // NOT SPENT AT REVEAL_END ANY MORE — deliberately. The camera chain that
-    // releases there leaves at zero rate (story/camera.ts moveS), so a lens
-    // still rolling under it is what makes the ending one gesture; the roll's
-    // own zero is ROLL_P1 (pinned above).
+    // NOT spent at REVEAL_END: the camera chain releases there at zero rate, so
+    // a lens still rolling under it is what makes the ending one gesture. The
+    // roll's own zero is ROLL_P1, pinned above.
     expect(revealRollAt(REVEAL_END, explodeAt(REVEAL_END))).toBeLessThan(0);
   });
 
   it("is EXACTLY 0 wherever the model is seated", () => {
-    // the explode channel is the second factor, so the whole story before the
-    // teardown — the dive included — is bit-for-bit unrolled whatever the turn
-    // is doing. (Math.abs only because −k × 1 × 0 is −0, which is 0 to every
-    // arithmetic that reads it and not to Object.is — story/trails.ts's own
-    // pole case has the same wrinkle.)
+    // the explode channel is the second factor, so everything before the
+    // teardown is bit-for-bit unrolled whatever the turn does. (Math.abs only
+    // because −k × 1 × 0 is −0, which Object.is does not read as 0.)
     for (const p of [0, 0.3, rangeOf("flythrough").p0, 1])
       expect(Math.abs(revealRollAt(p, 0)), `p ${p}`).toBe(0);
     // …and the channel itself is 0 on those frames, so the composed write is
@@ -194,10 +166,9 @@ describe("the reveal's rotation", () => {
   });
 
   it("stays 0 through the CARDS scene, which is not this chapter's", () => {
-    // THE CHAPTER MASK. Below TURN_P0 the `1 − rollTurnAt` factor sits at FULL
-    // amplitude, so without the mask the ungated law would spin the model a
-    // fifth of a revolution through the scene where the shell comes apart. The
-    // mask is what keeps this beat the sky's alone.
+    // THE CHAPTER MASK: below TURN_P0 the `1 − rollTurnAt` factor sits at full
+    // amplitude, so without the mask the model would spin a fifth of a
+    // revolution through the scene where the shell comes apart.
     const cards = rangeOf("cards");
     const lit = atFrac(cards, 0.15);
     expect(assembleAt(lit), "the wrap really is live there").toBeGreaterThan(
@@ -217,13 +188,9 @@ describe("the reveal's rotation", () => {
   });
 
   it("holds the pieces at FULL EXPLOSION for the WHOLE reveal, and past it", () => {
-    // the reveal must START from the fully expanded state, with the shell
-    // pieces sitting on the larger radius. The fall used to
-    // open inside the reveal window itself (rewrap-local 0.12, against
-    // story/fly.ts flyRevealAt's [0.06, 0.16]); with the collapse moved to the
-    // ending (story/envelopes.ts CONSTRUCT), the channel is exactly 1 from the
-    // crossfade to the LAST FRAME OF THE SCENE — a strictly stronger version of
-    // the same law, so it is pinned as one.
+    // The reveal must START fully expanded, with the shell pieces on the larger
+    // radius: the channel is exactly 1 from the crossfade to the scene's last
+    // frame, the collapse living in the ending.
     const open = atFrac(rwR, 0.06);
     expect(flyRevealAt(open)).toBe(0);
     expect(explodeAt(open)).toBe(1);
@@ -238,12 +205,10 @@ describe("the reveal's rotation", () => {
   });
 
   it("is FREE over the trails scene because nothing there is drawn", () => {
-    // WHAT MAKES THE CARRIER SWAPPABLE. The roll rides the SPREAD channel, and
-    // the spread's rise opens earlier and steeper inside the trails scene than
-    // the wrap's used to — up to 146° of difference at trails-local 0.40. That
-    // is invisible only because the model is not on screen there, so the
-    // coupling is stated: a change that lifts the body cover earlier is a
-    // change to the wind-up, and fails here first.
+    // The roll rides the SPREAD channel, whose rise opens early and steeply
+    // inside the trails scene. That is invisible only because the model is not
+    // on screen there, so a change that lifts the body cover earlier is a
+    // change to the wind-up and fails here first.
     for (let i = 0; i <= 40; i++) {
       const p = atFrac(tR, i / 40);
       expect(flyBodyFadeAt(p), `body cover at trails ${i / 40}`).toBe(0);
@@ -253,11 +218,9 @@ describe("the reveal's rotation", () => {
   });
 
   it("advances monotonically and lands at zero RATE — no snap anywhere", () => {
-    // C1 by construction (both factors are C1, and a product of C1 functions
-    // is C1), and there is no seam inside the visible window at all: the gate
-    // (explodeAt) is a saturated 1 across the whole of it. Walked for
-    // monotonicity from the cover's lift to the seat, and pinned at the far
-    // edge, where `rollTurnAt`'s own wind-down lands the rate at 0.
+    // C1 by construction, with no seam inside the visible window: the gate is a
+    // saturated 1 across it. Walked for monotonicity from the cover's lift to
+    // the seat, and pinned at the far edge where the wind-down lands rate 0.
     const roll = (p: number) => revealRollAt(p, explodeAt(p));
     let prev = roll(atFrac(rwR, 0.02));
     for (let i = 1; i <= 900; i++) {

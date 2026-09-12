@@ -34,106 +34,90 @@ import {
 } from "./sky";
 
 // The starfield as geometry — the authored sky of optics/sky.ts drawn as
-// BILLBOARDED QUADS on a sphere around the camera. Two draw calls: the star
+// billboarded quads on a sphere around the camera. Two draw calls: the star
 // discs and the constellation strokes. No background node is needed, so with
 // this mounted `scene.backgroundNode` stays null.
 //
-// NOT POINTS: three's WebGPU backend clamps `THREE.Points` to one pixel and
-// ignores PointsNodeMaterial's `size`. "Point sprite" here means a QUAD
-// billboarded in view space. FLAT-LAW COMPLIANT (only the lens model reads 3D):
-// a star is an analytic round disc of flat ink with a feathered rim, solved in
-// the fragment so it stays round at any zoom.
+// Not points: three's WebGPU backend clamps `THREE.Points` to one pixel and
+// ignores PointsNodeMaterial's `size`, so a "point sprite" here is a quad
+// billboarded in view space, with the round disc solved in the fragment.
 //
-// ── THE GLASS CONTRACT — WHY THESE MATERIALS LOOK ODD ──────────────────────
-// three feeds a transmissive fragment from a COPY of the framebuffer taken when
-// the FIRST transmissive object draws — after the whole opaque pass, before the
-// transparent one. Anything in the TRANSPARENT list is therefore not in that
-// copy and CANNOT BE SEEN THROUGH THE GLASS, and the split is decided by one
-// predicate: `material.transparent === true`, a transmission node, or a
-// backdrop node. Blending is never consulted.
+// The glass contract, which is why these materials look odd: three feeds a
+// transmissive fragment from a copy of the framebuffer taken when the first
+// transmissive object draws — after the opaque pass, before the transparent
+// one. Anything in the transparent list is not in that copy and cannot be seen
+// through the glass, and the split is decided by `material.transparent`, a
+// transmission node, or a backdrop node; blending is never consulted.
 //
-// So the stars ship `transparent = false` (⇒ opaque list ⇒ inside the copy ⇒
-// refracted through the glass) with CustomBlending set to the ordinary
-// src-alpha/one-minus-src-alpha pair: both backends apply a blend state when
-// `blending !== NormalBlending` regardless of `transparent`, and NodeBuilder
-// forces alpha to 1 only when a material is BOTH non-transparent and
-// NormalBlending — so the soft rim survives. `depthWrite = false` completes it:
-// the farthest thing in the scene must never occlude anything, while depth
-// TESTING stays on so the barrel and blades still hide the stars behind them.
+// So the stars ship `transparent = false` (⇒ opaque list ⇒ inside the copy)
+// with CustomBlending set to the ordinary src-alpha/one-minus-src-alpha pair:
+// both backends apply a blend state when `blending !== NormalBlending`, and
+// NodeBuilder forces alpha to 1 only when a material is both non-transparent
+// and NormalBlending, so the soft rim survives. `depthWrite = false` keeps the
+// farthest thing from occluding anything, while depth testing stays on.
 //
-// SPHERE, NOT INFINITY: the quads sit on a sphere of `radius` re-centred on the
+// Sphere, not infinity: the quads sit on a sphere of `radius` re-centred on the
 // camera every frame (`sync`), which is parallax-free without a background
 // node. Nothing else reaches that radius, and it stays inside the far plane.
 
 export const STARFIELD_LOOK = {
   /** world units — the sphere the stars sit on, re-centred on the camera each
-   *  frame. Outside the model (±2 units) and inside the camera's far plane.
-   *  Only the RATIO of this to the angular sizes matters for the look. */
+   *  frame. Outside the model (±2 units) and inside the camera's far plane;
+   *  only the ratio of this to the angular sizes affects the look. */
   radius: 200,
-  /** THE SIZE KNOB: angular radius of a mag-1 star disc, radians. Every disc is
-   *  this times `mag^magRhoGain`, floored by `minRhoRad`, with `uStarSize`
-   *  scaling the lot live. Not the bake's number (SKY_LOOK.starRhoRad) — a disc
-   *  there is drawn in equirect TEXELS and this would be barely one across. */
+  /** angular radius of a mag-1 star disc, radians. Every disc is this times
+   *  `mag^magRhoGain`, floored by `minRhoRad`, with `uStarSize` scaling the lot
+   *  live. */
   starRhoRad: 0.0022,
   /** the exponent in starRhoRad × mag^magRhoGain — how far apart the bright and
-   *  faint ends read. Low, because the depth is carried in INK instead
-   *  (sky.ts BRIGHTNESS_LAW); raising it blooms the authored stars. */
+   *  faint ends read. Low, because the depth is carried in ink instead. */
   magRhoGain: 0.55,
-  /** THE SMALLEST DISC THAT MAY BE DRAWN, radians. A quad under a pixel wide
-   *  does not get fainter as it shrinks — it either lands on a pixel centre at
-   *  nearly full ink or misses it — so a sub-pixel field crawls and twinkles
-   *  the moment the sky turns. Stars under the floor are drawn AT it, dimmed by
-   *  exactly the ratio they gained (buildStarQuads).
-   *
-   *  ITS KNEE IS A CATALOG BOUNDARY: optics/sky.ts cuts its bright/backdrop
-   *  split just above the magnitude where the floor bites, so the pool a stroke
-   *  or a name may hang on is exactly the stars drawn at their honest size.
-   *  __tests__ (f4) pins the two together. */
+  /** The smallest disc that may be drawn, radians. A quad under a pixel wide
+   *  does not get fainter as it shrinks, so a sub-pixel field crawls when the
+   *  sky turns; stars under the floor are drawn at it, dimmed by exactly the
+   *  ratio they gained. Its knee is a catalog boundary — sky.ts cuts its
+   *  bright/backdrop split just above where the floor bites, and a test pins
+   *  the two together. */
   minRhoRad: 0.0018,
-  /** fraction of the disc radius at FULL ink before the rim feathers. 0 = a
+  /** fraction of the disc radius at full ink before the rim feathers. 0 = a
    *  pure cone of alpha; 1 = a hard chip that aliases. */
   discCore: 0.35,
-  /** mount the PRE-DRAWN asterism strokes? No — the story's sky draws its
-   *  strokes instead (optics/constellation-lines.ts). A gate, not a deletion:
-   *  the packing and graph below are the reference the drawn engine was written
-   *  from, and the tests pin them. */
+  /** mount the pre-drawn asterism strokes? No — the story's sky draws its
+   *  strokes instead (optics/constellation-lines.ts). */
   staticLines: false,
-  /** angular HALF-thickness of a static constellation stroke, radians. Held in
-   *  ANGLE, not pixels: both ends sit on the same sphere, so a fixed view-space
+  /** angular half-thickness of a static constellation stroke, radians. Held in
+   *  angle, not pixels: both ends sit on the same sphere, so a fixed view-space
    *  offset is a fixed screen width at any fov. */
   lineWidthRad: 0.0016,
   /** the strokes' equivalent of discCore, across the stroke's width. */
   lineCore: 0.4,
-  /** THE STREAK: angular length of the longest streak (the star opposite the
-   *  throat) at `uStarStreak` = 1; a star's is
-   *  `streakLenRad · (γ/π)^streakFalloffPow` for γ the angle to the throat.
-   *  Kept modest: this stretches ONE quad along the tangent's screen
-   *  projection, a straight line honest only over a short arc. */
+  /** angular length of the longest streak (the star opposite the throat) at
+   *  `uStarStreak` = 1; a star's is `streakLenRad · (γ/π)^streakFalloffPow` for
+   *  γ the angle to the throat. Kept modest: this stretches one quad along the
+   *  tangent's screen projection, honest only over a short arc. */
   streakLenRad: 0.5,
   /** the falloff's exponent. 1 = length linear in the angle to the throat;
    *  bigger keeps the throat calm and pushes the streaming to the periphery. */
   streakFalloffPow: 1.6,
   /** the along-length opacity gradient: alpha ∝ (1 − t)^streakFadePow, t = 0 at
-   *  the star's disc and 1 at the tip. Bright at the star — it is the head. */
+   *  the star's disc and 1 at the tip. */
   streakFadePow: 1.6,
   /** the tail's half-width at the tip, as a fraction of the disc radius (1 at
    *  the head). Under 1, so the disc stays the widest part. */
   streakTipWidth: 0.3,
   /** streaks shorter than this (radians) are dropped to zero — near the throat
-   *  the length collapses under a disc radius and a stub reads as grit. */
+   *  the length collapses under a disc radius. */
   streakMinLenRad: 0.012,
-  /** THE RING — half of the Einstein ring (optics/wormhole-post.ts carries the
-   *  other half). Stars in a BAND OF ANGLES about the exit axis swing their
-   *  streak from throat-ward to TANGENTIAL: little arcs on a ring.
+  /** The ring — half of the Einstein ring (optics/wormhole-post.ts carries the
+   *  other half). Stars in a band of angles about the exit axis swing their
+   *  streak from throat-ward to tangential: little arcs on a ring.
    *
-   *  ringCentreRad — the band's centre, as the angle γ from the exit axis, set
-   *  so the ring is inside the frame at the fov the ramp peaks at.
+   *  ringCentreRad — the band's centre, as the angle γ from the exit axis.
    *  ringHalfWidthRad — half the band's width; the weight is 1 at the centre
-   *  and smoothly 0 at ±this, so there is no edge to see.
+   *  and smoothly 0 at ±this.
    *  ringArcGain — how much longer a band star's mark is than its streak.
-   *  ringWidthGain — and how much THICKER, since a mark that is only lengthened
-   *  comes out a hairline at the rim. Equal to ringArcGain, so a LONG mark
-   *  grows at one rate both ways while a SHORT one is thickened into a 1 : gain
+   *  ringWidthGain — and how much thicker. Equal to ringArcGain, so a long mark
+   *  grows at one rate both ways while a short one is thickened into a 1 : gain
    *  ellipse — `2·halfW + gain·tail` along, `2·gain·halfW` across. */
   ringCentreRad: 0.45,
   ringHalfWidthRad: 0.25,
@@ -148,32 +132,30 @@ export const uStarMix = uniform(0);
  *  a line toward the throat. */
 export const uStarStreak = uniform(0);
 /** The ring ramp, 0..1, boots 0 — how far the band stars have swung from radial
- *  streaks to TANGENTIAL arcs. Which stars are in the band is baked per star
+ *  streaks to tangential arcs. Which stars are in the band is baked per star
  *  (`ringWeight`); this is only how far. */
 export const uStarRing = uniform(0);
 /** Global size multiplier on every star's angular radius — the live half of
- *  STARFIELD_LOOK.starRhoRad, for judging a change from the console. */
+ *  STARFIELD_LOOK.starRhoRad. */
 export const uStarSize = uniform(1);
 /** Global streak-length gain on `streakLenRad`, separate from `uStarStreak` so
- *  the SHAPE can be tuned live while the RAMP stays driven. */
+ *  the shape can be tuned live while the ramp stays driven. */
 export const uStreakGain = uniform(1);
 
-// ── THE SKY TURNS ───────────────────────────────────────────────────────────
-// The `trails` scene rotates the whole field about a pole IN THE SHADER, not on
-// the group transform: story/constellations.ts's type rides the same group and
-// must stay put while the stars go round it. star-trails.ts reads the same two
+// The sky turns: the `trails` scene rotates the whole field about a pole in the
+// shader, not on the group transform, because story/constellations.ts's type
+// rides the same group and must stay put. star-trails.ts reads the same two
 // uniforms.
 
-/** How far BELOW the view axis the pole sits, radians. ZERO is a look
- *  requirement: a rectilinear camera projects a cone about its OWN axis to a
+/** How far below the view axis the pole sits, radians. Zero is a look
+ *  requirement: a rectilinear camera projects a cone about its own axis to a
  *  circle centred on the frame, but a cone about any other axis to a conic
- *  section, so an off-axis pole gives visibly non-circular arcs. Kept as a
- *  number, with the rodrigues path, so the axis stays tunable. */
+ *  section. Kept as a number so the axis stays tunable. */
 const SKY_SPIN_ELEV_RAD = 0;
 
-/** The pole, as a unit direction — unit by construction, and the ONE place it
- *  is defined (the spin, the trail arcs and the driver all read this). At the
- *  shipped elevation it is world +X, the held fly pose's own heading. */
+/** The pole, as a unit direction — the one place it is defined (the spin, the
+ *  trail arcs and the driver all read this). At the shipped elevation it is
+ *  world +X, the held fly pose's own heading. */
 export const SKY_SPIN_AXIS: [number, number, number] = [
   Math.cos(SKY_SPIN_ELEV_RAD),
   -Math.sin(SKY_SPIN_ELEV_RAD),
@@ -187,9 +169,8 @@ export const uSkySpin = uniform(0);
 /** The pole as a uniform, so the shader and `SKY_SPIN_AXIS` cannot drift */
 export const uSkySpinAxis = uniform(new THREE.Vector3(...SKY_SPIN_AXIS));
 
-/** Rodrigues' rotation of a vector about a UNIT axis — the CPU mirror of
- *  `rodriguesTsl` below, and the law the tests hold. BIT-EXACT AT ANGLE 0:
- *  cos 0 is exactly 1 and sin 0 exactly 0, so it collapses to the input
+/** Rodrigues' rotation of a vector about a unit axis — the CPU mirror of
+ *  `rodriguesTsl` below. Bit-exact at angle 0: it collapses to the input
  *  vector with no epsilon in it. */
 export function rodrigues(
   v: [number, number, number],
@@ -223,9 +204,8 @@ export function rodriguesTsl(v: TslNode, axis: TslNode, ang: TslNode): TslNode {
 const spun = (dir: TslNode): TslNode =>
   rodriguesTsl(dir, uSkySpinAxis, uSkySpin);
 
-/** THE THROAT, as a unit direction: the fly-through's exit/view axis, world +X.
- *  Read from optics/sky.ts so the two paths can never disagree about where the
- *  streaks point. */
+/** The throat, as a unit direction: the fly-through's exit/view axis, world +X.
+ *  Read from optics/sky.ts so the two paths agree on where streaks point. */
 const THROAT = dirOf(THROAT_AZ, THROAT_ALT);
 
 /** Guard for every `normalize` in this file, as a plain number so the CPU side
@@ -238,18 +218,17 @@ export function starRho(mag: number): number {
 }
 
 export interface StarStreak {
-  /** unit great-circle TANGENT at the star, pointing toward the throat */
+  /** unit great-circle tangent at the star, pointing toward the throat */
   tan: [number, number, number];
   /** angular length at uStarStreak = 1 (0 = this star never elongates) */
   len: number;
 }
 
 /** The streak basis for one star direction: the unit tangent of the great
- *  circle from the star toward the throat, and how long that streak grows. The
- *  tangent is undefined for a star ON the axis or exactly opposite it, and both
- *  come back as a zero tangent with zero length (a disc that never elongates).
- *  Length grows with the angle to the throat and is capped at γ, so a streak
- *  can never overshoot the throat and come out the far side. */
+ *  circle from the star toward the throat, and how long that streak grows. A
+ *  star on the axis or exactly opposite it has no defined tangent and comes
+ *  back zero. Length grows with the angle to the throat, capped at γ so a
+ *  streak cannot overshoot the throat. */
 export function streakOf(dir: [number, number, number]): StarStreak {
   const none: StarStreak = { tan: [0, 0, 0], len: 0 };
   const [sx, sy, sz] = dir;
@@ -282,7 +261,7 @@ export function throatAngle(dir: [number, number, number]): number {
  *  ±`ringHalfWidthRad` and flat 0 outside, so the band has no edge to see.
  *  Baked into the quad soup rather than solved in the shader, since γ is a
  *  property of the catalog and the fixed exit axis — so re-tuning the angles
- *  means a fresh starfield. */
+ *  needs a fresh starfield. */
 export function ringWeight(gamma: number): number {
   const hw = STARFIELD_LOOK.ringHalfWidthRad;
   const d = Math.abs(gamma - STARFIELD_LOOK.ringCentreRad);
@@ -292,7 +271,7 @@ export function ringWeight(gamma: number): number {
 }
 
 export interface StarQuads {
-  /** the QUAD CORNER, (qx, qy, 0) with qx/qy ∈ {−1, +1} — a corner, not a
+  /** the quad corner, (qx, qy, 0) with qx/qy ∈ {−1, +1} — a corner, not a
    *  place: the vertex graph builds the position from `aDir`. */
   position: Float32Array;
   /** unit direction of this vertex's star */
@@ -322,10 +301,9 @@ const CORNERS: [number, number][] = [
 const QUAD_TRIS = [0, 1, 2, 0, 2, 3];
 
 /** Catalog → one merged quad soup: 4 vertices and 2 triangles per star, every
- *  per-star quantity repeated across its corners. Not instanced — a merged
- *  geometry is one draw call either way without the bookkeeping. THE DISC FLOOR
- *  IS PAID FOR IN INK: a star under STARFIELD_LOOK.minRhoRad is drawn at the
- *  floor and dimmed by exactly the ratio it gained. */
+ *  per-star quantity repeated across its corners. The disc floor is paid for in
+ *  ink: a star under STARFIELD_LOOK.minRhoRad is drawn at the floor and dimmed
+ *  by exactly the ratio it gained. */
 export function buildStarQuads(stars: Star[]): StarQuads {
   const n = stars.length;
   const position = new Float32Array(n * 4 * 3);
@@ -373,7 +351,7 @@ export function buildStarQuads(stars: Star[]): StarQuads {
 
 export interface LineQuads {
   /** (side, end, 0): `side` ±1 across the stroke's width, `end` 0 at the first
-   *  star and 1 at the second — quad PARAMETERS, not a place. */
+   *  star and 1 at the second — quad parameters, not a place. */
   position: Float32Array;
   /** unit direction of the stroke's first star */
   a: Float32Array;
@@ -383,8 +361,7 @@ export interface LineQuads {
 }
 
 /** The constellation strokes: one thin quad per authored line pair. No seam
- *  rule here, unlike the bake, which had to SKIP any stroke whose ends
- *  straddled u = 0/1 — directions have no edge. */
+ *  rule here, unlike the bake — directions have no edge. */
 export function buildLineQuads(
   constellations: typeof SKY.constellations,
   stars: Star[],
@@ -415,22 +392,21 @@ export function buildLineQuads(
   return { position, a, b, index };
 }
 
-/** The material contract every mark in this file wears — see THE GLASS CONTRACT
+/** The material contract every mark in this file wears — see the glass contract
  *  in the header. Changing these lines is what would make the stars disappear
- *  behind the glass, so they live in ONE place. */
+ *  behind the glass, so they live in one place. */
 function markMaterial(): THREE.MeshBasicNodeMaterial {
   const m = new THREE.MeshBasicNodeMaterial();
-  // OPAQUE-LIST MEMBERSHIP (the transmission copy) …
+  // opaque-list membership (the transmission copy) …
   m.transparent = false;
   // … with real alpha blending anyway (the soft rim).
   m.blending = THREE.CustomBlending;
   m.blendSrc = THREE.SrcAlphaFactor;
   m.blendDst = THREE.OneMinusSrcAlphaFactor;
   m.blendEquation = THREE.AddEquation;
-  // THE ALPHA CHANNEL, SPELLED OUT: CustomBlending otherwise defaults the alpha
-  // factors to the colour ones, giving a·a + dst·(1 − a) — a half-lit star rim
-  // would punch a faint hole through this renderer's ALPHA canvas to the page.
-  // `one / one-minus-src-alpha` can only raise the destination's alpha.
+  // The alpha channel, spelled out: CustomBlending otherwise defaults the alpha
+  // factors to the colour ones, giving a·a + dst·(1 − a), which punches a hole
+  // through this renderer's alpha canvas to the page.
   m.blendSrcAlpha = THREE.OneFactor;
   m.blendDstAlpha = THREE.OneMinusSrcAlphaFactor;
   // the farthest thing in the scene: never occlude, always be occluded
@@ -438,7 +414,7 @@ function markMaterial(): THREE.MeshBasicNodeMaterial {
   m.depthTest = true;
   // a billboard's winding flips with the view; culling would erase half of them
   m.side = THREE.DoubleSide;
-  // flat ink, not a lit surface (the 2D/3D design law)
+  // flat ink, not a lit surface
   m.toneMapped = false;
   return m;
 }
@@ -447,8 +423,8 @@ const R = float(STARFIELD_LOOK.radius);
 
 /** Normalize a 2D view-space direction with an exact fallback: `mix` at t = 0
  *  returns the fallback bit-for-bit, and the divide is by `max(len, EPS)` so it
- *  can never produce a NaN to mix WITH. Exported so the constellation strokes
- *  and the trail arcs share one epsilon rather than three copies of it. */
+ *  can never produce a NaN to mix with. Exported so the constellation strokes
+ *  and the trail arcs share one epsilon. */
 export function safeDir2(v: TslNode): TslNode {
   const l = length(v);
   return mix(vec2(1, 0), v.div(max(l, EPS)), step(EPS, l));
@@ -458,9 +434,9 @@ export function safeDir2(v: TslNode): TslNode {
  *  tangent, shaded as an analytic capsule. */
 function starMark(ink: TslNode, opacity: TslNode): THREE.MeshBasicNodeMaterial {
   const m = markMaterial();
-  // THE SPIN, before anything reads the direction. `aTan` is deliberately NOT
-  // spun with it: the streak tangent only matters while `uStarStreak` is above
-  // zero, and that ramp never overlaps a nonzero `uSkySpin`.
+  // The spin, before anything reads the direction. `aTan` is not spun with it:
+  // the streak tangent only matters while `uStarStreak` is above zero, and that
+  // ramp never overlaps a nonzero `uSkySpin`.
   const aDir: TslNode = spun(attribute("aDir", "vec3"));
   const aRho: TslNode = attribute("aRho", "float");
   const aInk: TslNode = attribute("aInk", "float");
@@ -469,7 +445,7 @@ function starMark(ink: TslNode, opacity: TslNode): THREE.MeshBasicNodeMaterial {
   const aLen: TslNode = attribute("aLen", "float");
   const aRing: TslNode = attribute("aRing", "float");
 
-  // The quad's centre and screen axes, all in VIEW space: the object carries no
+  // The quad's centre and screen axes, all in view space: the object carries no
   // rotation (sync only translates it onto the camera), so a world direction
   // through modelViewMatrix is the view-space direction.
   const centre: TslNode = modelViewMatrix.mul(vec4(aDir.mul(R), 1));
@@ -492,10 +468,8 @@ function starMark(ink: TslNode, opacity: TslNode): THREE.MeshBasicNodeMaterial {
     // arcs read as arcs only if they are long enough to curve with the ring
     .mul(mix(float(1), float(STARFIELD_LOOK.ringArcGain), ringAmt));
 
-  // …and the same swing THICKENS it (STARFIELD_LOOK.ringWidthGain): the mark's
-  // half-width across, in disc radii, so the shape below stays one expression.
-  // Exactly 1 wherever ringAmt is 0, so every star outside the band is drawn
-  // from identical numbers.
+  // …and the same swing thickens it (STARFIELD_LOOK.ringWidthGain): the mark's
+  // half-width across, in disc radii. Exactly 1 wherever ringAmt is 0.
   const wide: TslNode = mix(
     float(1),
     float(STARFIELD_LOOK.ringWidthGain),
@@ -518,34 +492,31 @@ function starMark(ink: TslNode, opacity: TslNode): THREE.MeshBasicNodeMaterial {
     ),
   );
 
-  // everything the fragment needs, in DISC-RADIUS units so the shape below is
+  // everything the fragment needs, in disc-radius units so the shape below is
   // one expression whatever the star's size
   const vX: TslNode = varying(sx.div(halfW));
-  // ACROSS is normalized by the mark's OWN half-width (`wide`), not the disc's,
-  // so the capsule is solved once and the thickening lives in the geometry.
-  // A divide by exactly 1 at ringAmt 0.
+  // across is normalized by the mark's own half-width (`wide`), not the disc's,
+  // so the capsule is solved once and the thickening lives in the geometry
   const vY: TslNode = varying(sy.div(halfW).div(wide));
   const vT: TslNode = varying(tail.div(halfW));
   const vInk: TslNode = varying(aInk);
   const vTint: TslNode = varying(aTint);
 
-  // THE SHAPE: a capsule whose spine runs 0 → vT, radius 1, tapering across.
-  // `t` is 0 through the whole HEAD (|vX| ≤ 1) and 1 at the tip, so the disc
+  // The shape: a capsule whose spine runs 0 → vT, radius 1, tapering across.
+  // `t` is 0 through the whole head (|vX| ≤ 1) and 1 at the tip, so the disc
   // never dims or narrows however short the streak is.
   const t: TslNode = clamp(vX.sub(1).div(max(vT, EPS)), 0, 1);
   const w: TslNode = mix(float(1), float(STARFIELD_LOOK.streakTipWidth), t);
   const dx: TslNode = vX.sub(clamp(vX, 0, vT));
   const d: TslNode = length(vec2(dx, vY.div(w)));
 
-  // the star's own colour: the theme's ink, tinted by its temperature. A tint's
-  // channels are all ≤ 1 (optics/sky.ts STAR_TINTS), so this can only take
-  // light out of the ink — never blow a channel past the palette.
+  // the star's own colour: the theme's ink, tinted by its temperature. Tint
+  // channels are all ≤ 1, so this can only take light out of the ink.
   m.colorNode = ink.mul(vTint);
   m.opacityNode = float(1)
     .sub(smoothstep(float(STARFIELD_LOOK.discCore), float(1), d))
     .mul(pow(float(1).sub(t), STARFIELD_LOOK.streakFadePow))
-    // the per-star ink: the catalog's own (optics/sky.ts `inkOf`) times the
-    // floor's compensation
+    // the per-star ink: the catalog's own times the floor's compensation
     .mul(vInk)
     .mul(uStarMix)
     .mul(opacity);
@@ -553,7 +524,7 @@ function starMark(ink: TslNode, opacity: TslNode): THREE.MeshBasicNodeMaterial {
 }
 
 /** The constellation strokes' graph: a screen-consistent ribbon between two
- *  star directions. Both ends sit on the same sphere, so ONE view-space offset
+ *  star directions. Both ends sit on the same sphere, so one view-space offset
  *  is a constant screen width along the whole stroke. */
 function lineMark(
   ink: TslNode,
@@ -589,15 +560,14 @@ function lineMark(
 export interface Starfield {
   /** add this to the scene; it is re-centred on the camera by `sync` */
   object: THREE.Object3D;
-  /** the flat ground behind the stars — the palette's backdrop, as ONE live
+  /** the flat ground behind the stars — the palette's backdrop, as one live
    *  Color object so `scene.background = starfield.backdrop` survives a theme
    *  flip without being re-assigned */
   backdrop: THREE.Color;
-  /** The colour-matched cut (story/fly.ts's exit fade): blend the live backdrop
-   *  `f` of the way from its palette value toward `rgb(r, g, b)` — 0-255 sRGB
-   *  ints, a story scene's stage tint as the page's CSS writes it. `f = 0`
-   *  restores the palette value exactly, and the dim is remembered, so a theme
-   *  flip re-derives it over the new palette side rather than dropping it. */
+  /** The colour-matched cut: blend the live backdrop `f` of the way from its
+   *  palette value toward `rgb(r, g, b)` (0-255 sRGB ints). `f = 0` restores
+   *  the palette value exactly, and the dim is remembered, so a theme flip
+   *  re-derives it over the new palette side. */
   setBackdropDim(f: number, r: number, g: number, b: number): void;
   /** park the sphere on the camera (call once per rendered frame) */
   sync(camera: THREE.Camera): void;
@@ -621,9 +591,8 @@ export function createStarfield(
   const uLineOpacity = uniform(palette().lineOpacity);
   const uLineWidth = uniform(STARFIELD_LOOK.lineWidthRad);
   const backdrop = new THREE.Color(palette().backdrop);
-  /** the live backdrop dim, as fraction + target. Held as STATE: both a theme
-   *  flip and a new dim re-derive from the palette side, so they never
-   *  compound. */
+  /** the live backdrop dim, as fraction + target. Held as state so a theme flip
+   *  and a new dim both re-derive from the palette side and never compound. */
   let dimF = 0;
   const dimTarget = new THREE.Color();
   const applyBackdrop = () => {
@@ -661,9 +630,8 @@ export function createStarfield(
 
   const group = new THREE.Group();
   group.name = "Lens_Starfield";
-  // the strokes go in FIRST when they go in at all
-  // (STARFIELD_LOOK.staticLines). Built either way, so the gate stays a
-  // one-line flip; the material never reaches the GPU unless it is mounted.
+  // the strokes go in first when they go in at all
+  // (STARFIELD_LOOK.staticLines); built either way, but never mounted
   const draws = STARFIELD_LOOK.staticLines
     ? ([
         [lineGeo, lineMat],
@@ -672,7 +640,7 @@ export function createStarfield(
     : ([[starGeo, starMat]] as const);
   for (const [geo, mat] of draws) {
     const mesh = new THREE.Mesh(geo, mat);
-    // `position` holds quad CORNERS, so three's bounding sphere is a small ball
+    // `position` holds quad corners, so three's bounding sphere is a small ball
     // at the origin and means nothing — the real extent is the whole sphere
     mesh.frustumCulled = false;
     // ahead of the body in the opaque list; depth testing decides what covers
@@ -710,8 +678,8 @@ export function createStarfield(
         for (const { u, boot } of Object.values(KNOBS)) u.value = boot;
         invalidate();
       },
-      /** the SHAPE knobs are baked into the graph and the geometry, so tuning
-       *  them means a fresh starfield: mutate, then re-select the demo. */
+      /** the shape knobs are baked into the graph and the geometry, so tuning
+       *  them needs a fresh starfield: mutate, then re-select the demo. */
       look: STARFIELD_LOOK,
     };
     for (const name of Object.keys(KNOBS))
@@ -728,7 +696,7 @@ export function createStarfield(
     setBackdropDim(f, r, g, b) {
       dimF = Math.min(1, Math.max(0, f));
       // sRGB, like the palette's own setHex: these ints are the CSS colour the
-      // stage behind the canvas is painted with, and the two must READ the same
+      // stage behind the canvas is painted with, and the two must read the same
       dimTarget.setRGB(r / 255, g / 255, b / 255, THREE.SRGBColorSpace);
       applyBackdrop();
       invalidate();

@@ -22,10 +22,8 @@ import {
 
 // The drawn starfield's PURE half: the catalog → quad packing, and the
 // great-circle streak basis the vertex graph stretches each quad along. The
-// shader itself needs a GPU and is verified in the demo.
-//
-// Nothing here touches optics/sky.ts's bake — that path still ships behind
-// the retired sky trace and keeps its own tests.
+// shader itself needs a GPU and is verified in the demo. optics/sky.ts's bake
+// keeps its own tests.
 
 const THROAT = dirOf(THROAT_AZ, THROAT_ALT);
 const dot = (a: number[], b: number[]) =>
@@ -173,28 +171,24 @@ describe("starfield", () => {
 
   it("(f2) draws the generated field clearly UNDER the authored stars", () => {
     // The deep-field contract: the field is texture, the authored table is
-    // shape. If the exponent ever flattens far enough to close that gap the
-    // finale goes back to reading as one undifferentiated sheet of dots.
+    // shape; a flattened exponent reads as one sheet of dots.
     const authored = SKY.stars.slice(0, AUTHORED_COUNT);
     const bg = SKY.stars.slice(AUTHORED_COUNT);
     const median = (stars: typeof bg) =>
       stars.map((s) => starRho(s.mag)).sort((p, q) => p - q)[
         Math.floor(stars.length / 2)
       ];
-    // 0.61× today: the field's median disc against the authored table's.
+    // the field's median disc against the authored table's
     expect(median(bg)).toBeLessThan(median(authored) * 0.7);
-    // The hierarchy is DELIBERATELY COMPRESSED in size — the authored stars
-    // read too big beside the field — so what carries the depth is
-    // INK, not radius: the catalog's exponential law and the floor's
-    // compensation. Both ends of that are pinned in (f3).
+    // The size hierarchy is deliberately compressed; INK carries the depth
+    // instead, pinned in (f3).
     expect(starRho(3.1) / starRho(BRIGHTNESS_LAW.magDark)).toBeGreaterThan(3);
   });
 
   it("(f4) cuts the catalog's bright pool exactly at the disc floor's knee", () => {
-    // optics/sky.ts writes BRIGHTNESS_LAW.brightMag as a NUMBER (it cannot
-    // import this file — this file imports it), so this is the tripwire that
-    // keeps the two in step: every star in the stroke/name pool is drawn at its
-    // own honest size, and the first magnitude below the cut is not.
+    // optics/sky.ts writes BRIGHTNESS_LAW.brightMag as a literal number, so
+    // this keeps the two in step: every star in the stroke/name pool is drawn
+    // at its honest size, and the first magnitude below the cut is not.
     expect(starRho(BRIGHTNESS_LAW.brightMag)).toBeGreaterThanOrEqual(
       STARFIELD_LOOK.minRhoRad,
     );
@@ -233,10 +227,9 @@ describe("starfield", () => {
       expect(inkOf(s), `star ${s} ink`).toBeGreaterThan(0);
       expect(inkOf(s), `star ${s} ink`).toBeLessThanOrEqual(1);
     }
-    // THE FIELD, AS DRAWN. The bright prefix (authored + pool) averages 0.47 of
-    // full ink and the backdrop tail 0.18 — and the ONLY thing that can go under
-    // BRIGHTNESS_LAW.inkMin is a floored star paying its width back, which is
-    // where the drawn field's 0.10 bottom comes from.
+    // THE FIELD, AS DRAWN: the backdrop tail is much dimmer than the bright
+    // prefix, and only a floored star paying its width back goes under
+    // BRIGHTNESS_LAW.inkMin.
     const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
     const inks = (from: number, to: number) =>
       SKY.stars.slice(from, to).map((_, i) => inkOf(from + i));
@@ -284,11 +277,9 @@ describe("starfield", () => {
     }
   });
 
-  // THE LAW THE WHOLE FEATURE HANGS ON. three r185 feeds a transmissive
-  // fragment from a copy of the framebuffer taken after the OPAQUE pass and
-  // before the transparent one, so a mark in the transparent list cannot be
-  // seen through the thirteen glass elements the dive flies down. The split is
-  // decided by ONE predicate, transcribed here from three r185
+  // three feeds a transmissive fragment from a framebuffer copy taken after the
+  // OPAQUE pass, so a mark in the transparent list cannot be seen through the
+  // glass elements. The split predicate is transcribed here from three r185
   // src/renderers/common/RenderList.js:312-322.
   it("(i) keeps every mark in the OPAQUE list, blended, and never occluding", () => {
     const field = createStarfield(false);
@@ -311,9 +302,9 @@ describe("starfield", () => {
         m.transmissionNode?.isNode === true ||
         m.backdropNode?.isNode === true;
       expect(goesTransparent, "must land in the opaque list").toBe(false);
-      // …and still blend, or the feathered rim would be a hard chip. Both
-      // backends apply a blend state whenever blending !== NormalBlending,
-      // whatever `transparent` says (WebGPUPipelineUtils.js:104).
+      // …and still blend, or the feathered rim is a hard chip: both backends
+      // apply a blend state whenever blending !== NormalBlending, whatever
+      // `transparent` says (WebGPUPipelineUtils.js:104).
       expect(m.blending).toBe(THREE.CustomBlending);
       expect(m.blendSrc).toBe(THREE.SrcAlphaFactor);
       expect(m.blendDst).toBe(THREE.OneMinusSrcAlphaFactor);

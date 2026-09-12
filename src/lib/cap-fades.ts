@@ -1,26 +1,11 @@
-// Hero caption fades — the fallback path.
-//
-// Captions are placed by LAYOUT (a band per scene + position: sticky, see
-// story/story.ts CAPTION_BANDS) and faded by CSS scroll-driven animations
-// (LensStory.astro). Browsers without `animation-timeline: view()` get this
-// instead: an IntersectionObserver that toggles `.is-in` on the ONE band whose
-// scene the reader is in, with an opacity transition doing the rest. Same shape
-// as the `[data-reveal]` reveal on the homepage's below-hero sections, with two
-// differences: this one toggles BOTH ways, because a caption that has scrolled
-// past has to fade out again, and it arbitrates (see applyCapFades) because
-// bands overlap.
-//
-// It observes the BANDS, never the captions. A caption is a sticky box: once its
-// band's bottom edge catches up it rides that edge, which the scroll-space
-// geometry puts a whole viewport past the scene's end — so watching the caption
-// keeps it lit through most of the NEXT scene. The band's own box is the scene.
-//
-// Standalone ON PURPOSE: it imports nothing from lib/lens and ships in its own
-// <script> block, so a missing or throwing 3D chunk cannot take the captions
-// with it. It is also purely additive — the CSS only hides captions once this
-// module has flagged itself present (the .cap-io class), so no-JS keeps them.
-// Two classes, not one: .cap-io hides, .cap-io-armed turns on the transition
-// one frame later, so the first state applied on load never animates.
+// Hero caption fades, fallback path: browsers without `animation-timeline:
+// view()` get an IntersectionObserver that lights `.is-in` on the ONE band the
+// reader is in (bands overlap, so applyCapFades arbitrates). It observes the
+// BANDS, never the captions — a sticky caption rides its band's bottom edge a
+// viewport past the scene's end. Standalone on purpose: imports nothing from
+// lib/lens and ships in its own <script>, so a failed 3D chunk cannot take the
+// captions with it. Additive: CSS hides captions only under `.cap-io`, and
+// `.cap-io-armed` enables the transition one frame later so load never animates.
 
 /** Markup contract: LensSceneContent and LensStory wrap every caption in one of
  *  these — its scene's slice of the scroll track — and the CSS lights the

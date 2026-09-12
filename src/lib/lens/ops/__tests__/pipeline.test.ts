@@ -9,10 +9,7 @@ import {
   group,
   radiusOf,
   runPipeline,
-  selAxialBand,
-  selClass,
   selFront,
-  selPick,
   selRank,
   selSector,
   straight,
@@ -62,7 +59,7 @@ function makeCtx(over: Partial<OpCtx<number>> = {}): OpCtx<number> {
     off: 0,
     rung: 0,
     axi: 0,
-    layerN: 5, // one wedge of a 5-cut layer
+    depth: 0, // a thin sheet
     adopted: 0, // frames its own sector; rides no host shell
     flight: 0,
     stick: 1,
@@ -151,24 +148,14 @@ describe("selectors — exact-1 bypasses and exact matches", () => {
     return item.weight(f, ctx);
   }
 
-  it("(d) selRank(0,1), selSector(width 6.3) and selPick(1) are exactly 1", () => {
+  it("(d) selRank(0,1) and selSector(width 6.3) are exactly 1", () => {
     expect(weightOf(selRank(0, 1), F0)).toBe(1);
     expect(weightOf(selSector(0, 6.3), F0)).toBe(1);
-    expect(weightOf(selPick(1, 7), F0)).toBe(1);
   });
 
-  it("(d′) selClass matches exactly one part class", () => {
-    const sel = selClass<number>(PART_CLASS.iris);
-    expect(weightOf(sel, F0)).toBe(0); // ctx.partClass defaults to structure
-    const irisCtx = makeCtx({ partClass: PART_CLASS.iris });
-    if (sel.kind !== "selector") throw new Error("not a selector");
-    expect(sel.weight(F0, irisCtx)).toBe(1);
-  });
-
-  // The sector width is a shipped /lens slider over 0..TAU, so the mask has to
-  // keep its orientation over the WHOLE range: cos turns around at π, and an
-  // uncapped outer angle (half-width + feather) crossed the inner one for width
-  // > 2π − feather, inverting the mask inside the bypass's blind spot.
+  // The sector width is a shipped slider over 0..TAU, so the mask must keep its
+  // orientation over the whole range: cos turns around at π, and an uncapped
+  // outer angle (half-width + feather) inverts the mask near 2π.
   const at = (theta: number): PieceFrame<number> => ({
     ...F0,
     ...atPolar(theta, F0P.radius),
@@ -196,12 +183,6 @@ describe("selectors — exact-1 bypasses and exact matches", () => {
     expect(weightOf(sel, at(CENTRE + 1.4))).toBe(1);
     expect(weightOf(sel, at(CENTRE + 1.65))).toBeCloseTo(0.823338336776, 12);
     expect(weightOf(sel, at(CENTRE - 1.8))).toBeCloseTo(0.13562122039, 12);
-  });
-
-  it("(d″) selAxialBand bands on the frame axial coordinate", () => {
-    const sel = selAxialBand(0, 1, 0.1);
-    expect(weightOf(sel, { ...F0, axial: 0.5 })).toBe(1);
-    expect(weightOf(sel, { ...F0, axial: 2 })).toBe(0);
   });
 });
 

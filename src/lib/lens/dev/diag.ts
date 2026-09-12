@@ -1,9 +1,8 @@
 import * as THREE from "three/webgpu";
 
-// DEV ONLY — dynamically imported, so none of it reaches a visitor's bundle.
-// `?diag`: a phone-readable status card printing the numbers that decide
-// whether the dive's render path can run, for a device that cannot be attached
-// to a console. core/scene.ts owns the state object; this module only paints.
+// Dev only — dynamically imported. `?diag`: a phone-readable status card
+// printing the numbers that decide whether the dive's render path can run.
+// core/scene.ts owns the state object; this module only paints.
 
 /** The fields the scene keeps live; everything else is read off the renderer. */
 export interface LensDiag {

@@ -8,13 +8,13 @@ import {
   anchor,
   approach,
   arc,
+  coil,
   during,
   group,
   rot,
   runPipeline,
   selFront,
   spread,
-  twist,
   validatePipeline,
   PART_CLASS,
   type OpCtx,
@@ -24,15 +24,11 @@ import {
   type VertexState,
 } from "../ops";
 
-// PROGRESS SCOPING (`during`) on the NUM backend — the executable spec for the
-// middle tier of the three: the driver maps scrub → channel, `during` maps
-// channel → channel per SUBTREE, and gate.ts maps channel → (flight, stick) per
-// piece. Everything below is about the tier-2 map: that it is exact at both
-// ends, that it composes, that it scopes, and that it stacks with the weight
-// fold in the one order the two laws allow.
-//
-// The gate here is the REAL one (fixture-gate.ts): a scope's pair always comes
-// out of `gate()` at a remapped channel, never out of a fixture's imagination.
+// PROGRESS SCOPING (`during`) on the NUM backend, the middle of three maps: the
+// driver maps scrub → channel, `during` maps channel → channel per SUBTREE, and
+// gate.ts maps channel → (flight, stick) per piece. Everything below is the
+// tier-2 map: exact at both ends, composing, scoping, stacking with the weight
+// fold. The gate is the REAL one (fixture-gate.ts), run at a remapped channel.
 
 const T0 = 0.3;
 const R = 10;
@@ -74,7 +70,7 @@ function ctxAt(
     off: 0,
     rung: 1.5,
     axi: 0,
-    layerN: 5,
+    depth: 0,
     adopted: 0,
     flight: g.flight,
     stick: g.stick,
@@ -135,9 +131,9 @@ function run(
   return sink;
 }
 
-// A subtree with something to say: a rigid throw, an axial slide and a torsion,
+// A subtree with something to say: a rigid throw, an axial slide and a coil,
 // all of them functions of the scope's flight.
-const SUB = [spread<number>(0.4), approach<number>(5, 2), twist<number>(0.6)];
+const SUB = [spread<number>(0.4), approach<number>(5, 2), coil<number>(0.6)];
 
 const RANKS = [0, 0.5, 1];
 const PHASES = [0, 0.37, 1];
@@ -187,8 +183,7 @@ describe("during — the window edges are exact", () => {
       expect(inner.ctx.stick).toBe(1);
     }
 
-    // Past `to` the scope is HELD complete — the whole point of remapping
-    // pre-gate rather than fading the pair — so its subtree's output does not
+    // Past `to` the scope is HELD complete, so its subtree's output does not
     // move by a bit while the recipe's own channel keeps rising.
     const out = [0.6, 0.8, 1].map(
       (c) => runPipeline([during(P, SUB)], V0, F0, ctxAt(c)).v,
@@ -332,9 +327,9 @@ describe("during — nesting is function composition", () => {
 // ── (h) selectors read the phased ctx ───────────────────────────────────────
 
 describe("during — selectors inside a scope read the phased ctx", () => {
-  // assemble's pin idiom: a selector that fades out as the piece TAPES DOWN. It
-  // has to read the SCOPED clock, or a pinned group would release on the
-  // recipe's schedule instead of its own.
+  // assemble's pin idiom: a selector that fades as the piece tapes down. It
+  // must read the SCOPED clock, or a pinned group releases on the recipe's
+  // schedule instead of its own.
   const PIN_END = 0.4;
   const pin = selFront<number>((c) => 1 - NUM.smoothstep(0, PIN_END, c.stick));
 
@@ -356,10 +351,9 @@ describe("during — selectors inside a scope read the phased ctx", () => {
 // ── (i) a bend chain across a scope boundary ────────────────────────────────
 
 describe("during — a chain op inside a scope", () => {
-  // The composability question the other cases cannot ask: a chain carries
-  // STATE (the material cursor and the aim) from op to op, while `during`
-  // scopes the CTX. If a scope could lose or reset the cursor, a staged crease
-  // would tear its sheet in half at the boundary.
+  // A chain carries STATE (the material cursor and the aim) from op to op while
+  // `during` scopes the CTX; a scope that lost the cursor would tear the sheet
+  // in half at the boundary.
   const WINDOW = 0.5;
   const LATE: Progress<number> = { from: WINDOW };
   const LEAD = 1; // material-mm before the crease
@@ -377,9 +371,8 @@ describe("during — a chain op inside a scope", () => {
     };
   }
 
-  // A seated chain with ONE scoped arc in the middle. The crease's CURVATURE
-  // reads the gate; its MATERIAL does not — which is the whole point: progress
-  // narrows when a thing happens, never how much of the sheet it happens to.
+  // A seated chain with ONE scoped arc in the middle: the crease's CURVATURE
+  // reads the gate, its MATERIAL does not.
   const chain = (sink: VertexState<number>[]): OpItem<number>[] => [
     rot<number>((c) => c.halfSpan),
     anchor<number>(),
@@ -411,9 +404,8 @@ describe("during — a chain op inside a scope", () => {
     expect(early.atCrease.rem).toBe(idle.atCrease.rem);
     expect(played.atCrease.rem).toBe(idle.atCrease.rem);
 
-    // Below the window the whole chain is all-q = 1 off the seated anchor, so
-    // it is the seated barrel — to the bit against the channel-0 run, and to
-    // the bend identity's own 1e-9 against the seat itself.
+    // Below the window the chain is all-q = 1 off the seated anchor: the seated
+    // barrel, to the bit against the channel-0 run and to 1e-9 against the seat.
     expect(early.out.x).toBe(idle.out.x);
     expect(early.out.z).toBe(idle.out.z);
     expect(early.out.rot).toBe(idle.out.rot);
@@ -458,7 +450,7 @@ describe("validatePipeline — the Progress invariants", () => {
     }
   });
 
-  it("(j′) a non-literal (knob-bound) field is left to KNOB_LIMITS", () => {
+  it("(j′) a non-literal (knob-bound) field is left to the knob's range", () => {
     const spy = vi.spyOn(console, "warn").mockImplementation(() => {});
     // A backend scalar stands in for a uniform: nothing static can read it, so
     // the pass must stay quiet rather than guess.
@@ -483,12 +475,9 @@ describe("which shipped recipes use during", () => {
     );
 
   it("(l) three do — `peel`, `rose` and `explode`, whose staggers ARE windows", () => {
-    // `assemble` is the only inert one, so its goldens cannot move through this
-    // machinery at all. `peel` is the exception on purpose (ops/recipes states
-    // why: both of the gate's stagger inputs are degenerate on the peel's
-    // cast), `rose` is the same idiom keyed on whorl = rank01^ROSE_WHORL_EXP,
-    // and `explode` keys three WAVES on quantized rank so the ending is built
-    // core-first. Each window is the thing to keep honest: (l′) and (l″) below.
+    // `peel` windows because both of the gate's stagger inputs are degenerate
+    // on its cast, `rose` keys the same idiom on whorl = rank01^ROSE_WHORL_EXP,
+    // and `explode` keys three waves on quantized rank. `assemble` is inert.
     const DURING_RECIPES = ["peel", "rose", "explode"];
     for (const recipe of Object.values(RECIPES))
       expect(
@@ -498,10 +487,8 @@ describe("which shipped recipes use during", () => {
   });
 
   it("(l′) peel's window is legal at every meridian and every stagger", () => {
-    // The invariants a knob-bound window puts beyond validatePipeline's reach
-    // (it can only read literals): from ≥ 0 and to > from for every piece, at
-    // both ends of KNOB_LIMITS' [0, 0.85] — and to ≤ 1, so the last piece is
-    // fully played by channel 1 rather than caught mid-peel forever.
+    // validatePipeline reads literals only, so the knob-bound window is checked
+    // here: from ≥ 0, to > from and to ≤ 1 at both ends of the knob's range.
     const recipe = RECIPES.peel;
     const spy = vi.spyOn(console, "warn").mockImplementation(() => {});
     for (const stagger of [0, 0.45, 0.72, 0.85])
@@ -527,16 +514,13 @@ describe("which shipped recipes use during", () => {
   });
 
   it("(l″) rose's window is legal at every rank and every stagger", () => {
-    // The same invariants as (l′), for the rank-keyed window: from ≥ 0 and
-    // to > from at every whorl depth, at both ends of KNOB_LIMITS' [0, 0.85]
-    // — and to ≤ 1, so the innermost whorl finishes its bloom by channel 1
-    // rather than hanging half-open forever.
+    // The same invariants as (l′), for the rank-keyed window, at every whorl
+    // depth and both ends of the knob's range.
     const recipe = RECIPES.rose;
     const spy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    // the rank grid samples the CAST's real ranks: the visible petals live at
-    // rank 0.875…1 (see ROSE_WHORL_EXP in ops/recipes.ts), so a grid spread
-    // over [0,1] would collapse under the whorl exponent and probe one window
-    // three times — 0 and the petal band are the corners that exist.
+    // the grid samples the CAST's real ranks: the visible petals live at
+    // rank 0.875…1, so a grid spread over [0,1] would collapse under the whorl
+    // exponent and probe one window three times
     for (const stagger of [0, 0.45, 0.6, 0.85])
       for (const rank01 of [0, 0.88, 0.92, 0.96, 1]) {
         const items = recipe.build(

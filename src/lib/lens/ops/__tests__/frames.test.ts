@@ -174,7 +174,7 @@ const LANES = [
   "axi",
   "yMin",
   "yMax",
-  "layerN",
+  "depth",
 ] as const satisfies readonly (keyof Frame)[];
 
 /** Every distinct value of a per-vertex frame field on one mesh (one value per
@@ -221,10 +221,7 @@ describe("deriveFrames — per-mesh measurement", () => {
     root.add(shell("Shell_Inner", 20, 5));
     deriveFrames(root);
     // Three attributes, no more: WebGPU allows only 8 vertex buffers per
-    // pipeline, which is why the twelve frame fields are packed rather than
-    // named. `_opY` is a vec4 — (yMin, yMax, layerN, adopted) — so the layer
-    // population and the adoption flag ride along without costing a fourth
-    // buffer.
+    // pipeline, so the twelve frame fields are packed rather than named.
     expect(FRAME_ATTRS.map((a) => a.name)).toEqual(["_opA", "_opB", "_opY"]);
     expect(FRAME_ATTRS.map((a) => a.size)).toEqual([4, 4, 4]);
     for (const m of meshesOf(root)) {
@@ -241,12 +238,10 @@ describe("deriveFrames — per-mesh measurement", () => {
   });
 
   it("frames a merged multi-island mesh as ONE piece — the MESH is the unit", () => {
-    // Three wedges MERGED into a single buffer. The classic stamped its
-    // attributes per MESH and so does this pass: the islands do NOT get frames
-    // of their own. (Framing islands separately is what broke the real
-    // PCB/shim/tube meshes — see the case below.) Three wedges 120° apart
-    // average to an ON-AXIS centroid and cover the whole turn, so the single
-    // frame they share is the axisymmetric one.
+    // Three wedges MERGED into a single buffer: attributes are stamped per
+    // MESH, so the islands get no frames of their own. Three wedges 120° apart
+    // average to an on-axis centroid and cover the whole turn, so the frame
+    // they share is the axisymmetric one.
     const mesh = new THREE.Mesh(
       merge(
         ...[0, 1, 2].map((w) =>
@@ -268,11 +263,10 @@ describe("deriveFrames — per-mesh measurement", () => {
   });
 
   it("measures a PCB-like mesh (board sliver + scattered components) from the WHOLE mesh", () => {
-    // The failure this pins: `PCB_Components_Seg3` is ONE mesh holding a board
-    // sliver and dozens of soldered components. Per-island framing measured a
-    // ~0.05 rad frame per solder blob, and the piece — which the classic stamped
-    // as one sheet spanning the whole board — dropped out of the wrap. The mesh
-    // must measure ONE frame, from its whole angular/axial extent.
+    // A real PCB mesh holds a board sliver and dozens of soldered components;
+    // per-island framing would measure a ~0.05 rad frame per solder blob and
+    // drop the piece out of the wrap. The MESH measures one frame, from its
+    // whole angular/axial extent.
     const board = wedgeGeometry(15, 0.5, 0.6, -4, 4);
     const parts = [0.3, 0.4, 0.5, 0.6, 0.7].map((t) =>
       wedgeGeometry(16, t, 0.05, -0.5, 0.5, 2),
@@ -354,12 +348,6 @@ describe("deriveFrames — ranks and layer phases", () => {
     expect(layerCount.get(2000)).toBe(5);
     expect(layerCount.get(2060)).toBe(3);
     expect(layerCount.get(4000)).toBe(7);
-
-    // …and each piece carries its OWN layer's population, which is what the
-    // assemble sheet selector reads to tell a cut shell from a lone body.
-    expect(constFrame(named(root, "Shell_Inner_Seg0"), "layerN")).toBe(5);
-    expect(constFrame(named(root, "Shell_Skin_Seg0"), "layerN")).toBe(3);
-    expect(constFrame(named(root, "Shell_Outer_Seg0"), "layerN")).toBe(7);
   });
 
   it("steps layer phase by 1/count within a layer, ordered by t0", () => {
@@ -419,9 +407,9 @@ describe("deriveFrames — feature adoption", () => {
   });
 
   it("adopts the host wedge's WHOLE frame — span, yExt and phase, not just R/t0", () => {
-    // The failure this guards: a screw keeping its own ~0.08 rad / 2mm extent
-    // normalizes over that extent and bends off the wedge it is bolted to (the
-    // classic's "phantom card" inverted). It must ride the wedge's frame.
+    // A screw keeping its own ~0.08 rad / 2mm extent would normalize over that
+    // extent and bend off the wedge it is bolted to; it must ride the wedge's
+    // frame.
     const root = new THREE.Object3D();
     root.add(shell("Mount_Bayonet", 30, 5, -4, 0));
     const screws = new THREE.Object3D();
@@ -458,31 +446,22 @@ describe("deriveFrames — feature adoption", () => {
     // adopted features ride a wedge; they are not pieces OF the layer
     expect([...layerCount.values()].reduce((a, b) => a + b, 0)).toBe(5);
     expect(layerCount.get(rankKeyOf(constFrame(host, "R")))).toBe(5);
-    // …but they REPORT the host layer's population, so bolted hardware counts
-    // as segmented exactly like the shell it is bolted to and wraps with it.
-    expect(constFrame(screw, "layerN")).toBe(5);
-    expect(constFrame(host, "layerN")).toBe(5);
+    // …and the DEPTH is the host's too: a 2mm box standing 3mm off a 30mm
+    // shell would measure ~0.13 of its own, and bend or not on its own terms.
+    expect(constFrame(screw, "depth")).toBe(constFrame(host, "depth"));
+    expect(constFrame(screw, "depth")).toBeLessThan(0.01);
   });
 
   it("a DECAL adopts the wedge it is printed on, host DERIVED from the segmentation", () => {
-    // The failure this pins: a printed marking derived its own frame (own
-    // median R, own t0, own rank/layer), so every frame-driven op — spread's
-    // radial direction and magnitude, the orbit, the wrap — moved it
-    // DIFFERENTLY from the wedge it is printed on, and the zoom numerals
-    // floated off the ring on explode. A decal adopts exactly like a
-    // SHELL_ADOPT feature; only the HOST is derived rather than authored: the
-    // nearest ancestor that owns `<name>_Seg<n>` wedge NODES.
-    //
-    // The host is found by the WALK — `Ring_Zoom` is two levels up from nothing
-    // and the decal is its direct child — and the wedges are addressed as
-    // NODES, which is what lets a decal snap to the whole physical wedge.
+    // A printed marking with its own frame moves DIFFERENTLY from the wedge it
+    // is printed on and floats off the ring. A decal adopts like a SHELL_ADOPT
+    // feature, except the HOST is derived: the nearest ancestor owning
+    // `<name>_Seg<n>` wedge NODES, which is what lets it snap to a whole wedge.
     const root = new THREE.Object3D();
     const host = new THREE.Object3D();
     host.name = "Ring_Zoom";
-    // Each wedge sits at its OWN radius (30, 30.5, 31 …). The sector spread
-    // puts the whole-host POOL median a full millimetre away from the wedge the
-    // decal actually snaps to, so an adopter taking the pool median cannot pass
-    // for one taking its host's.
+    // Each wedge sits at its OWN radius (30, 30.5, 31 …), so an adopter taking
+    // the whole-host pool median cannot pass for one taking its host's.
     for (let i = 0; i < 5; i++) {
       const seg = new THREE.Mesh(
         wedgeGeometry(30 + i * 0.5, (TAU * i) / 5, TAU / 5, -4, 4),
@@ -513,10 +492,8 @@ describe("deriveFrames — feature adoption", () => {
     expect(constFrame(wedge, "R")).toBeCloseTo(30, 3);
 
     // …and the ADOPTER takes that unit frame EXACTLY — every lane but the two
-    // that say what it is. A pool median (which this used to take) left the
-    // decal a few hundredths off its host: a different rank bucket, a different
-    // gate slot, a visibly different radial throw. Identical lanes are the whole
-    // "one object" guarantee, and the op pipeline reads nothing else.
+    // that say what it is. Identical lanes ARE the "one object" guarantee: the
+    // op pipeline reads nothing else.
     for (const lane of LANES)
       expect(constFrame(decal, lane), `adopted lane: ${lane}`).toBeCloseTo(
         constFrame(wedge, lane),
@@ -562,25 +539,20 @@ describe("deriveFrames — axisymmetric guard", () => {
     expect(constFrame(ring, "span")).toBeCloseTo(TAU, 6);
     expect(constFrame(ring, "axi")).toBe(1);
     expect(Math.abs(constFrame(ring, "R") - 18) / 18).toBeLessThan(0.02);
-    // …and the pinned span is what keeps it off the assemble sheet: 2π is not a
-    // sector, so there is no sheet to unroll. (layerN 1 rides along, but nothing
-    // reads it — the 0.01mm rank bucket is too tight to decide participation.)
+    // …and the pinned span keeps it off the assemble sheet: 2π is not a sector,
+    // so there is no sheet to unroll.
     expect(constFrame(ring, "span")).toBeGreaterThan(2.5);
-    expect(constFrame(ring, "layerN")).toBe(1);
 
     const wedge = named(root, "Shell_Outer_Seg2");
     expect(constFrame(wedge, "axi")).toBe(0);
     expect(constFrame(wedge, "span")).toBeCloseTo(TAU / 5, 3);
-    expect(constFrame(wedge, "layerN")).toBe(5);
   });
 
   it("flags a full-turn mesh whose relief pulls its centroid OFF the axis (the SPAN branch)", () => {
-    // The centroid test alone misses this: a ring carrying a heavy lobe (a
-    // bracket, a relief boss) has an off-axis centroid, so it measures a real
-    // meridian — but it still wraps the whole turn, which makes that meridian
-    // just as meaningless. Its measured span falls SHORT of 2π by the mesh's
-    // coarsest angular gap, which is why the span tolerance is 0.15 rad and not
-    // the 0.01 that never fired.
+    // A ring carrying a heavy lobe has an off-axis centroid, so it measures a
+    // real meridian while still wrapping the whole turn. Its measured span
+    // falls short of 2π by the mesh's coarsest angular gap, hence the 0.15 rad
+    // span tolerance.
     const mesh = new THREE.Mesh(
       merge(
         ringGeometry(18, -3, 3, 96),
@@ -648,8 +620,7 @@ describe("deriveFrames — derived ladder", () => {
 
   it("…even when the host shell is nested below the top level", () => {
     // ladderRungs is keyed by GROUP, so the adoption lookup must use the host's
-    // group, not its mesh/part name — otherwise it silently returns 0 the moment
-    // a host stops being a top-level node.
+    // group, not its mesh/part name, or it silently returns 0.
     const root = ladderScene();
     const assembly = new THREE.Object3D();
     assembly.name = "Barrel_Assembly";
@@ -716,10 +687,9 @@ describe("deriveFrames — part classes", () => {
   });
 
   it("skips accessories in a body pass — their radii must not enter the census", () => {
-    // Accessories merge in the BACKGROUND whenever their fetch lands, so a body
-    // pass that swept them made the rank span (and every body rank) depend on a
-    // load race. They are framed only by their own scoped pass (root = the
-    // accessory), never by the body's.
+    // Accessories merge in the BACKGROUND, so a body pass that swept them would
+    // make every body rank depend on a load race. They are framed only by their
+    // own scoped pass.
     const root = new THREE.Object3D();
     root.add(box("Cam_Barrel_Seg0", 0));
     root.add(box("Acc_Hood", 0));
@@ -730,10 +700,8 @@ describe("deriveFrames — part classes", () => {
 
   it("classes a LEAF MESH ROOT from its own name", () => {
     // scene.ts derives frames per accessory root, and a single-primitive
-    // accessory (Acc_CapRear) IS that root — the ancestor chain stops at the
-    // root and excludes it, so the chain is empty and the class fell through to
-    // `structure`: the cap would have flown with the chassis instead of being
-    // held off the ladder with the other accessories.
+    // accessory IS that root: the ancestor chain excludes the root, so without
+    // this the class falls through to `structure`.
     const cap = box("Acc_CapRear", 0);
     deriveFrames(cap);
     expect(constFrame(cap, "cls")).toBe(PART_CLASS.accessory);
@@ -751,15 +719,14 @@ describe("deriveFrames — part classes", () => {
   });
 
   it("classes Iris_HOUSING as structure — the iris class is the MECHANISM only", () => {
-    // The housing is a segmented shell that blooms and wraps like every other
-    // shell; only the aperture-driven mechanism (blades, cam plate, actuator
-    // gear) is class iris. A `/^Iris_/` class caught the housing too and parked
-    // its wedges out of the assemble sheet while their neighbours flew.
+    // The housing is a segmented shell that blooms and wraps like every other;
+    // only the aperture-driven mechanism (blades, cam plate, actuator gear) is
+    // class iris. A `/^Iris_/` class would park its wedges out of the sheet.
     const root = new THREE.Object3D();
     root.add(shell("Iris_Housing", 16, 7));
     root.add(box("Iris_CamPlate", 0));
     root.add(box("Iris_ActuatorGear", 0));
-    deriveFrames(root);
+    const { layerCount } = deriveFrames(root);
 
     for (let i = 0; i < 7; i++)
       expect(constFrame(named(root, `Iris_Housing_Seg${i}`), "cls")).toBe(
@@ -773,18 +740,64 @@ describe("deriveFrames — part classes", () => {
     );
     // …and the housing's wedges measure a 7-piece layer, so the derived rule
     // ("segmented shell or rides one") puts them IN the wrap.
-    expect(constFrame(named(root, "Iris_Housing_Seg0"), "layerN")).toBe(7);
+    const housing = named(root, "Iris_Housing_Seg0");
+    expect(layerCount.get(rankKeyOf(constFrame(housing, "R")))).toBe(7);
+  });
+});
+
+describe("deriveFrames — radial depth", () => {
+  /** A wedge with WALLS: two sector strips, at R·(1 − d) and R·(1 + d). Equal
+   *  vertex counts, so the median radius is exactly R and the depth exactly d. */
+  function thickWedge(name: string, R: number, d: number): THREE.Mesh {
+    const inner = wedgeGeometry(R * (1 - d), 0, 1, -5, 5);
+    const outer = wedgeGeometry(R * (1 + d), 0, 1, -5, 5);
+    const pi = inner.getAttribute("position").array as Float32Array;
+    const po = outer.getAttribute("position").array as Float32Array;
+    const n = pi.length / 3;
+    const pos = new Float32Array([...pi, ...po]);
+    const idx = [
+      ...Array.from(inner.getIndex()!.array),
+      ...Array.from(outer.getIndex()!.array, (i) => i + n),
+    ];
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+    g.setIndex(idx);
+    const mesh = new THREE.Mesh(g);
+    mesh.name = name;
+    return mesh;
+  }
+
+  it("measures the widest wall offset as a fraction of R — 0 for a bare sheet", () => {
+    const root = new THREE.Object3D();
+    root.add(shell("Shell_Thin", 20, 5));
+    root.add(thickWedge("Plate_Seg0", 20, 0.3));
+    root.add(thickWedge("Skin_Seg0", 40, 0.05));
+    deriveFrames(root);
+    expect(constFrame(named(root, "Shell_Thin_Seg0"), "depth")).toBeCloseTo(0, 5); // prettier-ignore
+    expect(constFrame(named(root, "Plate_Seg0"), "R")).toBeCloseTo(20, 4);
+    expect(constFrame(named(root, "Plate_Seg0"), "depth")).toBeCloseTo(0.3, 5);
+    expect(constFrame(named(root, "Skin_Seg0"), "depth")).toBeCloseTo(0.05, 5);
+  });
+
+  it("is a MAX, not a mean: one deep lobe on a thin wall makes a deep piece", () => {
+    const root = new THREE.Object3D();
+    const wedge = named(root.add(shell("Shell_Lobed", 20, 5)), "Shell_Lobed_Seg0"); // prettier-ignore
+    const pos = wedge.geometry.getAttribute("position");
+    // one vertex pushed 8mm outward: 0.4 of R on an otherwise flat sheet
+    pos.setX(0, pos.getX(0) * 1.4);
+    pos.setZ(0, pos.getZ(0) * 1.4);
+    deriveFrames(root);
+    expect(constFrame(wedge, "R")).toBeCloseTo(20, 4);
+    expect(constFrame(wedge, "depth")).toBeCloseTo(0.4, 4);
   });
 });
 
 describe("deriveFrames — shared geometry", () => {
   it("un-shares an INSTANCED geometry so every mesh keeps its own frame", () => {
-    // THE IRIS-BLADE LANDMINE. The seven blades are one Blender mesh instanced
-    // across seven nodes (`Iris_Blade_01..07` → `Iris_Blade_geo`), so GLTFLoader
-    // hands all seven the SAME BufferGeometry. Frame attributes live on the
-    // GEOMETRY, so without a clone the seventh write wins and all seven blades
-    // fly on blade 7's seat angle, radius and gate slot.
-    //
+    // THE IRIS-BLADE LANDMINE: the seven blades are one mesh instanced across
+    // seven nodes, so GLTFLoader hands all seven the SAME BufferGeometry. Frame
+    // attributes live on the GEOMETRY, so without a clone the last write wins
+    // and every blade flies on blade 7's seat angle, radius and gate slot.
     const root = new THREE.Object3D();
     const meshes = ["Twin_A", "Twin_B", "Twin_C"].map((name) => {
       const m = new THREE.Mesh(wedgeGeometry(20, 0, 1, -3, 3));
@@ -798,9 +811,8 @@ describe("deriveFrames — shared geometry", () => {
 
     deriveFrames(root);
 
-    // Every mesh owns its geometry, and — the property that actually matters —
-    // its own attribute BUFFERS. One shared `_opA` across the three is exactly
-    // the clobber: the last write would be the only frame any of them has.
+    // Every mesh owns its geometry AND its own attribute buffers: one shared
+    // `_opA` is the clobber.
     expect(new Set(meshes.map((m) => m.geometry)).size, "geometries").toBe(3);
     for (const lane of FRAME_ATTRS) {
       const attrs = meshes.map((m) => m.geometry.getAttribute(lane.name));

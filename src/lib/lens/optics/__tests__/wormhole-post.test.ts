@@ -3,17 +3,11 @@ import { describe, expect, it } from "vitest";
 import { STARFIELD_LOOK, throatAngle } from "../starfield";
 import { RING_LOOK, ringSourceRadius } from "../wormhole-post";
 
-// THE EINSTEIN RING IS ONE FEATURE DRAWN BY TWO FILES — the sprites swing their
-// streaks tangential inside a band of ANGLES about the exit axis
-// (optics/starfield.ts), and this pass folds and smears the frame inside a band
-// of RADII. They only read as one ring if the second band is the first one's
-// own projection, which is why the radius is derived rather than authored. This
-// file is the tripwire on that derivation: it projects a star direction at the
-// band's angle through a real three camera and asks the post pass where it
-// would put its ring.
-//
-// Everything else in the pass needs a GPU (it is a TSL graph over a render
-// target) and is verified on the page.
+// The Einstein ring is one feature drawn by two files: the sprites band by
+// ANGLE about the exit axis (optics/starfield.ts), the post pass by RADII. They
+// read as one ring only while the radius is the angle band's own projection —
+// pinned here by projecting through a real three camera.
+// The rest of the pass needs a GPU and is verified on the page.
 
 /** The pass's radius metric, from a projected point: the aspect-corrected
  *  offset from the frame's centre in uv, in which the frame's half-height is
@@ -24,10 +18,9 @@ function radiusMetric(ndc: THREE.Vector3, aspect: number): number {
   return Math.hypot(dx, dy);
 }
 
-/** A camera parked on the dive's own heading: at the origin, looking down world
- *  +X (the exit axis both files stream toward), +Y up. Carries core/scene.ts's
- *  own zoom law — min(w, h)/h, which is the ASPECT on a portrait viewport — so
- *  the sweep below projects through the projection the page really builds. */
+/** A camera on the dive's heading: origin, looking down world +X, +Y up, and
+ *  carrying core/scene.ts's zoom law min(w, h)/h so the sweep projects through
+ *  the projection the page really builds. */
 function diveCamera(fov: number, aspect: number): THREE.PerspectiveCamera {
   const cam = new THREE.PerspectiveCamera(fov, aspect, 0.1, 400);
   cam.position.set(0, 0, 0);
@@ -65,10 +58,9 @@ describe("wormhole post ring", () => {
   });
 
   it("keeps the ring inside the frame's short side on any portrait viewport", () => {
-    // The failure the zoom term fixes: dropped, the band came out 1/aspect times
-    // too big, so on a phone its circle ran off the frame's SIDES and only its
-    // top and bottom were ever drawn — an elliptical ring. With the zoom in, the
-    // ring holds one fraction of the short side at every portrait aspect.
+    // Without the zoom term the band comes out 1/aspect too big and its circle
+    // runs off the frame's sides; with it, the ring holds one fraction of the
+    // short side at every portrait aspect.
     for (const [w, h] of [
       [390, 844],
       [360, 800],
@@ -83,23 +75,17 @@ describe("wormhole post ring", () => {
   });
 
   it("grows with a narrowing frame", () => {
-    // A closing frame magnifies everything drawn on it, so the band the sprites
-    // draw at a fixed ANGLE has to move outward as the fov comes back — the
-    // story hands the dive's 70° back to the chain's 42° after the reveal
-    // (story/fly.ts flyFovBackAt, over rewrap-local [0.25, 0.38] — a scene past
-    // the sky's end), and the pass is mounted through all of it (the span runs
-    // to rewrap-local 0.40). (Aspect-freeness is not restated here: the sweep
-    // above proves it through a real projection, at four aspects.)
+    // A closing frame magnifies what is drawn on it, so a band at a fixed ANGLE
+    // moves outward as the fov comes back (the story hands 70° back to 42°
+    // while the pass is still mounted).
     expect(ringSourceRadius(42)).toBeGreaterThan(ringSourceRadius(70));
     expect(ringSourceRadius(70)).toBeGreaterThan(0);
   });
 
   it("keeps the fold's mirror on the near side of the throat", () => {
-    // THE FOLD samples the source radius mirrored about the ring,
-    // 2·rRing − rSrc, and the band is 0 outside rRing·(1 ± ringWidth). A half
-    // width of 1 or more would put the far edge of the band past 2·rRing, where
-    // the mirrored radius is negative and the tap crosses to the other side of
-    // the frame — a hole, not a strata. See the fold's note in the shader.
+    // The fold mirrors the source radius about the ring (2·rRing − rSrc), so a
+    // half width ≥ 1 puts the band's far edge past 2·rRing where the mirrored
+    // radius goes negative and the tap crosses the frame.
     expect(RING_LOOK.ringWidth).toBeLessThan(1);
     expect(RING_LOOK.ringWidth).toBeGreaterThan(0);
   });

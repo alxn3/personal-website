@@ -9,35 +9,28 @@ import {
 } from "./path-probe";
 import type { PathVizContext } from "./paths";
 
-// DEV ONLY — dynamically imported, so none of it reaches a visitor's bundle.
-// The QUERYABLE side of the motion-path instrument: dev/paths.ts draws, this
-// module measures and returns JSON.
+// Dev only — dynamically imported. The queryable side of the motion-path
+// instrument: dev/paths.ts draws, this module measures and returns JSON.
 //
 // Two sample populations, one walk:
 //   SHELLS — every mesh carrying the derived `_op*` frame, sampled through the
 //            GPU probe running the real opsLocalPosition() graph.
-//   SOLIDS — every mesh WITHOUT one. Such a mesh cannot deform in shader, so
+//   SOLIDS — every mesh without one. Such a mesh cannot deform in shader, so
 //            its rest samples transformed by the same per-step matrixWorld are
-//            exact ground truth. The op host frames every mesh, so this
-//            population is normally EMPTY and the branch inert.
+//            ground truth. The op host frames every mesh, so this population is
+//            normally empty and the branch inert.
 //
-// FRAME: every reported position is in the MODEL frame — optical axis Y, radial
-// plane X–Z, units real millimetres. Distances match world distances up to the
-// constant model scale.
-//
-// Every result carries `coverage` and `idleCheck` (the per-mesh version of
-// paths.ts's idle-identity check: the seated row of every walk must reproduce
-// the rest geometry), so no verdict is reported without its sampling universe.
+// Every reported position is in the model frame — optical axis Y, radial plane
+// X–Z, units real millimetres. Every result carries `coverage` and `idleCheck`
+// (the per-mesh version of paths.ts's idle-identity check).
 
 const STEPS = 96;
 /** A piece is "in flight" while any sample sits further than this off its seat. */
 const SEAT_TOL_MM = 1;
-/** Curl-corner threshold, on the corner's RELATIVE radial lift: its lift off
- *  the seated radius MINUS the smallest lift among the piece's four corners at
- *  the same step. Subtracting the per-step minimum cancels the piece-UNIFORM
- *  terms, which decay last and would otherwise put every crossing in their
- *  tail; what remains is the peel-front/roll geometry the question asks
- *  about. */
+/** Curl-corner threshold, on the corner's relative radial lift: its lift off
+ *  the seated radius minus the smallest lift among the piece's four corners at
+ *  the same step. Subtracting the per-step minimum cancels the piece-uniform
+ *  terms, leaving the peel-front/roll geometry. */
 const CORNER_TOL_MM = 1;
 /** Minimum rise of the min-radius series that counts as an outward excursion. */
 const REVERSAL_EPS_MM = 0.5;
@@ -48,9 +41,8 @@ const MOVE_TOL_MM = 0.01;
 const STRETCH_MIN_EDGE_MM = 1.5;
 
 /** Corner naming: seam = the peel/wrap seam edge. The house winding sense is
- *  −1 (ops/recipes.ts ASSEMBLE_WRAP_FROM / ROLLOUT_FROM), so every construction
- *  hinges at θ0 + halfSpan — the wedge-local +φ side. front = +Y (filter end),
- *  rear = −Y (mount end). */
+ *  −1, so every construction hinges at θ0 + halfSpan — the wedge-local +φ side.
+ *  front = +Y (filter end), rear = −Y (mount end). */
 const CORNER_LABELS = [
   "seam-front",
   "seam-rear",
@@ -169,12 +161,11 @@ export interface InterferencePair {
   rankInner: number;
   rankOuter: number;
   maxOverlapMm: number;
-  /** the pair's radial band overlap in the SEATED pose — many adjacent shells
-   *  NEST at rest (walls interleave), which is overlap but not a defect */
+  /** the pair's radial band overlap in the seated pose — many adjacent shells
+   *  nest at rest (walls interleave), which is overlap but not a defect */
   seatedOverlapMm: number;
-  /** max of (in-flight overlap − seated overlap): how much MORE the bands
-   *  interpenetrate in flight than in their natural nesting — the crossing
-   *  signal; the sort key */
+  /** max of (in-flight overlap − seated overlap): how much more the bands
+   *  interpenetrate in flight than in their natural nesting — the sort key */
   maxExcessMm: number;
   ranges: { p0: number; p1: number; maxOverlapMm: number }[];
 }
@@ -184,9 +175,8 @@ export interface InterferenceResult {
   steps: number;
   coverage: Coverage;
   idleCheck: IdleCheck;
-  /** adjacent-seat-rank piece pairs whose radial bands overlap while BOTH are
-   *  in flight AND their axial (y) bands overlap; sorted by maxExcessMm (the
-   *  overlap beyond the pair's natural seated nesting) */
+  /** adjacent-seat-rank piece pairs whose radial bands overlap while both are
+   *  in flight and their axial (y) bands overlap; sorted by maxExcessMm */
   pairs: InterferencePair[];
 }
 
@@ -201,8 +191,8 @@ export interface CurlCornerResult {
     rank: number;
     hashSign: number;
     /** per animation: each corner's last-off-seat p, plus the leading corner
-     *  (seats FIRST ⇒ departs the seat LAST in the peel direction ⇒ leads the
-     *  stick) and the trailing corner (seats last) */
+     *  (seats first ⇒ departs the seat last ⇒ leads the stick) and the
+     *  trailing corner (seats last) */
     a: WedgeCorners;
     b: WedgeCorners;
   }[];
@@ -214,16 +204,14 @@ export interface CurlCornerResult {
     bLeading: CornerLabel | "tie" | "mixed";
     aAxialLead: "front" | "rear" | "tie" | "mixed";
     bAxialLead: "front" | "rear" | "tie" | "mixed";
-    /** do the axial leads sit at OPPOSITE ends in the two animations? (the
-     *  suspicion: same hash, opposite shear sense ⇒ mirrored corners) */
+    /** do the axial leads sit at opposite ends in the two animations? */
     axialMirrored: boolean | null;
   }[];
 }
 
 interface WedgeCorners {
   /** per corner: the last p at which its radial lift exceeds the piece's
-   *  most-seated corner by CORNER_TOL_MM (relative lift — piece-uniform terms
-   *  cancel), interpolated between steps */
+   *  most-seated corner by CORNER_TOL_MM, interpolated between steps */
   lastOffP: Partial<Record<CornerLabel, number>>;
   leading: CornerLabel | "tie";
   trailing: CornerLabel | "tie";
@@ -232,9 +220,8 @@ interface WedgeCorners {
   /** axial dimension alone (the shear question): front or rear end first? */
   axialLead: "front" | "rear" | "tie";
   /** mid-flight shear signature: (far-front lift − far-rear lift) at its
-   *  largest magnitude over the walk. Positive = the FRONT end hangs further
-   *  off the surface. A shear can show here yet wash out of the seating
-   *  order. */
+   *  largest magnitude over the walk. Positive = the front end hangs further
+   *  off the surface. */
   farSkew: { mm: number; atP: number } | null;
 }
 
@@ -260,11 +247,11 @@ interface Piece {
   /** offset of this piece's first sample in the unified sample space */
   base: number;
   count: number;
-  /** shells: [a, b] LOCAL pairs (offsets within the piece) of grid edges */
+  /** shells: [a, b] local pairs (offsets within the piece) of grid edges */
   edges: [number, number][];
-  /** shells: corner label → LOCAL sample offset */
+  /** shells: corner label → local sample offset */
   corners: Partial<Record<CornerLabel, number>>;
-  /** per LOCAL sample: counts toward the radial band (solids' synthesized AABB
+  /** per local sample: counts toward the radial band (solids' synthesized AABB
    *  corners overstate the band of a round part, so they are excluded) */
   radiusEligible: boolean[];
   /** solids: rest local positions, xyz-packed */
@@ -323,17 +310,15 @@ function gridPick(
 }
 
 /**
- * Sample a shell mesh. Grids/edges/corners live in the mesh's DOMINANT sector
- * only: islands follow different wedges, so an edge across sectors would
- * measure the sectors flying apart rather than the mesh stretching. Modes:
+ * Sample a shell mesh. Grids/edges/corners live in the mesh's dominant sector
+ * only: an edge across sectors would measure the sectors flying apart rather
+ * than the mesh stretching. Modes:
  *   BARREL (axial span dominates): outer- + inner-wall grids over (φ, y), plus
  *     the four (seam/far × front/rear) corner vertices.
  *   PLATE (radial span dominates — PCB discs, baffle plates): one grid over
- *     (φ, r); the (φ, y) grid degenerates to thickness-length edges there,
- *     turning millimetre noise into a fake stretch ratio.
- *   AXISYMMETRIC (rings, tubes, discs): NO grid and no corners, extremes only.
- *     Their (φ, y) box spans the whole ±π turn, so every grid edge is a CHORD
- *     and any radial dilation reads as stretch.
+ *     (φ, r); the (φ, y) grid degenerates to thickness-length edges there.
+ *   AXISYMMETRIC (rings, tubes, discs): no grid and no corners, extremes only.
+ *     Their (φ, y) box spans the whole ±π turn, so every grid edge is a chord.
  * Non-dominant sectors still contribute edge-less extreme samples. Real
  * vertices only.
  */
@@ -352,8 +337,7 @@ function pickShellSamples(mesh: THREE.Mesh, axi: boolean): PickedShell {
     const x = pos.getX(i);
     const y = pos.getY(i);
     const z = pos.getZ(i);
-    // NOT negated: the classic `_bloomtheta0` was stored negated, the frame's
-    // t0 is the sector meridian as measured (ops/frames.ts).
+    // Not negated: the frame's t0 is the sector meridian as measured.
     const t0 = t0Attr ? t0Attr.getX(i) : 0;
     phi[i] = wrapPi(Math.atan2(z, x) - t0);
     yy[i] = y;
@@ -416,9 +400,8 @@ function pickShellSamples(mesh: THREE.Mesh, axi: boolean): PickedShell {
     pick((i) => -phi[i]);
   };
 
-  // AXISYMMETRIC pieces take that path for the WHOLE mesh: no edges means no
-  // stretch ratio and no corners means no roll remainder — the two numbers a
-  // ring cannot honestly produce.
+  // Axisymmetric pieces take that path for the whole mesh: no edges means no
+  // stretch ratio and no corners means no roll remainder.
   if (axi) {
     addExtremes(dom);
     if (rest.length) addExtremes(rest);
@@ -489,9 +472,9 @@ function pickShellSamples(mesh: THREE.Mesh, axi: boolean): PickedShell {
   return { verts: list, edges, corners };
 }
 
-/** Sample a solid: the 8 geometry-AABB corners (synthesized — exact under the
- *  rigid per-step transform, excluded from radial bands) plus real extreme
- *  vertices (±x, ±y, ±z, min/max radius) and a few strided surface picks. */
+/** Sample a solid: the 8 geometry-AABB corners (synthesized, excluded from
+ *  radial bands) plus real extreme vertices (±x, ±y, ±z, min/max radius) and a
+ *  few strided surface picks. */
 function pickSolidSamples(
   mesh: THREE.Mesh,
 ): { rest: Float32Array; eligible: boolean[] } | null {
@@ -556,7 +539,7 @@ interface Walk {
   anim: LensAnimation;
   /** the p value of each step row (DEFAULT_PS for full-scrub walks) */
   ps: number[];
-  /** [step][sample] xyz in the MODEL frame (mm) */
+  /** [step][sample] xyz in the model frame (mm) */
   world: Float32Array;
   /** [sample] xyz seated pose, model frame */
   seated: Float32Array;
@@ -595,7 +578,7 @@ export function createPathAnalysis(ctx: PathVizContext): PathAnalysis {
     return name;
   };
 
-  // shells FIRST so unified sample offsets coincide with probe columns
+  // shells first so unified sample offsets coincide with probe columns
   for (const mesh of shellMeshes) {
     // Non-null by construction: shellMeshes is exactly the frame-carrying set.
     const frame = frameOf(mesh.geometry);
@@ -630,7 +613,7 @@ export function createPathAnalysis(ctx: PathVizContext): PathAnalysis {
       name: uniqueName(mesh.name),
       kind: "solid",
       shell: mesh.name,
-      // Filled in on the first walk, in the MODEL frame: a world-space box
+      // Filled in on the first walk, in the model frame: a world-space box
       // read into a table keyed in model millimetres would clamp every solid
       // to rank 0.
       rank: NaN,
@@ -647,8 +630,8 @@ export function createPathAnalysis(ctx: PathVizContext): PathAnalysis {
   }
   const totalSamples = base;
 
-  // Solid seat ranks, on the shader's own law but computed in the MODEL frame.
-  // The radius comes from the first walk's seated pose, so the flag defers this
+  // Solid seat ranks, on the shader's own law but computed in the model frame.
+  // The radius comes from the first walk's seated pose, so this is deferred
   // until one exists.
   const shellKeys = shellMeshes.map((m) =>
     Math.round((frameOf(m.geometry)?.R ?? 0) * 100),
@@ -958,8 +941,7 @@ export function createPathAnalysis(ctx: PathVizContext): PathAnalysis {
   }
 
   /** Outward excursions of a series: rises > eps off the preceding trough that
-   *  come back down. A rise the series ends inside is not an excursion yet, so
-   *  a windowed caller must widen the window to see it whole. */
+   *  come back down. A rise the series ends inside is not an excursion yet. */
   interface Excursion {
     troughIdx: number;
     peakIdx: number;
@@ -1031,7 +1013,7 @@ export function createPathAnalysis(ctx: PathVizContext): PathAnalysis {
       piece.edges.forEach(([a, b], e) => {
         // Sub-STRETCH_MIN_EDGE rest edges (a jagged cut can put two grid slots
         // on near-coincident vertices) turn millimetre-scale deviations into
-        // outlandish ratios — too short to say anything about the sheet.
+        // outlandish ratios.
         if (rest[e] < STRETCH_MIN_EDGE_MM) return;
         const oa = (k * probeCount + piece.base + a) * 3;
         const ob = (k * probeCount + piece.base + b) * 3;
@@ -1230,7 +1212,7 @@ export function createPathAnalysis(ctx: PathVizContext): PathAnalysis {
     const seriesByPiece = new Map<Piece, PieceSeries>();
     for (const piece of pieces) seriesByPiece.set(piece, pieceSeries(w, piece));
 
-    // rank groups over ALL pieces (shells + solids), ascending
+    // rank groups over all pieces (shells + solids), ascending
     const groups = new Map<string, Piece[]>();
     for (const piece of pieces) {
       const key = rankKey(piece.rank);
@@ -1278,9 +1260,9 @@ export function createPathAnalysis(ctx: PathVizContext): PathAnalysis {
       }
     }
 
-    // Seated radial band per piece — adjacent shells often NEST at rest (their
+    // Seated radial band per piece — adjacent shells often nest at rest (their
     // wall bands interleave), which is band overlap but not a crossing. The
-    // crossing signal is the EXCESS over that seated overlap.
+    // crossing signal is the excess over that seated overlap.
     const seatedBand = new Map<Piece, { minR: number; maxR: number }>();
     for (const piece of pieces) {
       let lo = Infinity;
@@ -1372,8 +1354,7 @@ export function createPathAnalysis(ctx: PathVizContext): PathAnalysis {
         }
         lift.set(label, arr);
       }
-      // RELATIVE lift: subtract the per-step minimum across the corners — see
-      // CORNER_TOL_MM for why absolute metrics tie
+      // relative lift: subtract the per-step minimum across the corners
       const floor = new Float64Array(steps).fill(Infinity);
       for (const arr of lift.values())
         for (let k = 0; k < steps; k++)
@@ -1381,9 +1362,9 @@ export function createPathAnalysis(ctx: PathVizContext): PathAnalysis {
       for (const label of present) {
         const arr = lift.get(label)!;
         const excess = (k: number) => arr[k] - floor[k];
-        // last step still lifted, then the crossing INTERPOLATED between
+        // last step still lifted, then the crossing interpolated between
         // steps: corner differences within one wedge are often finer than the
-        // step grid, and an un-interpolated threshold reads as a tie
+        // step grid
         let p = 0;
         for (let k = steps - 1; k >= 0; k--) {
           const d = excess(k);
@@ -1404,7 +1385,7 @@ export function createPathAnalysis(ctx: PathVizContext): PathAnalysis {
       entries.sort((a, b) => a[1] - b[1]);
       const spread = entries[entries.length - 1][1] - entries[0][1];
       // Per-dimension leads: mean the two corners on each side so the arc
-      // progression and the axial shear are read INDEPENDENTLY — the arc
+      // progression and the axial shear are read independently — the arc
       // effect is much larger and buries the axial one in a single argmin.
       const mean = (labels: CornerLabel[]) => {
         const vals = labels
@@ -1439,8 +1420,8 @@ export function createPathAnalysis(ctx: PathVizContext): PathAnalysis {
       return {
         lastOffP,
         farSkew,
-        // seats FIRST ⇒ departs the seat LAST in the peel direction ⇒ the
-        // corner the stick front grows from
+        // seats first ⇒ departs the seat last ⇒ the corner the stick front
+        // grows from
         leading: spread < TIE ? "tie" : entries[0][0],
         trailing: spread < TIE ? "tie" : entries[entries.length - 1][0],
         arcLead: lead(

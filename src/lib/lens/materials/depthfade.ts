@@ -18,20 +18,16 @@ export const uFadeNear1 = uniform(6); // full opacity (near edge of the body)
 export const uFadeFar0 = uniform(20); // full opacity (far edge of the body)
 export const uFadeFar1 = uniform(28); // fully faded (farthest from camera)
 
-/** How many extra model radii the band spans at full spread. The exploded cloud
- *  is about four radii deep, and the ending shoots it face-on, so a band sized
- *  for the seated lens dissolves a third of the pieces. */
+/** How many extra model radii the band spans at full spread — the exploded
+ *  cloud is several radii deep. */
 export const SPREAD_RADII = 3.2;
 
 /**
- * Place the four planes for one frame, in view depth. The band is CENTRED on
- * the camera's distance to the SUBJECT — the lens at `dollyX`, from where the
- * camera actually is, which is not where its orbit offset points once a scene
- * slides its target — and is as DEEP as the model's own spread, since an
- * exploded cloud is several radii deep and would ghost inside a band sized for
- * the seated lens. `spread` is the live explode/assemble channel, 0 = seated.
- *
- * Writes the uniforms rather than returning a band: it runs every frame.
+ * Place the four planes for one frame, in view depth. The band is centred on
+ * the camera's distance to the subject (the lens at `dollyX`, from where the
+ * camera actually is) and is as deep as the model's own spread. `spread` is the
+ * live explode/assemble channel, 0 = seated. Writes the uniforms rather than
+ * returning a band: it runs every frame.
  */
 export function writeFadeBands(
   cam: { x: number; y: number; z: number },
@@ -47,14 +43,14 @@ export function writeFadeBands(
   uFadeFar1.value = dist + r * 2.6;
 }
 
-// A fresh fade-factor node (0..1) for the given DEFORMED local position. Pass
+// A fresh fade-factor node (0..1) for the given deformed local position. Pass
 // the op position graph (ops/host.ts) for deformed pieces — their motion is
 // in-shader, so the built-in positionView node misses it. A node can't be
 // shared across materials, so build one per material.
 export function depthFadeFactor(localPos: any = positionLocal): any {
-  // The DEPTH rides a varying, the smoothstep does not: viewZ is affine in the
+  // The depth rides a varying, the smoothstep does not: viewZ is affine in the
   // position, so interpolating it is exact and a deformed `localPos` keeps its
-  // op chain in the vertex stage (ops/host.ts law 5).
+  // op chain in the vertex stage.
   const viewZ = varying(modelViewMatrix.mul(vec4(localPos, 1.0)).z.negate());
   const near = smoothstep(uFadeNear0, uFadeNear1, viewZ);
   const far = float(1).sub(smoothstep(uFadeFar0, uFadeFar1, viewZ));

@@ -6,10 +6,8 @@ export const isLightTheme = () =>
   !document.documentElement.classList.contains("dark");
 
 /**
- * Watch the `<html>` class for theme flips and call `cb(light)` on each ACTUAL
- * flip (the MutationObserver fires on any class change, so the last value is
- * tracked and unchanged themes are ignored). Does not call `cb` for the
- * initial theme — the scene self-detects that at creation.
+ * Watch the `<html>` class for theme flips and call `cb(light)` on each actual
+ * flip. Not called for the initial theme — the scene self-detects that.
  */
 export function watchTheme(cb: (light: boolean) => void): void {
   let light = isLightTheme();

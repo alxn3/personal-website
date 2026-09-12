@@ -1,13 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { NUM } from "../algebra";
 
-// These pin the GLSL semantics the NUM backend must share with the TSL
-// backend: the number backend is the executable spec, so every op here must
-// match what `three/tsl` computes on the GPU for the same inputs.
-//
-// ONLY the ops whose GLSL meaning DIVERGES from the obvious JS one are here.
-// The plain arithmetic (`add`, `min`, `sin`, `lift`…) is a one-line lambda per
-// op with no second reading available, so a test of it restates the code.
+// Pins the GLSL semantics the NUM backend must share with the TSL backend.
+// Only the ops whose GLSL meaning diverges from the obvious JS one are here.
 describe("NUM algebra — GLSL semantics", () => {
   it("step is 0 iff x < edge (edge-inclusive)", () => {
     expect(NUM.step(0.5, 0.5)).toBe(1);

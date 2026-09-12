@@ -2,21 +2,12 @@ import { NUM } from "../algebra";
 import { gate, type GateSpec } from "../gate";
 import type { Sc } from "../algebra";
 
-// The gate the hand-built ctx fixtures in this folder carry.
+// The gate the hand-built ctx fixtures in this folder carry: `gateAt` is built
+// over the real `gate()` so a `during` remap lands on a producible pair.
 //
-// `OpCtx` holds a raw `channel` and a `gateAt` closure (the ops/ops.ts `during`
-// contract: a scope re-runs THIS recipe's gate at a remapped channel), and both
-// have to be REAL — a fixture that hands back invented pairs would let a broken
-// remap pass. So the fixtures build `gateAt` over the actual `gate()` with the
-// house-shaped spec below, exactly as ops/host.ts and ops/cpu.ts do.
-//
-// The spec keeps the two gate laws: `layerStagger + partStagger + windowFrac`
-// = 0.9 ≤ 1 (so every piece saturates to the seated pair at channel 0) and
-// `rollEnd − split + min(overlap, split)` = 0.6 > 0 (a non-degenerate stick
-// ramp). The op-family suites still pass whatever `flight` / `stick` PAIR the
-// case under test is about — a transform's identity does not care which channel
-// produced its flight — but a `during` scope inside one of them re-gates through
-// this spec and lands on a pair the gate really can produce.
+// The spec keeps the two gate laws: layerStagger + partStagger + windowFrac
+// = 0.9 ≤ 1 (every piece saturates to the seated pair at channel 0) and
+// rollEnd − split + min(overlap, split) = 0.6 > 0 (non-degenerate stick ramp).
 export const FIXTURE_GATE_SPEC: GateSpec<number> = {
   layerStagger: 0.2,
   windowFrac: 0.6,

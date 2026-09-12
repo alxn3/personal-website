@@ -11,9 +11,8 @@ import {
   positionLocal,
   vec3,
 } from "three/tsl";
-// The deform comes from the op pipeline, gated by `hasOpFrames` (the packed
-// `_opA` attribute) — the SAME test materials/unified.ts applies, so every
-// bench mode deforms exactly the set the story's pair does.
+// The deform comes from the op pipeline, gated by `hasOpFrames` — the same test
+// materials/unified.ts applies, so every bench mode deforms the same set.
 import {
   attachOps,
   attachOpsLine,
@@ -27,23 +26,19 @@ import { CEL_LIGHT, celShade, uInkFill } from "./unified";
 import { isOpticalGlass, isDecal } from "../core/parts";
 import type { BenchMode } from "./shading";
 
-// The /lens shading bench: the seven swappable technical looks. It is a LAZY
-// CHUNK — the homepage hero only ever wears the story's realistic/ink pair.
+// The /lens shading bench: the swappable technical looks. A lazy chunk — the
+// homepage hero only ever wears the story's realistic/ink pair.
 //
-// TYPE-ONLY EDGE: `BenchMode` above is `import type`, erased at build, so
-// Rollup sees NO static import in either direction. materials/shading.ts names
-// this module only through `installBench`, which core/scene.ts's
-// `enableShadingBench()` calls after a dynamic import. Add a value import from
-// "./shading" here and this chunk collapses into the homepage's. Pinned by
-// __tests__/shading-boundary.test.ts.
+// Type-only edge: `BenchMode` above is `import type`, erased at build, so
+// Rollup sees no static import in either direction. Add a value import from
+// "./shading" here and this chunk collapses into the homepage's.
 //
 // Every look re-materials every mesh from a build it keeps for the session
-// (ModeBuild): leaving a mode PARKS its extras, returning re-wears them, so a
-// switch never re-derives materials mid-scroll. The bronze matcap is generated
-// procedurally — nothing external.
+// (ModeBuild): leaving a mode parks its extras, returning re-wears them, so a
+// switch never re-derives materials mid-scroll.
 
 // A technical-drawing palette: flat fill colours keyed by part name (one per
-// site theme) plus the edge-line pairs. "blueprint" and "flat" run ONE shared
+// site theme) plus the edge-line pairs. "blueprint" and "flat" run one shared
 // construction in applyToMesh, so another technical look is a new entry here, a
 // ShadingMode union member, and a page button.
 interface TechnicalPalette {
@@ -59,7 +54,7 @@ interface TechnicalPalette {
 }
 
 const TECHNICAL_PALETTES: Partial<Record<BenchMode, TechnicalPalette>> = {
-  // BLUEPRINT: ink's construction under a cyanotype palette — deep drafting
+  // Blueprint: ink's construction under a cyanotype palette — deep drafting
   // blues and white line-work dark, pale blue paper and deep blue lines light.
   blueprint: {
     fill(name: string, light: boolean): number {
@@ -80,7 +75,7 @@ const TECHNICAL_PALETTES: Partial<Record<BenchMode, TechnicalPalette>> = {
     edgeGlass: { dark: 0xb7d9ef, light: 0x2c567c },
   },
 
-  // FLAT: ink's construction with the cel bands OFF and a higher crease
+  // Flat: ink's construction with the cel bands off and a higher crease
   // threshold, so only the silhouette and major structural edges survive.
   flat: {
     flat: true,
@@ -91,7 +86,7 @@ const TECHNICAL_PALETTES: Partial<Record<BenchMode, TechnicalPalette>> = {
         if (isDecal(name)) return 0x3f3a2f; // printed text goes dark on cream
         if (/^Iris_Blade|Ring_/.test(name)) return 0x4a4f5e; // ink's slate bands
         if (/^(Mount_|Focus_|PCB_)/.test(name)) return 0x7c766a; // muted metal
-        return 0xece6d6; // ONE cream shell tone — no gloss/matte split
+        return 0xece6d6; // one cream shell tone — no gloss/matte split
       }
       if (isOpticalGlass(name)) return 0x9ccb92;
       if (isDecal(name)) return 0xefe8d4;
@@ -107,7 +102,7 @@ const TECHNICAL_PALETTES: Partial<Record<BenchMode, TechnicalPalette>> = {
     edgeGlass: { dark: 0xc9e6bb, light: 0x3f6b39 },
   },
 
-  // EMBER: bold orange ink on near-black paper. The palette IS dark, so both
+  // Ember: bold orange ink on near-black paper. The palette is dark, so both
   // site themes share one family; light only lifts the body ground a hair.
   ember: {
     fill(name: string, light: boolean): number {
@@ -127,9 +122,8 @@ const TECHNICAL_PALETTES: Partial<Record<BenchMode, TechnicalPalette>> = {
     edgeGlass: { dark: 0xffa96b, light: 0xf09a5a },
   },
 
-  // PAPER: near-black ink on white paper with ONE saturated orange accent on
+  // Paper: near-black ink on white paper with one saturated orange accent on
   // the glass lines and mechanism fills, everything else achromatic warm gray.
-  // The dark theme dims it a step — a full-white slab would blast.
   paper: {
     fill(name: string, light: boolean): number {
       if (light) {
@@ -160,8 +154,8 @@ const TECHNICAL_PALETTES: Partial<Record<BenchMode, TechnicalPalette>> = {
   },
 };
 
-// OUTLINE: thick screen-print contour — a constant-width inverted-hull outline
-// over pure UNLIT two-tone fills. NOTHING is transparent; the glass renders as
+// Outline: thick screen-print contour — a constant-width inverted-hull outline
+// over pure unlit two-tone fills. Nothing is transparent; the glass renders as
 // solid discs wearing the same outline. The hull width is in model mm.
 const OUTLINE_WIDTH = 0.8; // model mm
 const OUTLINE = {
@@ -188,15 +182,15 @@ function outlineFill(p: (typeof OUTLINE)["light"], name: string): number {
   return p.body;
 }
 
-// RISO: duotone risograph print — hard 3-step N·L posterization, NO outlines
-// (the banding carries all the form). `decal` is the flat un-banded print
-// colour for the engraved text; the glass is a translucent overprint.
+// Riso: duotone risograph print — hard 3-step N·L posterization, no outlines.
+// `decal` is the flat un-banded print colour for the engraved text; the glass
+// is a translucent overprint.
 const RISO = {
   light: { shadow: 0x241d18, mid: 0xe8551a, lit: 0xf2e8cf, decal: 0x241d18 },
   dark: { shadow: 0x1b1512, mid: 0xc23e12, lit: 0xff6a2a, decal: 0xf2e8cf },
 };
 
-// Hard 3-band posterize of N·L — celShade's quantization, but SELECTING flat
+// Hard 3-band posterize of N·L — celShade's quantization, but selecting flat
 // colours instead of scaling one.
 function risoBands(stops: { shadow: number; mid: number; lit: number }) {
   const ndl = dot(
@@ -217,7 +211,7 @@ function risoBands(stops: { shadow: number; mid: number; lit: number }) {
   ) as any;
 }
 
-// BRONZE: molten-metal dark-studio matcap — hot gold core into copper and
+// Bronze: molten-metal dark-studio matcap — hot gold core into copper and
 // bronze falloff, plus a low warm rim so the dark side separates from the
 // stage. The light theme lifts the shadow floor a step.
 function makeBronzeMatcap(light: boolean): THREE.Texture {
@@ -266,16 +260,16 @@ function makeBronzeMatcap(light: boolean): THREE.Texture {
  *  delegate: materials/shading.ts owns the mesh roster, the site theme and the
  *  current mode, and calls in here only for the looks it cannot wear itself. */
 export interface ShadingBench {
-  /** Wear `mode` on `meshes`: PARK whatever build was live, then build this
+  /** Wear `mode` on `meshes`: park whatever build was live, then build this
    *  mode the first time it meets a mesh and re-wear it every time after. */
   wear(mode: BenchMode, meshes: readonly THREE.Mesh[]): void;
   /** Take the live build's extras off their meshes and go dormant — the build
    *  stays whole, so returning to that mode is a re-wear, not a rebuild. */
   park(): void;
-  /** Fold ONE mesh that arrived after the roster was captured into the live
-   *  build. No-op while no build is live — the story's pair covers its own. */
+  /** Fold one mesh that arrived after the roster was captured into the live
+   *  build. No-op while no build is live. */
   integrate(mesh: THREE.Mesh): void;
-  /** Re-palette. Every build is colour-BAKED, so this throws them ALL away —
+  /** Re-palette. Every build is colour-baked, so this throws them all away —
    *  keeping the parked ones would re-wear the old theme's colours on the next
    *  switch. The caller re-`wear`s the current mode. */
   setTheme(light: boolean): void;
@@ -286,19 +280,18 @@ export type ShadingBenchFactory = (light: boolean) => ShadingBench;
 
 export const createShadingBench: ShadingBenchFactory = (light) => {
   // Edge lines cached per mesh × crease threshold: a pure function of the
-  // immutable source geometry, and rebuilding them on every re-entry into a
-  // look is what makes the toggle janky. Outlives a theme flip.
+  // immutable source geometry. Outlives a theme flip.
   const edgeGeoCache = new Map<string, THREE.BufferGeometry>();
 
-  // ONE mode's build — its materials, the extras it parented under the meshes,
-  // and what each mesh ended up WEARING. Never torn down on a switch.
+  // One mode's build — its materials, the extras it parented under the meshes,
+  // and what each mesh ended up wearing. Never torn down on a switch.
   interface ModeBuild {
     materials: THREE.Material[];
     /** lines + hulls with the mesh each hangs under, so parking can detach them
      *  and a return can put them back */
     extras: { owner: THREE.Mesh; obj: THREE.Object3D }[];
     worn: Map<THREE.Mesh, THREE.Material | THREE.Material[]>;
-    // SHARED-material caches: one per look × part class, not per mesh. They
+    // Shared-material caches: one per look × part class, not per mesh. They
     // also let integrate() fold a late mesh in without rebuilding the look.
     fill: Map<string, THREE.MeshBasicNodeMaterial>;
     line: Map<string, THREE.LineBasicNodeMaterial>;
@@ -335,7 +328,7 @@ export const createShadingBench: ShadingBenchFactory = (light) => {
     owner.add(obj);
     build!.extras.push({ owner, obj });
   };
-  /** Free EVERY build. Materials are all a build owns outright — edge
+  /** Free every build. Materials are all a build owns outright — edge
    *  geometries live in edgeGeoCache and hulls borrow the source geometry. */
   const flushBuilds = () => {
     for (const b of builds.values()) {
@@ -346,7 +339,7 @@ export const createShadingBench: ShadingBenchFactory = (light) => {
     build = null;
   };
 
-  // Build the CURRENT mode's material(s) for ONE mesh from that mode's shared
+  // Build the current mode's material(s) for one mesh from that mode's shared
   // caches. Runs only the first time a mode meets a mesh; later entries re-wear
   // `build.worn`.
   function applyToMesh(mesh: THREE.Mesh) {
@@ -354,7 +347,7 @@ export const createShadingBench: ShadingBenchFactory = (light) => {
     mesh.renderOrder = 0;
     const mode = currentMode!;
     const b = build!;
-    // Every look below classifies by NAME — the GLB's node names, which the
+    // Every look below classifies by name — the GLB's node names, which the
     // palettes' rules are written against.
     const name = mesh.name;
 
@@ -363,14 +356,13 @@ export const createShadingBench: ShadingBenchFactory = (light) => {
       // Technical-drawing look: flat fills + edge lines carrying the form, cel
       // banded so the body still reads dimensional. Framed pieces get
       // attribute-preserving edge geometry so the lines deform with the fill.
-      // Materials are SHARED per look (colour × glass × framed), not per mesh —
-      // a node graph each would dominate time-to-first-frame.
+      // Materials are shared per look (colour × glass × framed), not per mesh.
       const theme = light ? ("light" as const) : ("dark" as const);
       const edgeBody = palette.edgeBody[theme];
       const edgeGlass = palette.edgeGlass[theme];
       const glass = isOpticalGlass(name);
       const framed = hasOpFrames(mesh);
-      // A mesh whose deform graph VARIES (a spin pivot, a decal's shrink-wrap)
+      // A mesh whose deform graph varies (a spin pivot, a decal's shrink-wrap)
       // can only share a material with meshes that vary the same way, so every
       // cache key below carries the variant.
       const spin = opsVariantKey(mesh);
@@ -393,15 +385,15 @@ export const createShadingBench: ShadingBenchFactory = (light) => {
         m.polygonOffset = true;
         m.polygonOffsetFactor = 1;
         m.polygonOffsetUnits = 1;
-        // Attach the op deform FIRST and feed its position node straight to the
-        // fade: a second position graph would double the deform. Glass stays
-        // filled always; only the body/metal fills ride uInkFill.
+        // Attach the op deform first and feed its position node straight to
+        // the fade: a second position graph would double the deform. Glass
+        // stays filled always; only the body/metal fills ride uInkFill.
         const opsPos = framed ? attachOps(m, mesh) : undefined;
         const fade = depthFadeFactor(opsPos);
         m.opacityNode = (glass ? float(0.45) : float(1).mul(uInkFill)).mul(
           fade,
         );
-        // DISCARD fully-faded fragments: a transparent fill at opacity ~0
+        // Discard fully-faded fragments: a transparent fill at opacity ~0
         // still writes depth, so a faded wedge would invisibly hard-clip
         // whatever is behind it.
         m.alphaTest = 0.02;
@@ -441,7 +433,7 @@ export const createShadingBench: ShadingBenchFactory = (light) => {
     }
 
     if (mode === "outline") {
-      // Thick screen-print contour: unlit two-tone fills, everything OPAQUE,
+      // Thick screen-print contour: unlit two-tone fills, everything opaque,
       // plus an inverted hull — the same geometry re-drawn BackSide with its
       // vertices pushed out along the op-deformed normal.
       const P = light ? OUTLINE.light : OUTLINE.dark;
@@ -552,7 +544,7 @@ export const createShadingBench: ShadingBenchFactory = (light) => {
 
   return {
     wear(mode, meshes) {
-      // PARK the outgoing mode: its extras come off the meshes but nothing is
+      // Park the outgoing mode: its extras come off the meshes but nothing is
       // freed, so coming back is a re-wear rather than a rebuild.
       park();
       currentMode = mode;

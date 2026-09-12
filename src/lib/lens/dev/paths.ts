@@ -14,26 +14,20 @@ import {
   type PathAnalysis,
 } from "./analysis";
 
-// DEV ONLY — dynamically imported, so none of it reaches a visitor's bundle.
-// The visualizer behind the /lens "Motion paths" toggle. For a handful of
-// representative shell wedges it draws the WORLD-SPACE track every sample point
-// takes through the selected animation: a polyline per sample point coloured by
-// EDGE STRETCH (green = bending without stretching, red = pulled apart, blue =
-// crushed), tick crosses at even time intervals so acceleration reads directly,
-// and the live deformed sheet grid ("now") from the same probe.
+// Dev only — dynamically imported. The visualizer behind the /lens "Motion
+// paths" toggle: for a handful of representative shell wedges it draws the
+// world-space track every sample point takes through the selected animation — a
+// polyline per sample point coloured by edge stretch (green = bending, red =
+// pulled apart, blue = crushed), tick crosses at even time intervals, and the
+// live deformed sheet grid ("now") from the same probe.
 //
 // Positions are read back from the GPU running the real deformation graph and
 // the object motion comes from the real rig via matrixWorld, so there is no
-// second copy of the op math to drift. What can still go wrong is the PLUMBING,
-// and two checks cover it — both reported in the panel and logged when they
-// trip:
-//   IDLE  — with every deformation channel at 0 the shader is contractually an
-//           exact identity, so the probe must reproduce the seated vertex
-//           positions. Error means the probe is not reading what the material
-//           reads.
-//   LIVE  — the "now" sheet, probed at the LIVE uniforms, versus the cached
-//           path at the current progress. Error once the easing has settled
-//           means the drawn path no longer describes what is on screen.
+// second copy of the op math. Two checks cover the plumbing:
+//   IDLE  — with every deformation channel at 0 the shader is an exact
+//           identity, so the probe must reproduce the seated vertex positions.
+//   LIVE  — the "now" sheet, probed at the live uniforms, versus the cached
+//           path at the current progress.
 
 const STEPS = 96; // timesteps sampled across the animation's 0..1 progress
 const GRID_U = 5; // sample columns across a wedge (its arc)
@@ -41,10 +35,10 @@ const GRID_V = 3; // sample rows up a wedge (its axial extent)
 const SHEET_RANKS = [0, 0.5, 1]; // shell radius ranks to probe (inner/mid/outer)
 const TICK_EVERY = 8; // draw a time tick every N steps
 const TICK_LEN = 0.012; // world units (the lens is ~4 world units long)
-// Tolerances in MODEL MILLIMETRES. Idle is a float-rounding budget: the graph
+// Tolerances in model millimetres. Idle is a float-rounding budget: the graph
 // rebuilds the seated point through trig.
 const IDLE_TOL_MM = 0.01;
-// Live is a RESAMPLING budget — parking mid-segment costs a fraction of a
+// Live is a resampling budget — parking mid-segment costs a fraction of a
 // millimetre, while real drift moves pieces by tens of them.
 const LIVE_TOL_MM = 1;
 
@@ -55,20 +49,19 @@ export interface PathVizContext {
   /** Loaded GLB root — probe meshes are found under here. */
   model: THREE.Object3D;
   state: SceneState;
-  /** Push `state`'s CURRENT channel values into the mechanism + recipe channel
+  /** Push `state`'s current channel values into the mechanism + recipe channel
    *  uniforms. The walk re-drives this per timestep, so paths include the
    *  object-level mechanism motion, not just the in-shader deform. */
   driveChannels: () => void;
   invalidate: () => void;
   /** Registry defaults for every plain channel — the analysis walks start each
-   *  step from this neutral base, so a walk is a pure function of the
-   *  animation rather than of whatever the page state held. */
+   *  step from this base, so a walk is a pure function of the animation. */
   channelDefaults: Readonly<Record<string, number>>;
 }
 
 export interface PathViz {
   /** Recompute and draw the path for `anim` (null clears the overlay).
-   *  `getProgress` reads the page's current scrub position, used by the LIVE
+   *  `getProgress` reads the page's current scrub position, used by the live
    *  agreement check. */
   show(anim: LensAnimation | null, getProgress: () => number): Promise<void>;
   setVisible(on: boolean): void;
@@ -80,7 +73,7 @@ export interface PathViz {
     animId: string,
     opts?: { timeline?: boolean },
   ): Promise<AnalysisResult>;
-  /** Walk BOTH animations over the same sample set: per-piece divergence at
+  /** Walk both animations over the same sample set: per-piece divergence at
    *  equal p + per-rank radial envelopes. */
   compare(idA: string, idB: string): Promise<CompareResult>;
   /** Adjacent-seat-rank radial band overlaps while both pieces are in flight. */
@@ -112,14 +105,13 @@ interface Sheet {
 }
 
 /**
- * Choose GRID_U × GRID_V sample points on a wedge — REAL mesh vertices nearest
+ * Choose GRID_U × GRID_V sample points on a wedge — real mesh vertices nearest
  * a parametric grid over the wedge's (arc, axial) extent, never synthesized
- * ones, so the "now" markers land exactly on the rendered surface.
+ * ones, so the "now" markers land on the rendered surface.
  */
 function pickSheetVertices(mesh: THREE.Mesh): number[] {
   const pos = mesh.geometry.getAttribute("position");
-  // NOT negated: the classic `_bloomtheta0` was stored negated, the frame's t0
-  // is the sector meridian as measured (ops/frames.ts).
+  // Not negated: the frame's t0 is the sector meridian as measured.
   const t0 = frameOf(mesh.geometry)?.t0 ?? 0;
   const n = pos.count;
   const phi: number[] = [];
@@ -133,7 +125,7 @@ function pickSheetVertices(mesh: THREE.Mesh): number[] {
     yy.push(y);
     rr.push(Math.hypot(x, z));
   }
-  // Keep the OUTER skin only: a wedge is a walled shell, and mixing inner-wall
+  // Keep the outer skin only: a wedge is a walled shell, and mixing inner-wall
   // vertices into the grid would make "edges" that cross the wall thickness.
   const rMin = Math.min(...rr);
   const rMax = Math.max(...rr);
@@ -277,7 +269,7 @@ export function createPathViz(
   const channels = Object.keys(ctx.state).filter(
     (k) => !k.endsWith("Target"),
   ) as Channel[];
-  /** the walk, in each sample's own MESH-LOCAL space: [step][sample] */
+  /** the walk, in each sample's own mesh-local space: [step][sample] */
   let localPath: Float32Array | null = null;
   let peakStretch = 1;
   let idleErr = 0;
@@ -360,11 +352,10 @@ export function createPathViz(
         matrices.push(sheets.map((s) => s.mesh.matrixWorld.clone()));
         walkProbe.renderRow(k);
       }
-      // IDLE CHECK: every deformation channel at 0 ⇒ the shader is an exact
+      // Idle check: every deformation channel at 0 ⇒ the shader is an exact
       // identity, so this row must come back as the seated geometry. The zero
-      // list is DERIVED from the one channel registry — a hand-kept list that
-      // missed a channel would inherit the LIVE page value and turn this
-      // contractual check into a false alarm.
+      // list is derived from the one channel registry, so no channel can
+      // inherit the live page value and raise a false alarm.
       for (const c of channels) ctx.state[c] = snap[c];
       for (const c of IDLE_ZERO_CHANNELS) ctx.state[c] = 0;
       ctx.driveChannels();
@@ -399,10 +390,10 @@ export function createPathViz(
 
   /** Turn the read-back walk into the overlay's line geometry. */
   function buildGeometry(matrices: THREE.Matrix4[][]) {
-    // FREE THE LAST BUILD FIRST. Replacing a geometry's attributes does NOT
-    // free the old ones on the WebGPU backend — it releases buffers only from
-    // the geometry's dispose EVENT, so every rebuild would orphan them.
-    // dispose() purges the backend's records and the geometry stays usable.
+    // Free the last build first: replacing a geometry's attributes does not
+    // free the old ones on the WebGPU backend, which releases buffers only from
+    // the geometry's dispose event. dispose() purges the backend's records and
+    // the geometry stays usable.
     pathGeo.dispose();
     tickGeo.dispose();
     const path = localPath!;
@@ -490,7 +481,7 @@ export function createPathViz(
   }
 
   /**
-   * LIVE agreement: probe the SAME graph at the last rendered frame's uniforms
+   * Live agreement: probe the same graph at the last rendered frame's uniforms
    * and compare against the cached path at the current progress. A mismatch
    * means the drawn path is no longer the thing on screen.
    */
@@ -518,15 +509,14 @@ export function createPathViz(
       nowGeo.getAttribute("position").needsUpdate = true;
       nowGeo.computeBoundingSphere();
 
-      // Strict: the per-shell assemble windows are narrow enough that a
-      // 1e-3 channel residual is worth a visible fraction of a millimetre, and
-      // that would be charged to the path instead of to the easing.
+      // Strict: the per-shell assemble windows are narrow enough that a 1e-3
+      // channel residual is worth a visible fraction of a millimetre.
       liveSettled = channels.every(
         (c) => Math.abs(ctx.state[c] - ctx.state[`${c}Target`]) < 1e-5,
       );
       if (liveSettled) {
         // Reference = the cached walk resampled at the same progress.
-        // CATMULL-ROM, not linear: on a fast segment a chord sags millimetres
+        // Catmull-Rom, not linear: on a fast segment a chord sags millimetres
         // inside the true curve, which is sampling rate, not drift.
         const f = clamp01(getProgress()) * (STEPS - 1);
         const k1 = Math.min(STEPS - 1, Math.floor(f));
@@ -576,10 +566,10 @@ export function createPathViz(
   const timer = window.setInterval(() => void sampleLive(), 120);
   report();
 
-  // --- programmatic analysis (dev/analysis.ts) -------------------------------
-  // Built lazily on first use, and serialized behind the SAME busy flag as the
-  // walk/live probes: an analysis walk drives the whole rig, and the live
-  // sampler reading mid-walk would compare a half-driven pose.
+  // Programmatic analysis (dev/analysis.ts), built lazily on first use and
+  // serialized behind the same busy flag as the walk/live probes: an analysis
+  // walk drives the whole rig, and the live sampler reading mid-walk would
+  // compare a half-driven pose.
   let analysis: PathAnalysis | null = null;
   const getAnalysis = () => (analysis ??= createPathAnalysis(ctx));
   let queue: Promise<unknown> = Promise.resolve();
@@ -624,9 +614,8 @@ export function createPathViz(
       analysis?.dispose();
     },
   };
-  // Dev hook: drive the analysis from the console / an automation driver while
-  // the Motion-paths toggle is on. Dev-only by construction — this module only
-  // loads through scene.enablePathViz()'s dynamic import.
+  // Dev hook: drive the analysis from the console while the Motion-paths toggle
+  // is on.
   (window as unknown as { __lensPaths?: PathViz }).__lensPaths = api;
   return api;
 }

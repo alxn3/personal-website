@@ -1,16 +1,17 @@
 import { describe, expect, it } from "vitest";
 import * as THREE from "three/webgpu";
 import fs from "node:fs";
-import { deriveFrames, frameOf } from "../frames";
+import { deriveFrames, frameOf, rankKeyOf, type Frame } from "../frames";
+import { NUM } from "../algebra";
+import { DEPTH_THIN, WRAP_DIR, sheetTerm } from "../house";
+import { type OpCtx } from "../ops";
 import { createMechanism, MECHANISM } from "../mechanism";
 import { recipeChannel, RECIPE_NAMES } from "../host";
 import { displaceInto } from "../../dev/ops-cpu";
 
 // The SHIPPED GLB's structural contract, plus the two laws the ops/mechanism
-// layer leans on when it consumes one. The model pipeline has moved the iris
-// blades' seat between the vertices and the node twice in one drop cycle, so
-// the shape the code is written against is pinned here — a change fails in this
-// file rather than in a screenshot someone has to catch.
+// layer leans on when it consumes one — so a model re-export that changes the
+// shape the code is written against fails here.
 
 const TAU = Math.PI * 2;
 const MODEL = "public/models/lens_web_segmented.glb";
@@ -131,12 +132,9 @@ describe("shipped lens_web_segmented.glb", () => {
   });
 
   it("uses NO glTF extension — geometry is plain accessors (N.15)", () => {
-    // Draco was dropped from every web export: it saved transfer bytes on the
-    // first visit only, while its wasm decoder was fetched, instantiated and run
-    // on EVERY page load. A plain GLTFLoader reads these files, and the site no
-    // longer ships a decoder — so a re-export that quietly turns compression
-    // back on would load nothing at all. Note the exporter OMITS the two arrays
-    // rather than writing empty ones, so absence is the passing shape.
+    // The site ships no Draco decoder, so a re-export that turns compression
+    // back on would load nothing. The exporter OMITS the two arrays rather than
+    // writing empty ones, so absence is the passing shape.
     expect(g.extensionsUsed ?? [], "extensionsUsed").toEqual([]);
     expect(g.extensionsRequired ?? [], "extensionsRequired").toEqual([]);
     expect(JSON.stringify(g)).not.toContain("KHR_draco_mesh_compression");
@@ -149,8 +147,6 @@ describe("shipped lens_web_segmented.glb", () => {
   });
 
   it("carries the measured N.12 counts", () => {
-    // nodes/top-level moved with lens_work MIGRATION STEP 5 (three new group
-    // empties, twelve nodes off the top level); meshes/wedges did not.
     expect(g.nodes.length, "nodes").toBe(227);
     expect(g.meshes.length, "meshes").toBe(194);
     expect(names.filter((n) => /^Element_/.test(n)).length, "glass").toBe(13);
@@ -173,8 +169,7 @@ describe("shipped lens_web_segmented.glb", () => {
   });
 
   it("ships SEVEN distinct blade meshes, fan baked into the vertices", () => {
-    // N.12 replaced the single `Iris_Blade_geo` shared by seven nodes (W.4)
-    // with seven baked meshes — +73 KB accepted for simplicity.
+    // Seven baked meshes, not one datablock shared by seven nodes.
     const blades = g.nodes.filter((n) => /^Iris_Blade_\d+$/.test(n.name));
     expect(blades).toHaveLength(7);
     expect(new Set(blades.map((b) => b.mesh)).size, "distinct meshes").toBe(7);
@@ -198,10 +193,9 @@ describe("shipped lens_web_segmented.glb", () => {
   });
 
   it("parents Focus_Arms and Focus_Carrier under Optics_G4_Focus (§10)", () => {
-    // §10's "§6-style re-parent" arrives IN THE FILE: the exporter already
-    // nests both under the focus shell, so they ride the focus slide through
-    // the hierarchy and share its explode rung. No site-side re-parent list
-    // exists, and none is needed.
+    // The re-parent arrives IN THE FILE: both nest under the focus shell, so
+    // they ride the focus slide and share its explode rung — no site-side
+    // re-parent list is needed.
     expect(names).toContain("Focus_Arms");
     const g4 = g.nodes.find((n) => n.name === "Optics_G4_Focus")!;
     const kids = (g4.children ?? []).map((c) => g.nodes[c].name);
@@ -215,10 +209,9 @@ describe("shipped lens_web_segmented.glb", () => {
   });
 
   it("carries the STEP 4b names and none of the ones they replaced", () => {
-    // lens_work MIGRATION STEP 4b. The names ARE the API with the pipeline, and
-    // every one of these is keyed on somewhere site-side (peelcards' sector and
-    // exit tables, frames' SHELL_ADOPT, the parts regexes), so a half-applied
-    // rename is a silent no-op rather than a crash.
+    // The names ARE the API with the model pipeline, and each is keyed on
+    // site-side (peelcards' tables, frames' SHELL_ADOPT, the parts regexes), so
+    // a half-applied rename is a silent no-op rather than a crash.
     for (const n of [
       "Decal_DotMIJ",
       "Decal_BadgeDisc",
@@ -263,11 +256,9 @@ describe("shipped lens_web_segmented.glb", () => {
   });
 
   it("carries the MISNOMER names and none of the ones they replaced", () => {
-    // lens_work MIGRATION "Misnomer renames": the three optics CELLS dropped
-    // `Optics_` (they hold optics, they are not optics) and the three structural
-    // tubes dropped `Cam_` (they are not cam parts). Same hazard as STEP 4b — the
-    // roster in core/names.ts keys peelcards' TUBE_CUT and the parts predicates,
-    // so a half-applied rename fades a tube that then never drifts.
+    // The three optics CELLS dropped `Optics_` and the three structural tubes
+    // dropped `Cam_`. Same hazard as above: core/names.ts keys peelcards'
+    // TUBE_CUT and the parts predicates off these.
     for (const n of [
       "Cell_G3",
       "Cell_Collar",
@@ -321,9 +312,8 @@ describe("shipped lens_web_segmented.glb", () => {
       "Shim_Ring_01",
       "Shim_Ring_02",
     ]);
-    // Optics_G1 is the model's FIRST nested group empty — every earlier
-    // `Optics_G*` was a scene-root node. Nesting is what keeps its two elements
-    // on Barrel_Inner's ladder rung (see the derived-ladder test below).
+    // Optics_G1 is a NESTED group empty; the nesting is what keeps its two
+    // elements on Barrel_Inner's ladder rung.
     expect(kidsOf("Optics_G1")).toEqual(["Element_01", "Element_02"]);
     expect(kidsOf("Barrel_Inner")).toContain("Optics_G1");
     const top = g.scenes[0].nodes.map((i) => g.nodes[i].name);
@@ -357,17 +347,10 @@ describe("shipped lens_web_segmented.glb", () => {
 
 // ── The derived ladder, on the SHIPPED hierarchy ────────────────────────────
 //
-// This file reads no vertices at all: it rebuilds the shipped NODE GRAPH —
-// names, parenting, translations — and hangs one small triangle off every mesh
-// node. That is enough for the real deriveFrames to run, and the ladder's GROUP
-// MEMBERSHIP is derived from the graph alone, so the group set below is the one
-// the browser derives. (The rung VALUES are not: they measure geometry this
-// fixture does not carry.)
-//
-// The REAL vertices are read next door — story/__tests__/piece-flow.test.ts
-// slices all 194 meshes' accessors straight out of the BIN chunk to census the
-// real frames. The fixture stays here because this file's subject is the
-// HIERARCHY, which needs no geometry at all.
+// The fixture rebuilds the shipped NODE GRAPH — names, parenting, translations
+// — and hangs one triangle off every mesh node. The ladder's GROUP MEMBERSHIP
+// is derived from the graph alone, so the group set below is the browser's.
+// (The rung VALUES are not: they measure geometry this fixture lacks.)
 
 /** A small triangle, offset off the axis so R > 0 and the span is real. */
 function tri(): THREE.BufferGeometry {
@@ -422,8 +405,7 @@ describe("the derived explode ladder of the shipped hierarchy", () => {
 
   it("derives 26 groups — the `Grp_` empties are transparent", () => {
     // 26, not 19: without the `Grp_` skip in ops/frames nameChain, the three
-    // focus-drive parts and the six rear-mount ones collapse onto two rungs and
-    // the ladder loses nine it still has model-side (lens_work MIGRATION STEP 5).
+    // focus-drive parts and the six rear-mount ones collapse onto two rungs.
     expect(groups).toHaveLength(26);
     expect(groups.filter((n) => n.startsWith("Grp_")), "no Grp_ group").toEqual([]); // prettier-ignore
     for (const n of [
@@ -507,16 +489,14 @@ function shippedModel(): THREE.Object3D {
 }
 
 describe("the LAYER PARTITION the per-piece stagger reads", () => {
-  // A TRIPWIRE OVER THE EXPORT. `layerN`/`phase` come from 0.01mm radius
-  // buckets sorted by meridian (ops/frames.ts), and the ending's stagger keys
-  // a piece's own slice of the explode channel on that phase
-  // (EXPLODE_PART_STAGGER). The buckets are tight enough that a re-export
-  // nudging one piece's radius across an edge re-indexes BOTH layers it sits
-  // between, and every member's arrival moves with it — up to a fifth of the
-  // channel, which is a piece arriving visibly out of turn. So the partition is
-  // pinned here rather than left to be noticed in a scroll.
+  // A TRIPWIRE OVER THE EXPORT: `layerN`/`phase` come from 0.01mm radius
+  // buckets sorted by meridian, and the ending's stagger keys each piece's
+  // slice of the explode channel on that phase. A re-export nudging one radius
+  // across a bucket edge re-indexes both layers and moves every arrival.
   const root = shippedModel();
-  deriveFrames(root);
+  const { layerCount } = deriveFrames(root);
+  // a piece's layer population, off the derived table (no lane carries it)
+  const layerN = (f: Frame): number => layerCount.get(rankKeyOf(f.R)) ?? 1;
 
   it("buckets the 194 pieces into the histogram the stagger was tuned on", () => {
     const hist = new Map<number, number>();
@@ -526,7 +506,7 @@ describe("the LAYER PARTITION the per-piece stagger reads", () => {
       meshes++;
       const f = frameOf(o.geometry);
       expect(f, `${o.name} is framed`).not.toBeNull();
-      hist.set(f!.layerN, (hist.get(f!.layerN) ?? 0) + 1);
+      hist.set(layerN(f!), (hist.get(layerN(f!)) ?? 0) + 1);
     });
     expect(meshes).toBe(194);
     // layer SIZE → pieces living in a layer of that size
@@ -548,7 +528,7 @@ describe("the LAYER PARTITION the per-piece stagger reads", () => {
       if (!(o instanceof THREE.Mesh)) return;
       const f = frameOf(o.geometry)!;
       // the phase is i/n, so the layer's own key is (n, rounded rank)
-      const key = f.layerN * 1e4 + Math.round(f.rank * 1e3);
+      const key = layerN(f) * 1e4 + Math.round(f.rank * 1e3);
       const list = byLayer.get(key) ?? [];
       list.push(f.phase);
       byLayer.set(key, list);
@@ -559,6 +539,78 @@ describe("the LAYER PARTITION the per-piece stagger reads", () => {
         expect(ph, `layer ${key}`).toBeLessThan(1);
       }
     }
+  });
+});
+
+describe("the RADIAL DEPTH lane the bend cast reads", () => {
+  // The ending's rebend re-curves every sheet-like piece THINNER than
+  // DEPTH_THIN onto its ring and slides the rest rigid (ops/house.ts
+  // bendTerm), so where the shipped pieces fall against that threshold is what
+  // the park looks like. Measured here so a re-export that thickens a shell
+  // past the cut, or a threshold nudge that catches a body, fails with names.
+  const root = shippedModel();
+  deriveFrames(root);
+
+  const ctxOf = (f: Frame): OpCtx<number> => ({
+    A: NUM, t0: f.t0, R: f.R, rank01: f.rank, layerPhase: f.phase, halfSpan: f.span / 2, partClass: f.cls, phi: 0, d: 0, L: 0, yN: 0, off: 0, rung: f.rung, axi: f.axi, depth: f.depth, adopted: f.adopted, channel: 0, gateAt: () => ({ flight: 0, stick: 0 }), flight: 0, stick: 0, wrapDir: WRAP_DIR }); // prettier-ignore
+
+  /** every own-framed sheet-like piece, by name → depth */
+  const sheets = new Map<string, number>();
+  root.traverse((o) => {
+    if (!(o instanceof THREE.Mesh)) return;
+    const f = frameOf(o.geometry)!;
+    if (f.adopted || sheetTerm(NUM, ctxOf(f)) !== 1) return;
+    sheets.set(o.name, f.depth);
+  });
+  const group = (name: string) => name.replace(/_Seg\d+$/, "");
+
+  it("cuts between the shells and the bodies with a margin on both sides", () => {
+    let below = ["", 0];
+    let above = ["", 1];
+    for (const [name, depth] of sheets) {
+      if (depth < DEPTH_THIN && depth > (below[1] as number)) below = [name, depth]; // prettier-ignore
+      if (depth >= DEPTH_THIN && depth < (above[1] as number)) above = [name, depth]; // prettier-ignore
+    }
+    expect(sheets.size).toBe(139);
+    expect(DEPTH_THIN - (below[1] as number), `thinnest side: ${below[0]}`).toBeGreaterThan(0.01); // prettier-ignore
+    expect((above[1] as number) - DEPTH_THIN, `deep side: ${above[0]}`).toBeGreaterThan(0.025); // prettier-ignore
+  });
+
+  it("holds the plates, the bezel lip, the boards and the focus arms rigid — and nothing else", () => {
+    const deep = new Set<string>();
+    for (const [name, depth] of sheets)
+      if (depth >= DEPTH_THIN) deep.add(group(name));
+    expect([...deep].sort()).toEqual([
+      "Baffle_G2",
+      "Baffle_Rear",
+      "Barrel_Inner",
+      "Focus_Arms",
+      "Mount_Bayonet",
+      "PCB_Rear",
+    ]);
+    expect([...sheets.values()].filter((d) => d >= DEPTH_THIN)).toHaveLength(26); // prettier-ignore
+    // the kept-class shells the class cast used to hold rigid are all thin
+    for (const g of [
+      "Focus_Carrier",
+      "Mount_ChassisPlate",
+      "Mount_BrassRing",
+      "Shim_Ring_01",
+    ])
+      // prettier-ignore
+      for (const [name, depth] of sheets)
+        if (group(name) === g) expect(depth, name).toBeLessThan(DEPTH_THIN);
+  });
+
+  it("hands bolted hardware its host's depth, so it bends or rides with its shell", () => {
+    const depthOf = (name: string): number =>
+      frameOf((root.getObjectByName(name) as THREE.Mesh).geometry)!.depth;
+    const wedges = (host: string): number[] =>
+      [0, 1, 2, 3, 4].map((i) => depthOf(`${host}_Seg${i}`));
+    // exactly a host wedge's float, not the feature's own measurement
+    expect(wedges("Chassis_Fixed")).toContain(depthOf("Focus_Motor"));
+    expect(depthOf("Focus_Motor")).toBeLessThan(DEPTH_THIN);
+    expect(wedges("Mount_Bayonet")).toContain(depthOf("Mount_Screws"));
+    expect(depthOf("Mount_Screws")).toBeGreaterThan(DEPTH_THIN);
   });
 });
 
@@ -669,11 +721,8 @@ function worldVerts(mesh: THREE.Mesh): number[] {
 const FAN = Array.from({ length: 7 }, (_, i) => (i * TAU) / 7);
 
 describe("the aperture drive composes onto a node's seat", () => {
-  // Every shipped seat is identity today, so this is the plain absolute
-  // behaviour. It is pinned anyway, because the pipeline HAS put the fan on the
-  // nodes once: an absolute write then erased it and stacked all seven blades
-  // on blade 1's meridian, and the additive `rotation.y` that fixed that swept
-  // four of the seven backwards.
+  // Every shipped seat is identity today, but the pipeline has put the fan on
+  // the nodes before, so the composing behaviour is pinned too.
 
   it("keeps seven seats distinct and correctly swept, at every aperture", () => {
     const { root, blades } = build("node-seat", FAN);
@@ -723,16 +772,11 @@ describe("the aperture drive composes onto a node's seat", () => {
 });
 
 describe("a seat may live in the vertices or on the node", () => {
-  // Frames are measured in the mesh's LOCAL space on purpose — that is the
-  // space the shader's `position` lives in — so a node-seated blade measures a
-  // different t0 from a baked one. That is only safe because every op consumes
-  // `theta - t0`, `r` and `y`, all invariant under rotation about the optical
-  // axis, while the one root-space quantity (the ladder rung) already composes
-  // `node.matrixWorld`.
-  //
-  // This test IS that argument, executed. It builds its OWN fixtures, so it
-  // keeps guarding the law now that the shipped file seats everything at
-  // identity: an op that ever reads an ABSOLUTE meridian fails here.
+  // Frames are measured in the mesh's LOCAL space (the shader's `position`
+  // space), so a node-seated blade measures a different t0 from a baked one.
+  // That is safe only because every op consumes `theta - t0`, `r` and `y`, all
+  // invariant under rotation about the optical axis. An op that reads an
+  // ABSOLUTE meridian fails here.
 
   it("deforms to the same world geometry either way, on every channel", () => {
     for (const channel of [null, ...RECIPE_NAMES]) {
@@ -815,12 +859,10 @@ describe("the huddle drive — the cards chapter's compact core", () => {
 });
 
 describe("the lead screw's pivot, now that it has a real parent", () => {
-  // lens_work MIGRATION STEP 5 put `Focus_LeadScrew` under `Grp_FocusDrive`, so
-  // createMechanism's runtime `Focus_LeadScrew_Pivot` is INSERTED between the
-  // two for the first time — a code path it had never taken while the screw was
-  // a scene-root node. The empty is identity in the shipped file; these tests
-  // pin both that case and a transformed holder, because the whole `Grp_` design
-  // rests on the insertion composing with whatever is already above it.
+  // `Focus_LeadScrew` hangs under `Grp_FocusDrive`, so createMechanism's runtime
+  // `Focus_LeadScrew_Pivot` is INSERTED between the two. The shipped empty is
+  // identity; a transformed holder is pinned too, because the `Grp_` design
+  // rests on the insertion composing with whatever is above it.
 
   /** An off-axis rod, like the lead screw: away from the axis, along it. */
   function rodGeo(): THREE.BufferGeometry {
@@ -920,9 +962,8 @@ describe("the lead screw's pivot, now that it has a real parent", () => {
   });
 
   it("composes with a holder that CARRIES a transform", () => {
-    // The shipped `Grp_FocusDrive` is identity, so this is the guard rather than
-    // the case: the pivot is measured in its holder's space, so a screw seated
-    // at the same place through a translated empty must end up identical to one
+    // The pivot is measured in its holder's space, so a screw seated at the
+    // same place through a translated empty must land identically to one
     // parented at the root.
     const flat = rig(null, new THREE.Vector3(0, 9, 0));
     const nested = rig("Grp_FocusDrive", new THREE.Vector3(0, 2, 0), 7);

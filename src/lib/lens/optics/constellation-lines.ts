@@ -17,45 +17,40 @@ import type { TslNode } from "../ops/tsl-types";
 import { SKY_INK, type SkyPalette } from "./sky";
 import { STARFIELD_LOOK, safeDir2 } from "./starfield";
 
-// Constellation lines — strokes that DRAW THEMSELVES between two stars, with a
-// travelling head, a gap at each end, and an age fade. The sky chapter's ink;
-// story/constellations.ts is the only caller.
+// Constellation lines — strokes that draw themselves between two stars, with a
+// travelling head, a gap at each end, and an age fade. story/constellations.ts
+// is the only caller.
 //
-// ONE DRAW CALL, FOREVER: a fixed ring buffer of SLOT_COUNT quads, built once
-// and never resized. A spawn writes endpoints, a birth stamp and a duration;
-// everything after that is solved in the fragment off ONE uniform
-// (`uConstTime`). A dead slot is neither hidden nor culled — its age is
-// enormous, so its alpha is exactly 0.
+// One draw call: a fixed ring buffer of SLOT_COUNT quads, built once and never
+// resized. A spawn writes endpoints, a birth stamp and a duration; everything
+// after that is solved in the fragment off one uniform (`uConstTime`). A dead
+// slot is neither hidden nor culled — its age saturates its alpha to 0.
 //
 // Quads, not lines: three's WebGPU backend gives no usable line width, and a
-// stroke needs its width in VIEW SPACE to hold one screen weight at any fov.
+// stroke needs its width in view space to hold one screen weight at any fov.
 // Both endpoints sit on the same sphere about the camera, so one fixed
 // view-space offset is a fixed screen width — starfield.ts's `lineMark` trick.
-// Flat-law compliant: a band of flat ink with a feathered edge, no depth cue.
 //
-// MATERIAL, and where it differs from the starfield: these take the ordinary
-// transparent path with `depthTest = false`, where starfield.ts must ride the
-// OPAQUE list so three's transmission copy picks the stars up. That is safe
-// only because the envelope (story/constellations.ts) is 0 until the dive is
-// over and the camera holds deep sky, so nothing is ever in front of them. A
-// scene that wants these strokes seen THROUGH the lens must move them to the
-// starfield's opaque-list contract — read its header first.
+// Material: these take the ordinary transparent path with `depthTest = false`,
+// where starfield.ts must ride the opaque list so three's transmission copy
+// picks the stars up. That is safe only because the envelope is 0 until the
+// dive is over and nothing is ever in front of them. A scene that wants these
+// strokes seen through the lens must move them to the opaque-list contract.
 
 /** How many line slots the ring buffer holds. Sized against the driver's
  *  cadence and lifetime so a slot is only recycled long after it has faded to
- *  nothing, and the buffer never cuts a living stroke off mid-life. */
+ *  nothing. */
 export const SLOT_COUNT = 24;
 
-/** The gap at each end, RADIANS OF SKY — one fixed angle, so a stroke leaves
- *  the same ring of clear sky around a star whatever its length. It must clear
- *  the catalog's biggest disc (starfield.ts `starRho`). Carried by the GEOMETRY
- *  — spawn writes already-inset endpoints — not by the shader. */
+/** The gap at each end, radians of sky — one fixed angle, so a stroke leaves
+ *  the same ring of clear sky around a star whatever its length, and it must
+ *  clear the catalog's biggest disc. Carried by the geometry: spawn writes
+ *  already-inset endpoints. */
 export const GAP_RAD = 0.009;
 
-/** The ceiling on either end's inset, as a fraction of the segment. Not a live
- *  limit — the driver's pair window keeps every stroke far clear of it — but
- *  what makes `lineInsetAt` total: no separation, however degenerate, can inset
- *  a stroke past its own middle and invert it. */
+/** The ceiling on either end's inset, as a fraction of the segment — what makes
+ *  `lineInsetAt` total, so no separation can inset a stroke past its own middle
+ *  and invert it. */
 export const GAP_MAX = 0.4;
 
 /** The inset at one endpoint, as a fraction of the segment — the fixed angular
@@ -65,26 +60,24 @@ export const lineInsetAt = (sepRad: number): number =>
 
 /** The head's soft leading edge, in units of the segment parameter t. The pen
  *  therefore travels from t = 0 to t = 1 + HEAD_SOFT, so a finished stroke is
- *  at FULL ink all the way to its far end. */
+ *  at full ink all the way to its far end. */
 export const HEAD_SOFT = 0.08;
 
 export const CONST_LINES_LOOK = {
-  /** the sphere the strokes are drawn on: just inside the starfield's, which
-   *  only sorts this mesh nearer in the transparent pass (nothing optical —
-   *  what keeps ink off the discs is `lineInsetAt`). From the one starfield
+  /** the sphere the strokes are drawn on: just inside the starfield's, so this
+   *  mesh sorts nearer in the transparent pass. Derived from the one starfield
    *  radius so the two cannot drift apart. */
   radius: STARFIELD_LOOK.radius * 0.99,
-  /** angular HALF-thickness of a stroke, radians — about one pixel total. The
+  /** angular half-thickness of a stroke, radians — about one pixel total. The
    *  on-axis px/rad is H/(2·tan(fov/2)) and the frame's edge is wider by
    *  1/cos γ; keep it above a pixel or the line drops out between centres. */
   halfWidthRad: 0.00088,
   /** the fraction of the half-width at full ink before the edge feathers — the
-   *  strokes' version of STARFIELD_LOOK.lineCore. Low: a core running nearly to
-   *  the edge reads as an extruded beam rather than a pen mark. */
+   *  strokes' version of STARFIELD_LOOK.lineCore. */
   core: 0.35,
-  /** a multiplier on SKY_INK's `lineOpacity` — a mark this fine has to buy back
-   *  in ink what it gave up in width. The products it makes must stay under 1:
-   *  `opacityNode` is unclamped and an alpha over 1 over-brightens. */
+  /** a multiplier on SKY_INK's `lineOpacity`, buying back in ink what the width
+   *  gave up. The products it makes must stay under 1: `opacityNode` is
+   *  unclamped and an alpha over 1 over-brightens. */
   inkGain: 1.75,
   /** the pen's speed, ms per radian of angular separation — constant rate, so a
    *  long line honestly takes longer than a short one. */
@@ -111,9 +104,9 @@ export const lineHeadAt = (ageMs: number, drawMs: number): number => {
   return x * x * (3 - 2 * x);
 };
 
-/** The age fade, 1..0: a stroke holds at full ink for `lifeMs` AFTER it has
+/** The age fade, 1..0: a stroke holds at full ink for `lifeMs` after it has
  *  finished drawing, then fades over `fadeMs`. Saturates at both ends, so a
- *  long-dead slot is exactly 0, which is what lets it stay in the draw call. */
+ *  long-dead slot is exactly 0 and can stay in the draw call. */
 export const lineAlphaAt = (
   ageMs: number,
   drawMs: number,
@@ -164,8 +157,8 @@ const QUAD_TRIS = [0, 1, 2, 0, 2, 3];
  *  that its age saturates every fade to zero on the first frame. */
 const NEVER = -1e6;
 
-/** Build the line engine. Cheap and synchronous — one BufferGeometry of quads
- *  and one material; no textures, no render target, no GPU work at build. */
+/** Build the line engine: one BufferGeometry of quads and one material, with no
+ *  GPU work at build. */
 export function createConstellationLines(opts: {
   light: boolean;
 }): ConstellationLines {
@@ -177,9 +170,8 @@ export function createConstellationLines(opts: {
   const uInk = uniform(new THREE.Color(palette().line));
   const uInkOpacity = uniform(palette().lineOpacity * CONST_LINES_LOOK.inkGain);
 
-  // ── the ring buffer ────────────────────────────────────────────────────────
-  // `position` holds the quad's PARAMETERS (side, t, 0) and never changes — the
-  // starfield's idiom. The four dynamic attributes are what a spawn writes.
+  // The ring buffer: `position` holds the quad's parameters (side, t, 0) and
+  // never changes; the four dynamic attributes are what a spawn writes.
   const position = new Float32Array(SLOT_COUNT * 4 * 3);
   const aA = new Float32Array(SLOT_COUNT * 4 * 3);
   const aB = new Float32Array(SLOT_COUNT * 4 * 3);
@@ -215,7 +207,6 @@ export function createConstellationLines(opts: {
   geo.setAttribute("aDraw", drawAttr);
   geo.setIndex(new THREE.BufferAttribute(index, 1));
 
-  // ── the graph ──────────────────────────────────────────────────────────────
   const mat = new THREE.MeshBasicNodeMaterial();
   mat.transparent = true;
   mat.depthWrite = false;
@@ -230,7 +221,7 @@ export function createConstellationLines(opts: {
   const side: TslNode = positionGeometry.x;
   const t: TslNode = positionGeometry.y;
 
-  // VIEW SPACE, as starfield.ts's starMark/lineMark do it: the object has no
+  // View space, as starfield.ts's starMark/lineMark do it: the object has no
   // rotation (the starfield group it rides only translates onto the camera), so
   // an offset perpendicular to the segment there is a constant screen width.
   const va: TslNode = modelViewMatrix.mul(vec4(nA, 1));
@@ -274,8 +265,8 @@ export function createConstellationLines(opts: {
 
   const mesh = new THREE.Mesh(geo, mat);
   mesh.name = "Lens_ConstellationLines";
-  // `position` holds quad parameters, so three's bounding sphere is a 1.5-unit
-  // ball at the origin and means nothing — the real extent is the whole sphere.
+  // `position` holds quad parameters, so three's bounding sphere means nothing
+  // — the real extent is the whole sphere
   mesh.frustumCulled = false;
 
   let next = 0;
@@ -292,8 +283,7 @@ export function createConstellationLines(opts: {
       );
       const sep = Math.acos(dot);
       const drawMs = lineDrawMs(sep);
-      // the gap, baked into the endpoints: one angle at both ends and on every
-      // stroke, as a FRACTION of this segment (lineInsetAt)
+      // the gap, baked into the endpoints as a fraction of this segment
       const f = lineInsetAt(sep);
       for (let k = 0; k < 3; k++) {
         // along the chord, matching the straight quad the shader draws

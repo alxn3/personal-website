@@ -3,21 +3,11 @@ import fs from "node:fs";
 import { PRESCRIPTION, IRIS, FOCUS_MM } from "../prescription";
 import { MECHANISM } from "../../ops/mechanism";
 
-// The prescription's SHAPE contract. The optical numbers themselves are
-// measured (dev/prescription-probe.ts) and are look knobs, so nothing here
-// pins a value — it pins the invariants the trace's static unroll depends on:
-// thirteen entries, the shipped node names, a sequential axial order, positive
-// apertures, and a gap ahead of the focus rider wide enough that the focus
-// slide can never REORDER a surface (ops/trace.ts unrolls once, at module
-// load).
-//
-// OPTICS_KNOBS is deliberately NOT mirrored here — a table of tunable look
-// values restated as a literal is churn. The two knobs that must agree with
-// something (warpGain / focusCouple, against traceLens's own signature
-// defaults) are tripwired in optics/__tests__/trace-laws.test.ts, law (i).
-//
-// The GLB is read the same way ops/__tests__/shipped-glb.test.ts reads it: the
-// glTF JSON chunk straight off disk, no renderer.
+// The prescription's SHAPE contract, not its measured values: thirteen entries,
+// the shipped node names, a sequential axial order, positive apertures, and a
+// gap ahead of the focus rider wide enough that the focus slide can never
+// REORDER a surface (ops/trace.ts unrolls once, at module load).
+// The GLB is read as the glTF JSON chunk straight off disk, no renderer.
 
 const MODEL = "public/models/lens_web_segmented.glb";
 
@@ -49,12 +39,9 @@ describe("prescription", () => {
   });
 
   it("(b) runs front→rear in element sequence, never doubling back", () => {
-    // The shipped elements are DOMED and NESTED: their vertex Y spans
-    // interleave across elements, so a global descending-yMm law is false of
-    // real glass. What IS true is the AXIAL ray-hit order — the sequence a ray
-    // on the optical axis meets the surfaces in. Cemented pairs (E01/E02,
-    // E04/E05, E09/E10) are clamped to a coincident interface, hence >=.
-    // Pair k = entries k and k+1: 0 = E01/E02, 3 = E04/E05, 8 = E09/E10.
+    // The elements are domed and nested, so the law is the AXIAL ray-hit order,
+    // not a global descending yMm. Cemented pairs are clamped to a coincident
+    // interface, hence >=. Pair k = entries k and k+1.
     const CEMENTED = new Set([0, 3, 8]);
     for (const e of PRESCRIPTION)
       expect(e.front.yMm, `${e.id} front above its own rear`).toBeGreaterThan(
@@ -82,11 +69,9 @@ describe("prescription", () => {
   });
 
   it("(d) leaves the focus slide unable to reorder any surface", () => {
-    // ops/trace.ts fixes the surface sequence ONCE at module load, at
-    // focus = 0. Only ONE surface moves: Element_12 slides +FOCUS_MM toward
-    // the front (ops/mechanism.ts sign), so only its own two neighbours can be
-    // crossed. Every other pair is static — including the cemented interfaces,
-    // which are coincident by construction and can never reorder.
+    // ops/trace.ts fixes the surface sequence once at module load, at focus = 0.
+    // Only Element_12 moves (+FOCUS_MM toward the front), so only its own two
+    // neighbours can be crossed.
     const r = PRESCRIPTION.findIndex((e) => e.focusRide === 1);
     expect(r, "focus rider has a neighbour on each side").toBeGreaterThan(0);
     expect(r).toBeLessThan(PRESCRIPTION.length - 1);
@@ -119,9 +104,8 @@ describe("prescription", () => {
   });
 
   it("(f) mirrors the mechanism's focus throw exactly", () => {
-    // FOCUS_MM is a LITERAL, not an import: ops/mechanism.ts pulls in
-    // three/webgpu and the optics tree must stay three-free so its tests run on
-    // NUM alone. This test is the tripwire that keeps the two in step.
+    // FOCUS_MM is a literal, not an import: ops/mechanism.ts pulls in
+    // three/webgpu and the optics tree must stay three-free.
     expect(FOCUS_MM).toBe(MECHANISM.focusMm);
   });
 
@@ -140,8 +124,7 @@ describe("prescription", () => {
     ).toBe(false);
 
     // Fully open, the door must still be narrower than the glass on either side
-    // of it — otherwise the first stretch of the aperture channel clips nothing
-    // and the dial has a dead zone (plan amendment 7).
+    // of it, or the first stretch of the aperture channel clips nothing.
     const k = PRESCRIPTION.findIndex(
       (e, i) =>
         i + 1 < PRESCRIPTION.length &&

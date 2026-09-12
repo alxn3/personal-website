@@ -1,5 +1,5 @@
 // Canned showcase animations for the /lens viewer: each maps a single progress
-// value (0..1) to SceneState channel targets, so the page's ONE progress slider
+// value (0..1) to SceneState channel targets, so the page's progress slider
 // scrubs a staged sequence. Adding an animation is one entry in ANIMATIONS.
 import { smoothstep } from "./core/math";
 import {
@@ -12,10 +12,9 @@ import {
 } from "./animation-kit";
 export type { LensAnimation } from "./animation-kit";
 export { fmtParam } from "./animation-kit";
-// Sliders write the LIVE recipe knobs, which are the uniforms the deform host
-// folds. recipeKnob returns a CLAMPING view, so a map that would leave a
-// knob's limit is clamped here too — keep the maps inside the limits or the
-// slider gets a dead zone.
+// Sliders write the live recipe knobs, the uniforms the deform host folds.
+// recipeKnob returns a clamping view, so keep the maps inside the knob limits
+// or the slider gets a dead zone.
 import { recipeKnob } from "./ops/host";
 
 const TAU = Math.PI * 2;
@@ -49,7 +48,7 @@ const ASSEMBLE_PARAMS: ParamSpec[] = [
     u: recipeKnob("assemble", "rewind"),
     map: { k: 1.9 },
   },
-  // exponential: the top of the slider must be GENUINELY flat
+  // exponential: the top of the slider must be genuinely flat
   {
     id: "flatten",
     label: "Flatten",
@@ -72,8 +71,8 @@ const ASSEMBLE_PARAMS: ParamSpec[] = [
     u: recipeKnob("assemble", "curl"),
     map: { k: 1 },
   },
-  // the gate's window is 1 − stagger − partStagger and must stay positive, so
-  // this stops under the joint cap whatever partStagger is left behind
+  // the gate's window is 1 − stagger − 0.25 and must stay positive, so the
+  // map's top is clamped by the knob's range
   {
     id: "stagger",
     label: "Stagger",
@@ -81,7 +80,7 @@ const ASSEMBLE_PARAMS: ParamSpec[] = [
     u: recipeKnob("assemble", "stagger"),
     map: { k: 0.75 },
   },
-  // inverted: more roll-on = LOWER split (the aH boundary)
+  // inverted: more roll-on = lower split (the aH boundary)
   {
     id: "wrap",
     label: "Wrap share",
@@ -104,7 +103,7 @@ const ASSEMBLE_PARAMS: ParamSpec[] = [
     u: recipeKnob("assemble", "snap"),
     map: { k: 1 },
   },
-  // Sector SOLO — TAU at the top is fully open (bit-exact identity); pull it
+  // Sector solo — TAU at the top is fully open (bit-exact identity); pull it
   // down to run the reassembly on one sector only.
   {
     id: "maskWidth",
@@ -122,10 +121,9 @@ const ASSEMBLE_PARAMS: ParamSpec[] = [
   },
 ];
 
-// The ROSE bloom (ops/recipes.ts `rose`): a slider on every taste knob, so the
-// bloom is tunable live while the progress slider scrubs the channel. Every
+// The rose bloom (ops/recipes.ts `rose`): a slider on every taste knob. Every
 // default must land on an integer slider stop, or that slider pops on first
-// touch. `crease`/`creasePos`/`curl` are the FOLD PATTERN.
+// touch. `crease`/`creasePos`/`curl` are the fold pattern.
 const ROSE_PARAMS: ParamSpec[] = [
   {
     id: "lift",
@@ -234,8 +232,8 @@ const CORE_ANIMS: LensAnimation[] = [
     id: "assemble",
     label: "Reassemble",
     hint: "flies home — sheets wrap on",
-    // ONE channel: wedges start disassembled (p=0 ⇒ assemble 1) and seat home
-    // by p=1. The assemble RECIPE owns every per-wedge stagger and roll-on.
+    // One channel: wedges start disassembled (p=0 ⇒ assemble 1) and seat home
+    // by p=1. The assemble recipe owns every per-wedge stagger and roll-on.
     params: paramsOf(ASSEMBLE_PARAMS),
     apply(p, state) {
       drive(state, "zoom", 0);
@@ -257,7 +255,7 @@ const ROSE_ANIMS: LensAnimation[] = [
     params: paramsOf(ROSE_PARAMS),
     setParam: setParamOf(ROSE_PARAMS),
     readParam: readParamOf(ROSE_PARAMS),
-    // The mechanisms COMPOSE with the bloom, so apply() must not zero them.
+    // The mechanisms compose with the bloom, so apply() must not zero them.
     manualMech: true,
     apply(p, state) {
       // straight progress — the recipe owns the whorl wave

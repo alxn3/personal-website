@@ -13,12 +13,15 @@ import {
 } from "../../ops";
 import { emitDeform, emitStats, IDLE_EPS } from "../emit";
 import { LAYOUT } from "../layout";
+import { WRAP_DIR } from "../../house";
 import { DEFORM_WGSL } from "../deform.wgsl";
 import { DEFORM_GLSL } from "../deform.glsl";
+import { opsFold as checkedFold, type OpsFold } from "../deform.js";
 
-// THE EMIT'S PINS. The deform chain ships as CHECKED-IN SOURCE, generated from
-// the recipes by ops/emit/emit.ts — so the one thing that can go wrong is the
-// source drifting from the recipes that produced it. Regenerate with
+// THE EMIT'S PINS. The deform chain ships as CHECKED-IN SOURCE — two shader
+// dialects and the JS module ops/cpu.ts runs — generated from the recipes by
+// ops/emit/emit.ts, so the one thing that can go wrong is the source drifting
+// from the recipes that produced it. Regenerate with
 //
 //   LENS_OPS_EMIT=1 npx vitest run src/lib/lens/ops/emit/__tests__/emit.test.ts
 //
@@ -47,6 +50,34 @@ const banner = (dialect: string) =>
 const wrap = (dialect: "wgsl" | "glsl", src: string) =>
   `${banner(dialect)}\nexport const DEFORM_${dialect.toUpperCase()} = String.raw\`\n${src}\n\`.trim();\n`;
 
+// The JS dialect ships as a MODULE: the emitted function with `__` bound to
+// NUM, under the signature ops/cpu.ts calls. The scaffolding is written in
+// prettier's own layout and the function is `prettier-ignore`d, so the file is
+// byte-for-byte this template — what (a) pins.
+const wrapJs = (src: string) =>
+  `${banner("js")}
+import { NUM as __ } from "../algebra";
+
+type V3 = { x: number; y: number; z: number };
+type V4 = { x: number; y: number; z: number; w: number };
+
+/** The deform at one point on the NUM backend — the shaders' \`opsFold\` —
+ *  writing \`(dx, dy, dz, rot)\` into \`out\`, which is returned. */
+export type OpsFold = (
+  p: V3,
+  a: V4,
+  b: V4,
+  y: V4,
+  ch: V4,
+  k: ArrayLike<V4>,
+  out: Float64Array,
+) => Float64Array;
+
+// prettier-ignore
+export const opsFold: OpsFold =
+${src};
+`;
+
 describe("the emitted deform — staleness pins", () => {
   for (const [dialect, checked, file] of [
     ["wgsl", DEFORM_WGSL, "../deform.wgsl.ts"],
@@ -60,13 +91,20 @@ describe("the emitted deform — staleness pins", () => {
     });
   }
 
+  it("(a) the checked-in JS module is what the recipes emit", () => {
+    const fresh = wrapJs(emitDeform("js"));
+    if (process.env.LENS_OPS_EMIT) writeFileSync(url("../deform.js.ts"), fresh);
+    expect(readFileSync(url("../deform.js.ts"), "utf8")).toBe(fresh);
+  });
+
   it("(b) the emit is deterministic — same input, byte-identical output", () => {
     for (const d of ["wgsl", "glsl", "js"] as const)
       expect(emitDeform(d), d).toBe(emitDeform(d));
   });
 
   it("(c) nothing non-deterministic reached the source", () => {
-    for (const src of [DEFORM_WGSL, DEFORM_GLSL]) {
+    const js = readFileSync(url("../deform.js.ts"), "utf8");
+    for (const src of [DEFORM_WGSL, DEFORM_GLSL, js]) {
       expect(src).not.toMatch(/\b(Date|Math\.random|process\.env)\b/);
       // every float literal must round-trip: no truncated `toFixed` output
       for (const m of src.matchAll(/-?\d+\.\d+(?:e[-+]?\d+)?/g))
@@ -79,21 +117,17 @@ describe("the emitted deform — staleness pins", () => {
   });
 
   it("(d) every copy of the shared constants agrees", () => {
-    // emit.ts mirrors these rather than importing them (host.ts pulls in three,
-    // and the emit step must not), so EVERY copy is pinned against the others.
-    // THREE files declare the idle threshold — the runtime host, the CPU mirror
-    // and the emitter — and a drift between any two is a seated render that is
-    // exact on one path and not on another.
+    // emit.ts mirrors this rather than importing it (host.ts pulls in three,
+    // and the emit step must not), so the two copies are pinned against each
+    // other: a drift is a seated render that is exact on one path and not on
+    // the other.
     const num = (src: string, name: string): number => {
       const m = src.match(new RegExp(`${name} = (-?[\\d.e-]+);`));
       expect(m, `${name} must be declared`).not.toBeNull();
       return Number(m![1]);
     };
     const host = readFileSync(url("../../host.ts"), "utf8");
-    const cpu = readFileSync(url("../../cpu.ts"), "utf8");
     expect(num(host, "export const IDLE_EPS")).toBe(IDLE_EPS);
-    expect(num(cpu, "export const IDLE_EPS")).toBe(IDLE_EPS);
-    expect(num(cpu, "const HOUSE_FROM")).toBe(-1);
     // …and the emitted branch edge IS that constant, in the emit's own spelling
     expect(DEFORM_WGSL).toContain(`ch.x >= ${String(IDLE_EPS)}`);
   });
@@ -122,6 +156,8 @@ describe("the packed uniform layout", () => {
     }
     expect(total).toBe(seen.size);
     expect(LAYOUT.vec4Count * 4).toBeGreaterThanOrEqual(total);
+    // the channels are ONE vec4: a fifth recipe needs a second channel lane
+    expect(LAYOUT.names.length).toBeLessThanOrEqual(4);
   });
 
   it("(f) the emit reads every lane the layout assigns", () => {
@@ -142,7 +178,6 @@ describe("the packed uniform layout", () => {
 // memo, the preamble it derives and the branch/gate scaffolding — and not a
 // re-implementation of the arithmetic.
 const HALF = 0.4;
-const WRAP_DIR = -1;
 const PIECES = [
   { t0: 0.3, R: 10, rank01: 0, layerPhase: 0, rung: 2.5 },
   { t0: 2.1, R: 14.5, rank01: 0.5, layerPhase: 0.37, rung: -1.5 },
@@ -164,153 +199,159 @@ const Y_HALF = 20;
 
 describe("emitted ≡ NUM over the goldens' grid", () => {
   const recipes = makeRecipes(NUM);
-  const fold = new Function(`return ${emitDeform("js")}`)() as (
-    NUMv: typeof NUM,
-    p: number[],
-    a: number[],
-    b: number[],
-    y: number[],
-    ch: number[],
-    k: number[][],
-  ) => [number, number, number, number];
+  const XYZW = ["x", "y", "z", "w"] as const;
+  const v4 = (x = 0, y = 0, z = 0, w = 0) => ({ x, y, z, w });
+  /** the knob array with `name`'s knobs on their lanes, the rest zero */
+  const knobArray = (fill: (name: RecipeName) => Record<string, number>) => {
+    const k = Array.from({ length: LAYOUT.vec4Count }, () => v4());
+    for (const name of LAYOUT.names)
+      for (const [kn, val] of Object.entries(fill(name))) {
+        const lane = LAYOUT.knob[name][kn];
+        k[lane.vec4][XYZW[lane.lane]] = val;
+      }
+    return k;
+  };
+  const out = new Float64Array(4);
+  // The fresh emit, EXECUTED, beside the checked-in module — the same text by
+  // (a); both run so a broken emitter and a stale checkout each fail alone.
+  const folds: Record<string, OpsFold> = {
+    fresh: new Function("__", `return ${emitDeform("js")}`)(NUM) as OpsFold,
+    checked: checkedFold,
+  };
 
   it("(g) every recipe, piece, probe and channel agrees", () => {
-    let worst = 0;
-    let cases = 0;
-    for (let ri = 0; ri < LAYOUT.names.length; ri++) {
-      const name = LAYOUT.names[ri] as RecipeName;
-      const recipe = recipes[name];
-      const knobs = recipe.knobDefaults as Record<string, number>;
-      for (const p of PIECES) {
-        for (const v of PROBES) {
-          for (const channel of CHANNELS) {
-            // ---- the NUM reference, exactly as recipe-goldens.test.ts runs it
-            const L = p.R * 2 * HALF;
-            const d = v.frac * L;
-            const gateAt = (c: number) =>
-              gate(NUM, recipe.gateSpec(knobs), c, {
+    for (const [label, fold] of Object.entries(folds)) {
+      let worst = 0;
+      let cases = 0;
+      for (let ri = 0; ri < LAYOUT.names.length; ri++) {
+        const name = LAYOUT.names[ri] as RecipeName;
+        const recipe = recipes[name];
+        const knobs = recipe.knobDefaults as Record<string, number>;
+        for (const p of PIECES) {
+          for (const v of PROBES) {
+            for (const channel of CHANNELS) {
+              // ---- the NUM reference, exactly as recipe-goldens.test.ts runs it
+              const L = p.R * 2 * HALF;
+              const d = v.frac * L;
+              const gateAt = (c: number) =>
+                gate(NUM, recipe.gateSpec(knobs), c, {
+                  rank01: p.rank01,
+                  layerPhase: p.layerPhase,
+                });
+              const phase = gateAt(channel);
+              const phi = HALF - d / p.R;
+              const ctx: OpCtx<number> = {
+                A: NUM,
+                channel,
+                gateAt,
+                t0: p.t0,
+                R: p.R,
                 rank01: p.rank01,
                 layerPhase: p.layerPhase,
-              });
-            const phase = gateAt(channel);
-            const phi = HALF - d / p.R;
-            const ctx: OpCtx<number> = {
-              A: NUM,
-              channel,
-              gateAt,
-              t0: p.t0,
-              R: p.R,
-              rank01: p.rank01,
-              layerPhase: p.layerPhase,
-              halfSpan: HALF,
-              partClass: PART_CLASS.structure,
-              phi,
-              d,
-              L,
-              yN: v.yN,
-              off: v.off,
-              rung: p.rung,
-              axi: 0,
-              layerN: 5,
-              adopted: 0,
-              flight: phase.flight,
-              stick: phase.stick,
-              wrapDir: WRAP_DIR,
-            };
-            const seatTheta = p.t0 + phi;
-            const seatR = p.R + v.off;
-            const axial = v.yN * 40;
-            const seat: VertexState<number> = {
-              x: seatR * Math.cos(seatTheta),
-              z: seatR * Math.sin(seatTheta),
-              axial,
-              rot: 0,
-              aim: p.t0,
-              rem: 0,
-            };
-            const frame0: PieceFrame<number> = {
-              x: p.R * Math.cos(p.t0),
-              z: p.R * Math.sin(p.t0),
-              axial: 0,
-              orient: p.t0,
-            };
-            const ref = runPipeline(
-              recipe.build(ctx, knobs),
-              seat,
-              frame0,
-              ctx,
-            ).v;
-            const on = NUM.step(IDLE_EPS, channel);
-            const want = [
-              (ref.x - seat.x) * on,
-              (ref.axial - seat.axial) * on,
-              (ref.z - seat.z) * on,
-              ref.rot * on,
-            ];
+                halfSpan: HALF,
+                partClass: PART_CLASS.structure,
+                phi,
+                d,
+                L,
+                yN: v.yN,
+                off: v.off,
+                rung: p.rung,
+                axi: 0,
+                depth: 0,
+                adopted: 0,
+                flight: phase.flight,
+                stick: phase.stick,
+                wrapDir: WRAP_DIR,
+              };
+              const seatTheta = p.t0 + phi;
+              const seatR = p.R + v.off;
+              const axial = v.yN * 40;
+              const seat: VertexState<number> = {
+                x: seatR * Math.cos(seatTheta),
+                z: seatR * Math.sin(seatTheta),
+                axial,
+                rot: 0,
+                aim: p.t0,
+                rem: 0,
+              };
+              const frame0: PieceFrame<number> = {
+                x: p.R * Math.cos(p.t0),
+                z: p.R * Math.sin(p.t0),
+                axial: 0,
+                orient: p.t0,
+              };
+              const ref = runPipeline(
+                recipe.build(ctx, knobs),
+                seat,
+                frame0,
+                ctx,
+              ).v;
+              const want = [
+                ref.x - seat.x,
+                ref.axial - seat.axial,
+                ref.z - seat.z,
+                ref.rot,
+              ];
 
-            // ---- the EMITTED run: only this recipe's channel is up, and the
-            // lanes carry that recipe's defaults
-            const ch = [0, 0, 0, 0];
-            ch[ri] = channel;
-            const k = Array.from({ length: LAYOUT.vec4Count }, () => [0, 0, 0, 0]); // prettier-ignore
-            for (const [kn, val] of Object.entries(knobs)) {
-              const lane = LAYOUT.knob[name][kn];
-              k[lane.vec4][lane.lane] = val;
+              // ---- the EMITTED run: only this recipe's channel is up, and the
+              // lanes carry that recipe's defaults
+              const ch = v4();
+              ch[XYZW[ri]] = channel;
+              const k = knobArray((n) => (n === name ? knobs : {}));
+              const got = fold(
+                { x: seat.x, y: axial, z: seat.z },
+                v4(p.t0, p.R, HALF * 2, p.rank01),
+                v4(p.layerPhase, PART_CLASS.structure, p.rung, 0),
+                v4(-Y_HALF, Y_HALF, 5, 0),
+                ch,
+                k,
+                out,
+              );
+              expect(got).toBe(out);
+              for (let c = 0; c < 4; c++) {
+                const delta = Math.abs(got[c] - want[c]);
+                if (delta > worst) worst = delta;
+                expect(
+                  got[c],
+                  `${label} ${name} t0=${p.t0} frac=${v.frac} ch=${channel} [${"xyzr"[c]}]`,
+                ).toBeCloseTo(want[c], 9);
+              }
+              cases++;
             }
-            const got = fold(
-              NUM,
-              [seat.x, axial, seat.z],
-              [p.t0, p.R, HALF * 2, p.rank01],
-              [p.layerPhase, PART_CLASS.structure, p.rung, 0],
-              [-Y_HALF, Y_HALF, 5, 0],
-              ch,
-              k,
-            );
-            for (let c = 0; c < 4; c++) {
-              const delta = Math.abs(got[c] - want[c]);
-              if (delta > worst) worst = delta;
-              expect(
-                got[c],
-                `${name} t0=${p.t0} frac=${v.frac} ch=${channel} [${"xyzr"[c]}]`,
-              ).toBeCloseTo(want[c], 9);
-            }
-            cases++;
           }
         }
       }
+      expect(cases).toBe(LAYOUT.names.length * PIECES.length * PROBES.length * CHANNELS.length); // prettier-ignore
+      // the only spread is the preamble's re-derivation of phi/d/off through
+      // atan2 and sqrt, where the reference is handed them directly
+      expect(worst, label).toBeLessThan(1e-9);
     }
-    expect(cases).toBe(LAYOUT.names.length * PIECES.length * PROBES.length * CHANNELS.length); // prettier-ignore
-    // the only spread is the preamble's re-derivation of phi/d/off through
-    // atan2 and sqrt, where the reference is handed them directly
-    expect(worst).toBeLessThan(1e-9);
   });
 
   it("(h) an idle channel emits an exact zero", () => {
-    const k = Array.from({ length: LAYOUT.vec4Count }, () => [0, 0, 0, 0]);
-    for (const name of LAYOUT.names)
-      for (const [kn, val] of Object.entries(
-        recipes[name as RecipeName].knobDefaults as Record<string, number>,
-      )) {
-        const lane = LAYOUT.knob[name][kn];
-        k[lane.vec4][lane.lane] = val;
-      }
-    for (const ch of [
-      [0, 0, 0, 0],
-      [IDLE_EPS / 2, 0, 0, 0],
-      [0, IDLE_EPS / 2, IDLE_EPS / 2, IDLE_EPS / 2],
-    ])
-      expect(
-        fold(
-          NUM,
-          [10 * Math.cos(0.3), 4, 10 * Math.sin(0.3)],
-          [0.3, 10, 0.8, 0.5],
-          [0, PART_CLASS.structure, 2.5, 0],
-          [-Y_HALF, Y_HALF, 5, 0],
-          ch,
-          k,
-        ),
-        `ch = ${ch.join(",")}`,
-      ).toEqual([0, 0, 0, 0]);
+    const k = knobArray(
+      (n) => recipes[n].knobDefaults as Record<string, number>,
+    );
+    for (const fold of Object.values(folds))
+      for (const ch of [
+        v4(0, 0, 0, 0),
+        v4(IDLE_EPS / 2, 0, 0, 0),
+        v4(0, IDLE_EPS / 2, IDLE_EPS / 2, IDLE_EPS / 2),
+      ])
+        expect(
+          Array.from(
+            fold(
+              { x: 10 * Math.cos(0.3), y: 4, z: 10 * Math.sin(0.3) },
+              v4(0.3, 10, 0.8, 0.5),
+              v4(0, PART_CLASS.structure, 2.5, 0),
+              v4(-Y_HALF, Y_HALF, 5, 0),
+              ch,
+              k,
+              out,
+            ),
+          ),
+          `ch = ${[ch.x, ch.y, ch.z, ch.w].join(",")}`,
+        ).toEqual([0, 0, 0, 0]);
   });
 });
 

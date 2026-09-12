@@ -13,7 +13,10 @@
     "format:check": "prettier --check .",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "test": "vitest run",
+    "test": "vitest run --project default",
+    "test:structural": "vitest run --project structural",
+    "test:all": "vitest run",
+    "lens:regen": "LENS_STORY_MAP=1 LENS_STORY_COST=1 LENS_PIECE_FLOW=1 vitest run src/lib/lens/story/__tests__/story-map.test.ts src/lib/lens/story/__tests__/story-cost.test.ts src/lib/lens/story/__tests__/piece-flow.test.ts",
     "astro": "astro"
   },
   "dependencies": {

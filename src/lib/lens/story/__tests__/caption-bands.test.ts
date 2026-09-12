@@ -17,9 +17,8 @@ import {
 // runtime — one table, two readers, so the two cannot drift. These checks pin
 // the DERIVATION, not the numbers: the durations are free to retune.
 
-/** The track's scrollable length — see the scroll-space note in story.ts. The
- *  UNIT is load-bearing and pinned on purpose: svh, never dvh, so an iOS toolbar
- *  cannot re-lay-out the story mid-scroll (the unit law in story.ts). */
+/** The track's scrollable length. The unit is load-bearing: svh, never dvh, so
+ *  an iOS toolbar cannot re-lay-out the story mid-scroll. */
 const SCROLL = "(100% - 100svh)";
 /** a band box's multiple of that length, back out of the emitted CSS */
 const coeff = (css: string): number => {
@@ -40,8 +39,12 @@ describe("CAPTION_BANDS", () => {
         Math.max(0, r.p0 - CAPTION_PAD),
         12,
       );
-      if (r.p1 < 0.999)
-        expect(b.b, `${b.id} end`).toBeCloseTo(r.p1 + CAPTION_PAD, 12);
+      // …unless the scene authors an early end for its caption (capEnd)
+      const end =
+        r.scene.capEnd !== undefined
+          ? r.p0 + (r.p1 - r.p0) * r.scene.capEnd
+          : r.p1 + CAPTION_PAD;
+      if (r.p1 < 0.999) expect(b.b, `${b.id} end`).toBeCloseTo(end, 12);
     }
   });
 
@@ -87,10 +90,17 @@ describe("CAPTION_BANDS", () => {
       expect(cur.a, `${cur.id} starts after ${prev.id}`).toBeGreaterThan(
         prev.a,
       );
-      expect(prev.b - cur.a, `${prev.id}/${cur.id} crossfade`).toBeCloseTo(
-        2 * CAPTION_PAD,
-        12,
-      );
+      // a scene that authors capEnd leaves early: its caption is gone before
+      // the next band opens, so there is no crossfade to share
+      if (rangeOf(prev.id).scene.capEnd !== undefined)
+        expect(prev.b, `${prev.id} ends before ${cur.id}`).toBeLessThanOrEqual(
+          cur.a,
+        );
+      else
+        expect(prev.b - cur.a, `${prev.id}/${cur.id} crossfade`).toBeCloseTo(
+          2 * CAPTION_PAD,
+          12,
+        );
     }
   });
 
@@ -98,7 +108,12 @@ describe("CAPTION_BANDS", () => {
     for (const r of RANGES) {
       const b = bandOf(r.scene.id);
       expect(b.a, `${r.scene.id} start`).toBeLessThanOrEqual(r.p0);
-      expect(b.b, `${r.scene.id} end`).toBeGreaterThanOrEqual(r.p1);
+      // an authored early end still covers the scene's own camera move
+      const end =
+        r.scene.capEnd !== undefined
+          ? r.p0 + (r.p1 - r.p0) * r.scene.transit
+          : r.p1;
+      expect(b.b, `${r.scene.id} end`).toBeGreaterThanOrEqual(end);
     }
   });
 });

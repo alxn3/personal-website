@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-// TEST-ONLY optics import: the seam this file guards is the one between the
-// ambient and the dive, and pinning it against a literal `1` would let a change
-// to the fly's park drift silently. internals.ts itself must NEVER import from
-// optics/ — it is statically imported by hero-driver and would drag the uniform
-// boxes into the homepage's initial chunk.
+// TEST-ONLY optics import, so the ambient/dive seam is pinned against the fly's
+// own value. internals.ts itself must NEVER import from optics/ — hero-driver
+// imports it statically and it would drag the uniform boxes into the initial
+// chunk.
 import { FLY } from "../../optics/fly-core";
 import { rangeOf, atFrac } from "../story";
+import { createInternalsAmbient } from "../internals";
 import {
   internalsEnvAt,
   internalsFocusAt,
@@ -88,13 +88,11 @@ describe("internals aperture handoff", () => {
 
   it("starts its cycle at rest, and takes 5s to come back", () => {
     const p = atFrac(inR, 0.3); // envelope at full
-    // PHASE: the raised cosine begins at zero displacement, so the iris is
-    // wide open on the ambient's very first frame — nothing to step over on
-    // the way in, whatever the envelope is doing.
+    // PHASE: the raised cosine begins at zero displacement, so the iris is wide
+    // open on the ambient's first frame — nothing to step over on the way in.
     expect(internalsBreathAt(0, p)).toBe(0);
     expect(internalsBreathAt(2500, p)).toBeGreaterThan(0);
-    // PERIOD: the peak sits at the HALF period, which pins BREATH_MS at 5000 —
-    // shift the constant and the crest moves off 2500.
+    // PERIOD: the peak sits at the HALF period, pinning BREATH_MS at 5000.
     const peak = internalsBreathAt(2500, p);
     expect(peak).toBeCloseTo(0.55, 10);
     expect(internalsBreathAt(2300, p)).toBeLessThan(peak);
@@ -127,5 +125,36 @@ describe("internals focus rack", () => {
         0,
       );
     }
+  });
+});
+
+describe("the phase-clock rider", () => {
+  const rig = () => {
+    let cb: ((pE: number, dt: number) => boolean | void) | null = null;
+    const state = {
+      story: 0,
+      focus: 0,
+      focusTarget: 0,
+      aperture: 0,
+      apertureTarget: 0,
+    };
+    const scene = {
+      state,
+      onEvaluate: (f: (pE: number, dt: number) => boolean | void) => {
+        cb = f;
+      },
+    } as unknown as Parameters<typeof createInternalsAmbient>[0];
+    createInternalsAmbient(scene);
+    return { state, tick: () => cb!(state.story, 16) };
+  };
+
+  it("reports motion only inside its span, so an idle scene can sleep", () => {
+    const { state, tick } = rig();
+    expect(tick()).toBe(false); // the hero: not its span, nothing written
+    state.story = atFrac(rangeOf("internals"), 0.5);
+    expect(tick()).toBe(true); // the clock runs: every frame is live
+    expect(tick()).toBe(true);
+    state.story = atFrac(rangeOf("rewrap"), 0.5);
+    expect(tick()).toBe(false);
   });
 });

@@ -1,16 +1,16 @@
-// Scroll driver for the homepage lens hero: writes the story's envelopes onto
-// the scene each frame — mechanism channels, per-block --beat-* vars, HUD /
-// scene-rail / scroll-cue chrome, background tint, pin projection. The element
-// ids and data-* attributes queried below are the contract with
-// LensStory.astro's hero markup.
+// Scroll driver for the homepage lens hero. Two media, two clocks: the 3D frame
+// is evaluated at the EASED story p (scene.onEvaluate — channels, orientation,
+// fades, ink, the fly) and the DOM chrome (per-block --beat-* vars, HUD /
+// scene-rail / scroll-cue, background tint) is written at the raw scroll p in
+// frame(). The element ids and data-* attributes queried below are the
+// contract with LensStory.astro's hero markup.
 //
 // HOMEPAGE-CHUNK LAW: this file is in the initial chunk, so it may NEVER
 // statically import optics/ or a lazy story module (fly, trails,
 // constellations, state, cost, flow) — those are dynamic-import only.
 //
 // CAPTIONS ARE NOT HERE: their visibility is layout (story.ts CAPTION_BANDS +
-// position: sticky), so they survive a driver that never starts. Everything
-// this module does is enhancement over an acceptable CSS default.
+// position: sticky), so they survive a driver that never starts.
 //
 // LensStory.astro keeps everything that must run WITHOUT a driver: initScene +
 // fallback, the theme watcher (forwarded here via onThemeChange), the pause
@@ -19,7 +19,6 @@
 import type { SceneHandle } from "../core/scene";
 import { uInkFill } from "../materials/unified";
 import { recipeKnob } from "../ops/host";
-import { MODEL_BORE_X_Z } from "../core/scene";
 import {
   STORY,
   RANGES,
@@ -28,27 +27,23 @@ import {
   holdCentreOf,
   DIVE_P0,
 } from "./story";
-import { revealRollAt } from "./reveal";
 import { band, BAND_FEATHER, clamp01, smoothstep } from "../core/math";
 import { isLightTheme } from "../core/theme";
 import { createInternalsAmbient } from "./internals";
-import { createPeelCards, peelRollAt, peelTurnAt } from "./peelcards";
-// The envelopes (story/envelopes.ts) are pure functions of p — this file only
-// WRITES them to the scene; it authors none of them.
+import { createPeelCards } from "./peelcards";
 import type { Rgb } from "./envelopes";
-// TYPE-ONLY, both: these two are dynamic-import-only per the chunk law, and an
-// erased import cannot pull them into the homepage's.
+// type-only: these are dynamic-import-only per the chunk law, and an erased
+// import cannot pull them into the homepage's
 import type { StoryConstellations } from "./constellations";
 import type { StoryTrails } from "./trails";
 import type { StoryPetals } from "./petals";
 import {
-  uprightAt,
   ASSEMBLE_KEEP_SCOPE,
   ENDING_BLOOM,
   ENDING_CURL,
   ENDING_RING_PHASE,
   ENDING_REBEND,
-  dipAt,
+  assembleAt,
   bgStopsFor,
   bgTintAt,
   chromeAt,
@@ -59,13 +54,12 @@ import {
   huddleAt,
   inkFillAt,
   interiorFadeAt,
+  orientationAt,
   preShutAt,
-  rockYAt,
-  rockZAt,
+  roseAt,
   sceneIndexAt,
   scrollCueAt,
   shellFadeAt,
-  wrapBloomWrite,
   zoomAt,
 } from "./envelopes";
 
@@ -81,6 +75,10 @@ const curl = recipeKnob("explode", "curl");
 const ringPhase = recipeKnob("explode", "ringPhase");
 const rebend = recipeKnob("explode", "rebend");
 
+// per-frame scratch: the orientation handed to the scene, so a frame allocates
+// nothing
+const ORIENT = { x: 0, y: 0, z: 0 };
+
 export function startHeroStory(scene: SceneHandle): HeroDriver {
   const track = document.getElementById("lens-track")!;
   const stage = document.getElementById("lens-stage")!;
@@ -88,8 +86,7 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
   const sceneRail = document.getElementById("scene-rail")!;
   const scrollCue = document.getElementById("scroll-cue")!;
   // Per-block progress: any element with data-beat gets its scene's progress
-  // written as custom properties each frame, so content-specific CSS can react
-  // to the story. A typo'd id must not take the page down — warn and SKIP.
+  // written as custom properties each frame. A typo'd id warns and is skipped.
   const beats = [...track.querySelectorAll<HTMLElement>("[data-beat]")].flatMap(
     (el) => {
       const id = el.dataset.beat!;
@@ -106,15 +103,13 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
           el,
           p0: r.p0,
           p1: r.p1,
-          // the block's band, straight off the story table. The FINAL band ends
-          // at the track end and CSS holds that caption lit there, so its far
-          // edge is pushed one feather past — otherwise --beat-visibility dims
-          // over the last of the scroll while the caption stays up.
+          // the block's band, off the story table. The FINAL band's far edge is
+          // pushed one feather past the track end, where CSS holds the caption
+          // lit, so --beat-visibility does not dim under it.
           a: bnd.a,
           b: bnd.final ? bnd.b + BAND_FEATHER : bnd.b,
           // --beat-progress window in scene-local 0..1, authored via
-          // LensSceneContent's progressFrom/progressTo — parsed once, not per
-          // frame
+          // LensSceneContent's progressFrom/progressTo, parsed once
           f0: Number(el.dataset.progressFrom ?? 0),
           f1: Number(el.dataset.progressTo ?? 1),
           // last values written, so a block resting at its floor writes nothing
@@ -129,14 +124,16 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
   // Tracked-part pins: every [data-track] element follows its model node's
   // projected screen position each frame (LensPin.astro).
   const pins = [...stage.querySelectorAll<HTMLElement>("[data-track]")].map(
-    (el) => ({ el, node: el.dataset.track!, wx: NaN, wy: NaN }),
+    (el) => ({ el, node: el.dataset.track!, wx: NaN, wy: NaN, wVis: "" }),
   );
   if (pins.length) {
     // the projected point, reused across pins and frames
     const at = { x: 0, y: 0 };
     scene.onFrame((project) => {
       for (const pin of pins) {
-        if (project(pin.node, at)) {
+        // hidden: unknown node or behind the camera
+        const vis = project(pin.node, at) ? "" : "hidden";
+        if (vis === "") {
           // rounded to the tenth the transform is written at, so a pin that
           // lands on the same tenth writes no string
           const x = Math.round(at.x * 10) / 10;
@@ -146,16 +143,16 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
             pin.wy = y;
             pin.el.style.transform = `translate(${x}px, ${y}px)`;
           }
-          pin.el.style.visibility = "";
-        } else {
-          pin.el.style.visibility = "hidden"; // unknown node or behind the camera
+        }
+        if (vis !== pin.wVis) {
+          pin.wVis = vis;
+          pin.el.style.visibility = vis;
         }
       }
     });
   }
-  // Scene-rail dots: one per rail-flagged scene, matched to the markup by scene
-  // id (LensStory.astro renders the spans off the same STORY filter). `i` is
-  // the scene's index in RANGES.
+  // scene-rail dots: one per rail-flagged scene, matched to the markup by scene
+  // id; `i` is the scene's index in RANGES
   const rails = RANGES.flatMap((r, i) =>
     r.scene.rail
       ? [
@@ -178,7 +175,7 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
   let railScn = -1;
 
   // background tint: the stop table is per THEME, held across frames and
-  // rebuilt on a flip, so the per-frame path only interpolates.
+  // rebuilt on a flip, so the per-frame path only interpolates
   let BG_STOPS = bgStopsFor(isLightTheme());
   let lastBgP = 0;
   const bgRgb: Rgb = [0, 0, 0];
@@ -193,28 +190,27 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
   }
 
   let lastP = 0; // last p handed to frame() — read by the dev scrub panel
+  /** the eased p the 3D frame was last evaluated at */
+  let lastPE = NaN;
   /** when the story position last moved — the prewarm waits on it */
   let lastMoveAt = 0;
 
   // The fly-through span's driver (story/fly.ts): dynamic-import only, per the
-  // chunk law. Prefetch starts at the PEEL — several scenes of scrolling before
-  // the dive, and a quiet stretch for the import's first-visit hitch to land.
-  let fly: { frame(p: number): void; warm(): Promise<void> } | undefined;
+  // chunk law. Prefetch starts at the PEEL, several scenes before the dive.
+  let fly: { evaluate(pE: number): void; warm(): Promise<void> } | undefined;
   let flyLoad: Promise<unknown> | undefined;
   const flyPrefetchP = peR.p0;
-  /** Import + warm the dive. Fired at BOOT idle (below) so the import, the
-   *  wormhole pass compile and the glass clone build land while the reader is
-   *  still on the hero; the scroll trigger in frame() is the fallback for a
-   *  deep link that outruns the timer. */
+  /** Import + warm the dive. Fired at BOOT idle so the import, the pass compile
+   *  and the glass clone build land while the reader is still on the hero; the
+   *  scroll trigger in frame() is the fallback for a deep link. */
   function loadFly() {
     if (flyLoad) return flyLoad;
     flyLoad = import("./fly")
       .then((m) => {
         fly = m.createStoryFly(scene);
-        // A deep link parked inside the fly span imports on its ONE boot frame
-        // and never scrolls again, so without this re-drive the dive would not
-        // run. frame() is idempotent for a repeated p.
-        frame(lastP);
+        // a deep link parked inside the span never moves again: re-evaluate
+        lastPE = NaN;
+        scene.invalidate();
       })
       .catch((err) => console.warn("lens fly: driver failed to load", err));
     return flyLoad;
@@ -229,14 +225,11 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
   /** …the same window, awaited. */
   const idle = () => new Promise<void>((resolve) => atIdle(resolve));
   const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-  /** Stillness a warm waits for. A warm frame costs what the boundary it
-   *  spares would have; landing it mid-gesture just moves the stutter. */
+  /** Stillness a warm waits for: a warm frame landing mid-gesture just moves
+   *  the stutter it spares. */
   const WARM_QUIET_MS = 350;
-  /** Set once the reader crosses into the peel: scrolling that far IS proof
-   *  they are heading for the dive, so the warms stop waiting for a still
-   *  moment that may never come. The peel and cards are several quiet scenes
-   *  of runway, and a warm frame there is far cheaper than the mount at the
-   *  dive's own edge. */
+  /** Set once the reader crosses into the peel, after which the warms stop
+   *  waiting for a still moment that may never come. */
   let warmNow = false;
   /** An idle window with the story standing still — or none at all, once the
    *  approach has escalated. */
@@ -250,9 +243,8 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
     }
   }
 
-  // The sky chapter's ink (story/constellations.ts), lazy for the same chunk
-  // reason and SELF-DRIVING once created (its own onFrame, gated on
-  // storyTarget), so there is no per-frame call here — only the load.
+  // the sky chapter's ink (story/constellations.ts), lazy for the same chunk
+  // reason and self-driving once created, so there is only the load here
   let constellations: StoryConstellations | undefined;
   let constLoad: Promise<unknown> | undefined;
   const constPrefetchP = rangeOf("flythrough").p0;
@@ -268,9 +260,8 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
     return constLoad;
   }
 
-  // The turning sky (story/trails.ts), lazy and self-driving on the same terms.
-  // It needs NO re-drive after the import (unlike the fly hook) because it
-  // reads storyTarget from its own onFrame and catches up by itself.
+  // the turning sky (story/trails.ts), lazy and self-driving on the same terms;
+  // it needs no re-drive after the import, unlike the fly hook
   let trails: StoryTrails | undefined;
   let trailsLoad: Promise<unknown> | undefined;
   const trailsPrefetchP = rangeOf("constellations").p0;
@@ -284,8 +275,8 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
     return trailsLoad;
   }
 
-  // The bloom's petals (story/petals.ts), lazy and self-driving on the same
-  // terms as the trails. Prefetched a whole scene early, at the rewrap.
+  // the bloom's petals (story/petals.ts), lazy and self-driving like the
+  // trails; prefetched a scene early, at the rewrap
   let petals: StoryPetals | undefined;
   let petalsLoad: Promise<unknown> | undefined;
   const petalsPrefetchP = rangeOf("rewrap").p0;
@@ -299,15 +290,11 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
     return petalsLoad;
   }
 
-  /** THE BOOT PREWARM, in the order the reader REACHES them and one idle window
-   *  each: the card field's window opens first (a scene in), then the dive, then
-   *  the sky chapter's ink and its trails. Importing is only half of it — each
-   *  module's first DRAW is what uploads its textures and buffers, and that
-   *  upload IS the boundary's stall. Every step waits for the story to STAND
-   *  STILL, because a warm frame landing under the reader's thumb is the same
-   *  stutter in a new place. The scroll triggers in frame() remain the fallback
-   *  for a deep link — or a reader — that outruns this, and every step is
-   *  idempotent against one. */
+  /** THE BOOT PREWARM, in the order the reader reaches them and one idle window
+   *  each. Importing is only half of it: each module's first DRAW uploads its
+   *  textures and buffers, which is the boundary's stall. Every step waits for
+   *  the story to stand still, and every step is idempotent against the scroll
+   *  triggers in frame(). */
   async function prewarm() {
     await whenStill();
     peelCards.warm();
@@ -315,7 +302,7 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
     await loadFly();
     await whenStill();
     // the pass's own frame, ahead of the dive's: its render targets are the
-    // dive's biggest allocation and warmFly's dry frame is heavy enough alone
+    // dive's biggest allocation
     await scene.buildWormholePost();
     await whenStill();
     await fly?.warm();
@@ -330,116 +317,55 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
     petals?.warm();
   }
 
-  // The two STATICALLY imported story modules (neither pulls in optics/),
-  // booted above frame(), which reaches for peelCards. internals.ts gates
-  // itself to the internals span, where IT — not frame() — owns focus and
-  // aperture; peelcards.ts is driven from frame() below plus its own onFrame.
+  // The two statically imported story modules (neither pulls in optics/).
+  // internals.ts gates itself to the internals span, where it — not the
+  // evaluate step below — owns focus and aperture.
   createInternalsAmbient(scene);
   const peelCards = createPeelCards(scene);
 
-  // THE MODEL'S ROLL — the one setModelOrientation writer, on the RENDER loop,
-  // because the ease outlives the scroll (a write from frame() would freeze the
-  // angle mid-settle). Three disjoint AXES, written together because the
-  // orientation is a snap-per-call absolute — and THE TWO-CLOCK LAW is that
-  // each rides the clock its own neighbourhood runs on:
-  //
-  //   · the reveal's term takes the LIVE EASED channels (scene.state.story /
-  //     .explode), so spin, spread and camera cannot come apart on a fling;
-  //   · the peel's bore roll and the cards' turn stay on the RAW p, because
-  //     their whole neighbourhood is raw — the card windows, the wink and the
-  //     wrap itself — and both settle on screen, so their ramps have to die
-  //     into their edges.
-  //
-  // The same callback applies story/envelopes.ts's wrap→bloom hand-over on the
-  // values the deform host actually sums.
-  scene.onFrame(() => {
-    const pE = clamp01(scene.state.story);
-    writeWrapBloom(lastP);
-    scene.setModelOrientation({
-      // the bore: the peel's roll under the departure, then the reveal's own
-      // turn in the sky chapter — disjoint in p
-      x: peelRollAt(lastP) + revealRollAt(pE, scene.state.explode),
-      // the cards scene's clockwise turn about the stage's vertical axis, plus
-      // the ending's rock — two square axes carry the wobble's cone
-      y: peelTurnAt(lastP) + rockYAt(lastP),
-      // …and the TIP: the bore lies on world +X everywhere but the internals
-      // scene, where it stands up (story/envelopes.ts uprightAt), less the
-      // turn's own nose dip and plus the rock's other half. Same writer,
-      // because modelGroup.rotation has one.
-      z:
-        MODEL_BORE_X_Z * (1 - uprightAt(lastP)) - dipAt(lastP) + rockZAt(lastP),
-    });
+  // THE 3D EVALUATE STEP, at the eased story p: every value the frame draws is
+  // a pure function of pE, written value-and-target so nothing lags it. Skipped
+  // while pE stands still, so a parked story costs nothing.
+  scene.onEvaluate((pE) => {
+    if (pE === lastPE) return false;
+    lastPE = pE;
+    const s = scene.state;
+    s.zoom = s.zoomTarget = zoomAt(pE);
+    // outside the cards+internals span the driver owns focus and the aperture's
+    // pre-shut ramp; inside it story/internals.ts does — separated by RANGE
+    if (driverOwnsIris(pE)) {
+      s.focus = s.focusTarget = 0;
+      s.aperture = s.apertureTarget = preShutAt(pE);
+    }
+    s.explode = s.explodeTarget = explodeAt(pE);
+    s.assemble = s.assembleTarget = assembleAt(pE);
+    s.rose = s.roseTarget = roseAt(pE);
+    // the cards chapter's compact core (ops/mechanism.ts huddleMm)
+    s.huddle = s.huddleTarget = huddleAt(pE);
+    scene.setModelOrientation(orientationAt(pE, ORIENT));
+    // the ink ramps; the uniform box is materials/unified.ts's, so this line is
+    // the only coupling
+    uInkFill.value = inkFillAt(pE);
+    // the body fade is the dive's alone; this half of the tile is a constant 1,
+    // written to keep the range-tiled writer map GAPLESS
+    if (pE < DIVE_P0) scene.setBodyFade(1);
+    // the shell's and the interior's winks and returns — one law each in
+    // story/envelopes.ts, both riding story/peelcards.ts's WINK_SPAN
+    scene.setShellFade(shellFadeAt(pE));
+    scene.setInteriorFade(interiorFadeAt(pE));
+    // last: the fly owns the iris inside its span, so its writes land after
+    // the resets above
+    fly?.evaluate(pE);
+    return false;
   });
 
-  /** Apply story/envelopes.ts's `wrapBloomWrite` at `p`: both targets always,
-   *  the two VALUES only where the law names one (a `null` leaves the channel
-   *  to core/scene's ease). */
-  function writeWrapBloom(p: number) {
-    const w = wrapBloomWrite(p, {
-      assemble: scene.state.assemble,
-      explode: scene.state.explode,
-    });
-    scene.state.assembleTarget = w.assembleTarget;
-    if (w.assemble !== null) scene.state.assemble = w.assemble;
-    scene.state.explodeTarget = w.explodeTarget;
-    if (w.explode !== null) scene.state.explode = w.explode;
-    scene.state.roseTarget = w.roseTarget;
-    if (w.rose !== null) scene.state.rose = w.rose;
-  }
-
+  let wCue = NaN;
+  let wChrome = NaN;
+  /** The DOM chrome at the raw scroll p, and the story target the 3D eases to. */
   function frame(p: number) {
     if (p !== lastP) lastMoveAt = performance.now();
     lastP = p;
-    // The mechanism channels — every window is authored in story/envelopes.ts.
-    const zoom = zoomAt(p);
-    const explode = explodeAt(p);
-
-    scene.state.zoomTarget = zoom;
-    // Outside the cards+internals span the driver owns focus and the aperture's
-    // pre-shut ramp; inside it story/internals.ts does, from a different rAF.
-    // The two writers are separated by RANGE, not order.
-    if (driverOwnsIris(p)) {
-      scene.state.focusTarget = 0;
-      scene.state.apertureTarget = preShutAt(p);
-    }
-    // the wrap, the spread and the bloom on this clock, at the raw p
-    writeWrapBloom(p);
-    // the cards chapter's compact core (ops/mechanism.ts huddleMm)
-    scene.state.huddleTarget = huddleAt(p);
-    // …and the departure's SCOPE, a knob rather than a channel: the cards
-    // chapter takes the outer layers off the mechanism it reveals, and the wrap
-    // runs nowhere else on the track (story/envelopes.ts).
-    keepScope.value = ASSEMBLE_KEEP_SCOPE;
-    // …and the ending's own spread, mid-fall curl and parked ring phase, none
-    // of which /lens's inspection control wants (story/envelopes.ts).
-    bloom.value = ENDING_BLOOM;
-    curl.value = ENDING_CURL;
-    ringPhase.value = ENDING_RING_PHASE;
-    rebend.value = ENDING_REBEND;
-    // The model's roll is NOT written here — see the scene.onFrame writer above
-    // and its two-clock law. The channel targets this function writes are what
-    // that writer's gate chases.
     scene.state.storyTarget = p;
-
-    // the ink ramps; the uniform box is materials/unified.ts's, so this line is
-    // the only coupling
-    uInkFill.value = inkFillAt(p);
-
-    // THE BODY FADE IS THE DIVE'S ALONE. Nothing below DIVE_P0 hides the lens
-    // any more — the cards scene takes the outer layers off in plain sight —
-    // so this half of the tile is a constant 1, written to keep the tile
-    // GAPLESS (applyBodyFade holds its last level on an unchanged write, and
-    // early-outs on one, so the repeat costs a compare).
-    if (p < DIVE_P0) scene.setBodyFade(1);
-
-    // The shell's and the interior's winks and returns — one law each in
-    // story/envelopes.ts, both riding story/peelcards.ts's WINK_SPAN.
-    scene.setShellFade(shellFadeAt(p));
-    scene.setInteriorFade(interiorFadeAt(p));
-
-    // THE CARD FIELD's mount window. AFTER the channel writes above, BEFORE
-    // the fly below, which is last for the same reason.
-    peelCards.frame(p);
 
     // per-block progress custom properties, so content-specific effects live in
     // CSS with the content —
@@ -466,26 +392,20 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
 
     bgTint(p);
 
-    // LAST: the fly owns aperture and focus while active, so its writes must
-    // land after the resets above. All three lazy hooks catch AFTER the .then
-    // rather than with its second argument, which would only see a failed
-    // import and let a throwing factory out as an unhandled rejection.
+    // the lazy scenes' prefetch ladder, off the reader's real position
     if (p > flyPrefetchP) warmNow = true; // the approach escalation
     if (!flyLoad && p > flyPrefetchP) loadFly();
-    fly?.frame(p);
-
     if (!constLoad && p > constPrefetchP) loadConstellations();
     if (!trailsLoad && p > trailsPrefetchP) loadTrails();
     if (!petalsLoad && p > petalsPrefetchP) loadPetals();
 
-    // HUD + scene rail, DEAD LAST: the readout REPORTS the story, so it has to
-    // be composed after every span owner above has written its channels. The
-    // f-stop reads the LIVE eased aperture, which the fly owns.
+    // HUD + scene rail: the readout reports the story at the reader's p, with
+    // the aperture off the live channel (a phase clock inside the internals)
     const scn = sceneIndexAt(p);
     const fstop = fStopOf(scene.state.aperture);
-    const mm = focalMmAt(zoom);
-    const expl = Math.round(explode * 100);
-    // the readout is only SPELLED when one of its four readings moves
+    const mm = focalMmAt(zoomAt(p));
+    const expl = Math.round(explodeAt(p) * 100);
+    // the readout is only spelled when one of its four readings moves
     if (
       scn !== hudScn ||
       fstop !== hudFstop ||
@@ -503,17 +423,32 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
       for (const r of rails) r.el?.classList.toggle("is-on", scn === r.i);
     }
 
-    // scroll cue lives only in the hero; the chrome fades at the very end
-    scrollCue.style.opacity = String(scrollCueAt(p));
+    // scroll cue lives only in the hero; the chrome fades at the very end —
+    // both flat for most of the track, so each is written only when it moves
+    const cue = scrollCueAt(p);
+    if (cue !== wCue) {
+      wCue = cue;
+      scrollCue.style.opacity = String(cue);
+    }
     const chrome = chromeAt(p);
-    hud.style.opacity = String(chrome);
-    sceneRail.style.opacity = String(chrome);
+    if (chrome !== wChrome) {
+      wChrome = chrome;
+      hud.style.opacity = String(chrome);
+      sceneRail.style.opacity = String(chrome);
+    }
   }
 
-  const scrollP = () => {
-    const total = track.offsetHeight - window.innerHeight;
-    return total > 0 ? clamp01(-track.getBoundingClientRect().top / total) : 0;
+  // The track's document geometry, re-read only when the layout moves: the
+  // track's own size, the body's (content above it), the viewport's. A scroll
+  // frame then reads scrollY alone, which forces no layout.
+  let trackTop = 0;
+  let trackTotal = 0;
+  const measureTrack = () => {
+    trackTop = track.getBoundingClientRect().top + window.scrollY;
+    trackTotal = track.offsetHeight - window.innerHeight;
   };
+  const scrollP = () =>
+    trackTotal > 0 ? clamp01((window.scrollY - trackTop) / trackTotal) : 0;
   // Dev scrub override (?story panel): while set, scrolling stops driving
   // frame() — the panel's scrub owns the story position instead.
   let override = false;
@@ -526,19 +461,32 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
       ticking = false;
     });
   }
+  const onLayout = () => {
+    measureTrack();
+    onScroll();
+  };
   window.addEventListener("scroll", onScroll, { passive: true });
-  window.addEventListener("resize", onScroll, { passive: true });
-  // the first write is SYNCHRONOUS: boot runs before the first rendered frame,
-  // so the fills (uInkFill boots at 1) never draw a frame the story didn't ask
-  // for — an rAF here would race the render loop and lose
-  frame(scrollP());
+  window.addEventListener("resize", onLayout, { passive: true });
+  const ro = new ResizeObserver(onLayout);
+  ro.observe(track);
+  ro.observe(document.body);
+  // the story's recipe knobs: constants a scroll never moves, written once
+  keepScope.value = ASSEMBLE_KEEP_SCOPE;
+  bloom.value = ENDING_BLOOM;
+  curl.value = ENDING_CURL;
+  ringPhase.value = ENDING_RING_PHASE;
+  rebend.value = ENDING_REBEND;
+  // the first write is SYNCHRONOUS, before the first rendered frame, so nothing
+  // draws a frame the story did not ask for; the boot SNAPS the eased p onto
+  // the scroll, so a deep link opens on its pose rather than the path to it
+  measureTrack();
+  const p0 = scrollP();
+  scene.state.story = p0;
+  frame(p0);
 
-  // DEV: the story, programmatically — `window.__lensStory`, in the __lensOps /
-  // __lensPerf mould, so one headless `evaluate` reports the story as JSON.
-  //
-  // READ-ONLY and LAZY BY NECESSITY: story/state.ts statically imports the
-  // dive, the trails and the sky ink, which drag optics/ in, so it may only be
-  // reached through the dynamic import inside this DEV-gated block.
+  // DEV: the story as JSON on `window.__lensStory`. Read-only, and lazy by
+  // necessity — story/state.ts drags optics/ in, so it may only be reached
+  // through the dynamic import inside this DEV-gated block.
   if (import.meta.env.DEV) {
     const load = () => import("./state");
     /** The live model root, off core/scene.ts's own DEV probe, so no reader
@@ -562,18 +510,15 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
         const { storyStateAt } = await load();
         return storyStateAt(lastP, { light: isLightTheme() });
       },
-      /** THE RENDERER'S WORKLOAD at p — story/cost.ts's law, but censusing the
-       *  LIVE scene (triangles off the decoded geometry rather than the GLB's
-       *  accessor counts), so this and STORY-COST.md check each other.
-       *  Lazily imported for story/state.ts's reason. */
+      /** The renderer's workload at p — story/cost.ts's law over a census of
+       *  the LIVE scene. Lazily imported for story/state.ts's reason. */
       async costAt(p: number = lastP) {
         const { buildPartTableFromScene, storyCostAt } =
           await import("./cost");
         return storyCostAt(p, buildPartTableFromScene(modelRoot("costAt")));
       },
-      /** WHERE ONE PIECE IS at p, in the bore's cylindrical coordinates —
-       *  story/flow.ts's law over the LIVE model's derived frames. Same lazy
-       *  treatment as costAt above. */
+      /** Where one piece is at p, in the bore's cylindrical coordinates —
+       *  story/flow.ts's law over the LIVE model's derived frames. */
       async pieceAt(p: number = lastP, key?: string) {
         const { buildPieceTable, pieceStateAt } = await import("./flow");
         const table = buildPieceTable(modelRoot("pieceAt"));
@@ -581,9 +526,8 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
           ? pieceStateAt(p, key, table)
           : table.pieces.map((r) => pieceStateAt(p, r.key, table));
       },
-      /** …and the whole per-scene × per-cast rollup — the checked-in map's
-       *  first table. Slow: every piece through the real pipeline at every
-       *  edge of the story. */
+      /** …and the whole per-scene × per-cast rollup. Slow: every piece through
+       *  the real pipeline at every edge of the story. */
       async flowTable() {
         const { buildPieceTable, flowRollups } = await import("./flow");
         return flowRollups(buildPieceTable(modelRoot("flowTable")));
@@ -592,8 +536,7 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
   }
 
   // Dev-only story scrubber, stripped from production with the block above and
-  // built only for `/?story`, so a dev visit without the param gets no extra
-  // DOM and no extra listeners.
+  // built only for `/?story`.
   if (
     import.meta.env.DEV &&
     new URLSearchParams(location.search).has("story")
@@ -663,8 +606,7 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
       override = false;
       frame(scrollP()); // re-sync to the real scroll position immediately
     });
-    // one jump per scene, parked at the settle region's midpoint so the scene
-    // reads as held rather than mid-flight
+    // one jump per scene, parked at the settle region's midpoint
     for (const r of RANGES) {
       const b = document.createElement("button");
       b.textContent = r.scene.title;

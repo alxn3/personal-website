@@ -1,13 +1,10 @@
-// Scalar algebra — the backend-agnostic operation vocabulary every lens op,
-// gate and recipe is written against, so one source of truth runs on both the
-// CPU and the GPU. `NUM` (this file) is the number backend and the executable
-// spec; `emit/algebra-src.ts` is the SOURCE backend the shader is generated
-// through (there is no node backend any more). `Sc<S>` lets
-// callers pass raw numbers anywhere a scalar is expected.
+// Scalar algebra — the backend-agnostic vocabulary every op, gate and recipe is
+// written against. `NUM` is the number backend; `emit/algebra-src.ts` is the
+// source backend the shader is generated through.
 //
 // Semantics are GLSL's, NOT JS's: `step` is edge-inclusive, `mix` does not
-// clamp `t`, `fract` is x − floor(x) (so positive for negative inputs). The
-// two backends agree on semantics, not on bit-exact rounding.
+// clamp `t`, `fract` is x − floor(x). Backends agree on semantics, not on
+// bit-exact rounding.
 
 export type Sc<S> = S | number;
 
