@@ -17,9 +17,9 @@ export function initPaletteTryout(): void {
   const wanted = new URLSearchParams(location.search).has("palette");
   if (!stored && !wanted) return;
   if (stored) apply(stored);
-  if (!wanted && stored === null) return;
 
   const bar = document.createElement("div");
+  bar.className = "palette-tryout";
   bar.style.cssText =
     "position:fixed;bottom:12px;left:12px;z-index:9999;display:flex;gap:4px;" +
     "padding:6px;border-radius:8px;background:var(--surface);border:1px solid var(--border);" +
@@ -30,9 +30,12 @@ export function initPaletteTryout(): void {
     b.style.cssText =
       "padding:4px 8px;border-radius:5px;border:1px solid var(--border);" +
       "background:var(--bg);color:var(--text);cursor:pointer;";
+    b.type = "button";
+    // selection is a box-shadow so the outline stays free for the focus ring
     const mark = () => {
       const on = (localStorage.getItem(KEY) ?? "current") === v;
-      b.style.outline = on ? "2px solid var(--highlight)" : "none";
+      b.setAttribute("aria-pressed", String(on));
+      b.style.boxShadow = on ? "0 0 0 2px var(--highlight)" : "none";
     };
     b.addEventListener("click", () => {
       localStorage.setItem(KEY, v);

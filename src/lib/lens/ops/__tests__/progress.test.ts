@@ -68,6 +68,7 @@ function ctxAt(
     L: R * HALF * 2,
     yN: 0.25,
     off: 0,
+    height: 40,
     rung: 1.5,
     axi: 0,
     depth: 0,
@@ -80,16 +81,12 @@ function ctxAt(
 }
 
 // The remap, stated INDEPENDENTLY of ops.ts (same primitives, spelled out): the
-// clamped ramp then the optional power.
+// clamped ramp.
 function remap(p: Progress<number>, c: number): number {
-  let q = c;
-  if (p.from !== undefined || p.to !== undefined) {
-    const from = p.from ?? 0;
-    const to = p.to ?? 1;
-    q = Math.min(1, Math.max(0, (q - from) / (to - from)));
-  }
-  if (p.ease !== undefined) q = Math.pow(q, p.ease);
-  return q;
+  if (p.from === undefined && p.to === undefined) return c;
+  const from = p.from ?? 0;
+  const to = p.to ?? 1;
+  return Math.min(1, Math.max(0, (c - from) / (to - from)));
 }
 
 interface Seen {
@@ -133,7 +130,7 @@ function run(
 
 // A subtree with something to say: a rigid throw, an axial slide and a coil,
 // all of them functions of the scope's flight.
-const SUB = [spread<number>(0.4), approach<number>(5, 2), coil<number>(0.6)];
+const SUB = [spread<number>(0.4), approach<number>(5), coil<number>(0.6)];
 
 const RANKS = [0, 0.5, 1];
 const PHASES = [0, 0.37, 1];
@@ -146,9 +143,7 @@ const REMAPS: Progress<number>[] = [
   { from: 0.2 },
   { to: 0.5 },
   { from: 0.3, to: 0.8 },
-  { ease: 2 },
-  { ease: 0.5 },
-  { from: 0.25, to: 0.75, ease: 3 },
+  { from: 0.25, to: 0.75 },
 ];
 
 describe("during — the identity anchor", () => {
@@ -313,7 +308,7 @@ describe("during — the scope restores", () => {
 describe("during — nesting is function composition", () => {
   it("(g) an inner window reads the OUTER window's clock", () => {
     const outer: Progress<number> = { from: 0.2, to: 0.8 };
-    const inner: Progress<number> = { from: 0.25, to: 0.5, ease: 2 };
+    const inner: Progress<number> = { from: 0.25, to: 0.5 };
     for (const c of [0, 0.2, 0.35, 0.5, 0.65, 0.8, 1]) {
       const [deep] = run(
         (s) => [during(outer, [during(inner, [probe(s)])])],
@@ -439,8 +434,6 @@ describe("validatePipeline — the Progress invariants", () => {
     expect(warningsFor({ from: 0.8, to: 0.4 }, "prog-inverted")[0]).toMatch(
       /NaN/,
     );
-    expect(warningsFor({ ease: 0 }, "prog-ease-zero")[0]).toMatch(/pow/);
-    expect(warningsFor({ ease: -1 }, "prog-ease-neg")[0]).toMatch(/pow/);
     expect(warningsFor({ to: 1.5 }, "prog-past-end")[0]).toMatch(/advisory/);
     // A bare `from` still checks against the DEFAULT to = 1.
     expect(warningsFor({ from: 1 }, "prog-from-at-end")[0]).toMatch(/NaN/);

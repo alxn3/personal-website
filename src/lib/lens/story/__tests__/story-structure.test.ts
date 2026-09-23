@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { STORY } from "../story";
+import {
+  STORY,
+  atFrac,
+  pulseFn,
+  rangeOf,
+  span,
+  storyWindows,
+} from "../story";
+import { WINK_SPAN } from "../envelopes";
 
 // Scene order IS the story — a reorder is a story change, not a refactor.
 const ORDER = [
@@ -33,5 +41,35 @@ describe("story structure (the ring)", () => {
       expect(sc.transit).toBe(0);
       expect(sc.cam).toEqual(fly.cam);
     }
+  });
+});
+
+describe("the window registry", () => {
+  it("refuses a second window under an existing name", () => {
+    // `wink` is envelopes.ts's; a rider re-registering the name would silently
+    // replace it in every report
+    expect(() => span("wink", [0.1, 0.2])).toThrow(/already registered/);
+    expect(storyWindows().find((w) => w.name === "wink")).toEqual({
+      name: "wink",
+      p0: WINK_SPAN[0],
+      p1: WINK_SPAN[1],
+    });
+    // the same edges again are the same window (a module re-evaluating)
+    expect(span("wink", [WINK_SPAN[0], WINK_SPAN[1]])).toEqual(WINK_SPAN);
+  });
+
+  it("refuses a pulse whose fall opens before its rise is spent", () => {
+    expect(() =>
+      pulseFn(
+        { rise: ["zoom", 0.2, 0.8], fall: ["zoom", 0.7, 0.9] },
+        "test.overlap",
+      ),
+    ).toThrow(/before its rise is spent/);
+    expect(
+      pulseFn(
+        { rise: ["zoom", 0.2, 0.8], fall: ["zoom", 0.8, 0.9] },
+        "test.touching",
+      )(atFrac(rangeOf("zoom"), 0.5)),
+    ).toBeGreaterThan(0);
   });
 });

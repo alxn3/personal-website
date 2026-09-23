@@ -6,7 +6,8 @@
 // and the tip carry it.
 //
 // ONE CLOCK, and one exception: the eased story p owns everything but the
-// sphere's slow revolution, which TIME owns off the tick's accumulated dt.
+// sphere's slow revolution, which TIME owns off the tick's accumulated dt —
+// and only while a card is drawn, so an empty field asks for no frame.
 //
 // THE 2D LAW: a card is a view-space billboard — its centre goes through
 // modelViewMatrix and the corners are added in VIEW space, so the quad is
@@ -413,14 +414,14 @@ const atIdle = (cb: () => void) => {
     requestIdleCallback(cb, { timeout: 1000 });
   else setTimeout(cb, 200);
 };
-/** THE SHOW WINDOW, in absolute story p. It opens a whole scene early — the
- *  quads draw at opacity 0 and alphaTest discards every pixel until the fades
- *  open — and closes at the cards scene's end. */
-export const MOUNT_LO = rangeOf("zoom").p0;
-export const MOUNT_HI = cdR.p1;
 /** story-p slack past each mount edge, so a scrub parked exactly on one cannot
  *  thrash build/dispose */
 export const MOUNT_HYST = 0.02;
+/** THE SHOW WINDOW, in absolute story p: one hysteresis ahead of the first
+ *  card's fade (the uploads are `warm()`'s, not the mount's) to the cards
+ *  scene's end. */
+export const MOUNT_LO = CARDS_IN_SPAN[0] - MOUNT_HYST;
+export const MOUNT_HI = cdR.p1;
 
 export function createPeelCards(scene: SceneHandle): {
   warm(): void;
@@ -464,8 +465,8 @@ export function createPeelCards(scene: SceneHandle): {
   function show() {
     if (shown) return;
     const f = ensureField();
-    // the retained opacities are the ones it left on; the frame callback
-    // rewrites them only after this frame's render
+    // the retained opacities are the ones it left on; the evaluate step below
+    // rewrites them before this frame's render
     for (const c of f.cards) {
       c.uOpacity.value = 0;
       f.group.add(c.mesh); // parked until the field mounts (see Card.mesh)
@@ -495,7 +496,6 @@ export function createPeelCards(scene: SceneHandle): {
   // the mount window, then the centres and the opacities; registered for the
   // life of the page
   scene.onEvaluate((p, dt) => {
-    tAcc += dt;
     if (p >= MOUNT_LO && p <= MOUNT_HI) show();
     else if (p < MOUNT_LO - MOUNT_HYST || p > MOUNT_HI + MOUNT_HYST) hide();
     if (!shown || !field) return false; // resident but off the overlay: nothing draws
@@ -504,16 +504,21 @@ export function createPeelCards(scene: SceneHandle): {
     // the whole sphere rides the fit — centres only, so the cards keep their
     // size and simply orbit closer on a narrow frame
     const fit = cardFitOf(scene.frameHalf() * scene.frameAspect() * CARDS_DIST);
+    let lit = false;
     for (let k = 0; k < CARD_COUNT; k++) {
       const c = field.cards[k];
       const fade = cardInAt(k, p);
       const o = cardOrbitAt(k, tAcc, gather);
       c.uCentre.value.set(o.x * fit, o.y * fit, o.z * fit);
       c.uOpacity.value = fade * (1 - cardOutAt(k, p));
+      if (c.uOpacity.value > 0) lit = true;
       const roll = cardRollAt(k, fade);
       c.uRollCS.value.set(Math.cos(roll), Math.sin(roll));
     }
-    return true; // the sphere runs on time: keep the frames coming
+    // the sphere runs on time only while a card is drawn: an invisible field
+    // neither ages nor asks for a frame
+    if (lit) tAcc += dt;
+    return lit;
   });
 
   return {

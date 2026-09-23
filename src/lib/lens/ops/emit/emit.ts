@@ -1,9 +1,8 @@
 // THE EMITTER: assembles `opsFold` — the deform chain as one shader function —
-// by running the REAL recipes, gate and pipeline on the source backend. It
-// mirrors ops/host.ts's `sampleFn` statement for statement: the same preamble,
-// the same per-recipe uniform branch, the same delta form, the same hard idle
-// gate. host.ts stays the reference; this file is how that reference is written
-// down in WGSL/GLSL rather than built as nodes.
+// by running the REAL recipes, gate and pipeline on the source backend: the
+// preamble that derives the ctx from the packed lanes, one uniform-branched
+// block per recipe, the delta form and the hard idle gate. The emitter IS the
+// deform; ops/host.ts binds its WGSL/GLSL output and ops/cpu.ts runs its JS.
 //
 // The `js` dialect is the CPU evaluator (deform.js.ts, run by ops/cpu.ts) and
 // the equivalence gate: it executes, so an emit is checked against NUM over the
@@ -22,9 +21,8 @@ import { srcAlgebra, litOf, type Dialect } from "./algebra-src";
 import { LAYOUT } from "./layout";
 import { WRAP_DIR } from "../house";
 
-/** Mirrors ops/host.ts — kept here as literals rather than imported, because
- *  host.ts pulls in three and the emit step must not. `emit.test.ts` pins both
- *  against host.ts's source so they cannot drift. */
+/** host.ts's idle edge, kept as a literal rather than imported (host.ts pulls
+ *  in three, the emit step must not); `emit.test.ts` (d) pins the two copies. */
 export const IDLE_EPS = 1e-6;
 const HOUSE_FROM = -1;
 const TAU = 6.283185307179586;
@@ -90,7 +88,7 @@ export function emitDeform(dialect: Dialect): string {
   const top = srcAlgebra(dialect);
   const A = top.A;
 
-  // ── the preamble, mirroring host.ts's sampleFn ──────────────────────────
+  // ── the preamble: the ctx, derived from the packed lanes ───────────────
   const px = S.comp("p", 0);
   const py = S.comp("p", 1);
   const pz = S.comp("p", 2);
@@ -118,12 +116,12 @@ export function emitDeform(dialect: Dialect): string {
     off0,
     A.mul(TAU, A.floor(A.div(A.add(off0, Math.PI), TAU))),
   );
-  // host.ts reads `length(vec2(x, z))`; the algebra has only sqrt, and ops.ts's
-  // own `radiusOf` already spells the radius this way.
+  // the algebra has only sqrt: ops.ts's own `radiusOf` spells the radius so
   const radius = A.sqrt(A.add(A.mul(px, px), A.mul(pz, pz)));
   const d = A.mul(R, A.add(A.mul(phi, HOUSE_FROM), halfSpan));
   const L = A.mul(R, A.mul(halfSpan, 2));
-  const yN = A.sub(A.div(A.sub(py, yMin), A.max(A.sub(yMax, yMin), 1e-6)), 0.5);
+  const height = A.max(A.sub(yMax, yMin), 1e-6);
+  const yN = A.sub(A.div(A.sub(py, yMin), height), 0.5);
   const off = A.sub(radius, R);
 
   const seated: VertexState<string> = {
@@ -172,6 +170,7 @@ export function emitDeform(dialect: Dialect): string {
       L,
       yN,
       off,
+      height,
       rung,
       axi,
       depth,

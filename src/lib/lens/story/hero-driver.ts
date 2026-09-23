@@ -48,6 +48,7 @@ import {
   bgTintAt,
   chromeAt,
   driverOwnsIris,
+  dustAt,
   explodeAt,
   fStopOf,
   focalMmAt,
@@ -68,7 +69,7 @@ export interface HeroDriver {
   onThemeChange: (light: boolean) => void;
 }
 
-/** the four knobs the story writes, taken once — guarded uniform boxes */
+/** the five knobs the story writes, taken once — guarded uniform boxes */
 const keepScope = recipeKnob("assemble", "keepScope");
 const bloom = recipeKnob("explode", "bloom");
 const curl = recipeKnob("explode", "curl");
@@ -167,12 +168,26 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
   // the peel's range — the only one still read here, for the fly prefetch below
   const peR = rangeOf("peel");
 
-  // last HUD readings and lit rail, so an unchanged frame writes no DOM
+  // last HUD readings and lit rail, so an unchanged frame writes no DOM. The
+  // scene, focal length and explode read the raw scroll p in frame(); the
+  // f-stop reads the DRAWN iris after each render, since inside the internals
+  // it is a phase clock and inside the dive the eased channel.
   let hudScn = -1;
   let hudFstop = "";
   let hudMm = -1;
   let hudExpl = -1;
   let railScn = -1;
+  let hudText = "";
+  function spellHud() {
+    const text = `SCN ${String(hudScn).padStart(2, "0")} / ${STORY[hudScn].title} · ${hudMm}MM · f/${hudFstop} · EXPL ${hudExpl}%`;
+    if (text === hudText) return;
+    hudText = text;
+    hud.textContent = text;
+  }
+  scene.onFrame(() => {
+    hudFstop = fStopOf(scene.state.aperture);
+    spellHud();
+  });
 
   // background tint: the stop table is per THEME, held across frames and
   // rebuilt on a flip, so the per-frame path only interpolates
@@ -192,6 +207,8 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
   let lastP = 0; // last p handed to frame() — read by the dev scrub panel
   /** the eased p the 3D frame was last evaluated at */
   let lastPE = NaN;
+  /** the dust flag last written, so a parked story writes nothing */
+  let lastDust: boolean | undefined;
   /** when the story position last moved — the prewarm waits on it */
   let lastMoveAt = 0;
 
@@ -353,6 +370,13 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
     // story/envelopes.ts, both riding story/peelcards.ts's WINK_SPAN
     scene.setShellFade(shellFadeAt(pE));
     scene.setInteriorFade(interiorFadeAt(pE));
+    // the dust's one writer (story/envelopes.ts dustAt): the dive and the
+    // petals both want it off, and neither may own the flag
+    const dust = dustAt(pE);
+    if (dust !== lastDust) {
+      lastDust = dust;
+      scene.setDust(dust);
+    }
     // last: the fly owns the iris inside its span, so its writes land after
     // the resets above
     fly?.evaluate(pE);
@@ -399,25 +423,13 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
     if (!trailsLoad && p > trailsPrefetchP) loadTrails();
     if (!petalsLoad && p > petalsPrefetchP) loadPetals();
 
-    // HUD + scene rail: the readout reports the story at the reader's p, with
-    // the aperture off the live channel (a phase clock inside the internals)
+    // HUD + scene rail: the readout reports the story at the reader's p; the
+    // f-stop is filled in after the render (see spellHud)
     const scn = sceneIndexAt(p);
-    const fstop = fStopOf(scene.state.aperture);
-    const mm = focalMmAt(zoomAt(p));
-    const expl = Math.round(explodeAt(p) * 100);
-    // the readout is only spelled when one of its four readings moves
-    if (
-      scn !== hudScn ||
-      fstop !== hudFstop ||
-      mm !== hudMm ||
-      expl !== hudExpl
-    ) {
-      hudScn = scn;
-      hudFstop = fstop;
-      hudMm = mm;
-      hudExpl = expl;
-      hud.textContent = `SCN ${String(scn).padStart(2, "0")} / ${STORY[scn].title} · ${mm}MM · f/${fstop} · EXPL ${expl}%`;
-    }
+    hudScn = scn;
+    hudMm = focalMmAt(zoomAt(p));
+    hudExpl = Math.round(explodeAt(p) * 100);
+    spellHud();
     if (scn !== railScn) {
       railScn = scn;
       for (const r of rails) r.el?.classList.toggle("is-on", scn === r.i);

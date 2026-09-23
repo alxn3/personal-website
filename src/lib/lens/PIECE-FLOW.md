@@ -6,13 +6,13 @@ Every piece's pose through the hero story in bore-cylindrical coordinates (the
 op algebra's own space), rendered from `story/flow.ts`'s
 `pieceStateAt(p, key, table)` — the real op pipeline on the NUM backend
 (`ops/cpu.ts` `pieceField`) at the channels `storyStateAt(p)` reports.
-Regenerate (the test pins the file byte-for-byte):
+Regenerate (an on-demand instrument — the test checks shape, not bytes):
 
     LENS_PIECE_FLOW=1 npx vitest run src/lib/lens/story/__tests__/piece-flow.test.ts
 
 **Roster.** `lens_web_segmented.glb` — 194 mesh nodes, 207 pieces (one per distinct `_op*` lane tuple; an adopted feature framed island by island can give a mesh several). By cast: wedges 25, decals 19, extras 10, interior 65, elements 13, other 75. Casts are core/visibility.ts's wink bands.
 
-**Deform set.** The hero pins `assemble / explode / peel / rose`; knobs rest at `knobDefaults` except `assemble.keepScope`, `explode.bloom` and `explode.curl` (story/envelopes.ts). Nothing moves outside p ∈ [0.1290, 1.0000]; every piece is on its seat there.
+**Deform set.** The hero pins `assemble / explode / peel / rose`; knobs rest at `knobDefaults` except `assemble.keepScope` and explode's `bloom`, `curl`, `ringPhase` and `rebend` (story/envelopes.ts). Nothing moves outside p ∈ [0.1290, 1.0000]; every piece is on its seat there.
 
 **Columns.** `dTheta`/`dR`/`dX`: the frame's displacement from its seat (rad, mm, mm). `roll`: turn in place about the bore (0 for a rigid revolution). `bend`: axial, the relative rotation of the piece's two ends, unsigned, 0 for any rigid motion. `curl`: circumferential and signed, extra arc curvature over the seat. `stretch` / `stretch X`: size round the bore and along the axis (1 = rigid; `stretch X` is a ratio of the piece's own axial extent). `travel`: distance from the seat. Authored pose only — no mechanism drive, placement or visibility; `stretch` reads a flat 1.0000 ("not measured") for the 15 axisymmetric pieces; the iris nodes' `radius` is from their own origin.
 
@@ -36,15 +36,15 @@ Regenerate (the test pins the file byte-for-byte):
           zoom  interior  65    0.000…0.000      0.00…0.00      0.00…0.00   0.000…0.000  0.000…0.000   0.000…0.000  1.0000…1.0000   1.0000…1.0000    0.00
           zoom  elements  13    0.000…0.000      0.00…0.00      0.00…0.00   0.000…0.000  0.000…0.000   0.000…0.000  1.0000…1.0000   1.0000…1.0000    0.00
           zoom     other  75    0.000…0.000      0.00…0.00      0.00…0.00   0.000…0.000  0.000…0.000   0.000…0.000  1.0000…1.0000   1.0000…1.0000    0.00
-          peel    wedges  25   -1.341…0.047     0.00…67.55    -3.73…38.00  -1.132…0.000  0.000…1.824  -0.743…0.360  0.8519…1.0595   1.0000…2.3211   95.83
-          peel    decals  19   -1.341…0.047     0.00…67.55     0.00…38.00  -1.132…0.000  0.000…1.824  -0.743…0.360  0.8519…1.0595   1.0000…2.3211   95.60
-          peel    extras  10   -0.861…0.052     0.00…39.95     0.00…38.00  -1.152…0.000  0.000…1.742  -0.666…0.323  0.8817…1.0475   1.0000…1.3406   61.35
-          peel  interior  65   -1.330…0.047     0.00…63.61   -18.67…38.00  -1.153…0.000  0.000…1.541  -0.655…0.506  0.8299…1.0459   1.0000…4.9128   88.81
+          peel    wedges  25   -1.341…0.047     0.00…67.55    -3.73…38.00  -1.130…0.378  0.000…1.334  -0.661…0.806  0.7926…1.0468   1.0000…1.2309   95.83
+          peel    decals  19   -1.341…0.047     0.00…67.55     0.00…38.00  -1.114…0.378  0.000…1.334  -0.653…0.806  0.7926…1.0457   1.0000…1.2309   95.60
+          peel    extras  10   -0.861…0.052     0.00…39.95     0.00…38.00  -1.152…0.338  0.000…1.742  -0.666…0.323  0.8817…1.0475   1.0000…1.2040   61.35
+          peel  interior  65   -1.330…0.047     0.00…63.61   -18.67…38.00  -1.153…0.000  0.000…1.541  -0.655…0.769  0.8299…1.0459   1.0000…1.2433   88.81
           peel  elements  13    0.000…0.000      0.00…0.00      0.00…0.00   0.000…0.000  0.000…0.000   0.000…0.000  1.0000…1.0000   1.0000…1.0000    0.00
           peel     other  75    0.000…0.000      0.00…0.00      0.00…0.00   0.000…0.000  0.000…0.000   0.000…0.000  1.0000…1.0000   1.0000…1.0000    0.00
-         cards    wedges  25   -1.341…0.000     0.00…67.55    -3.73…38.00  -0.355…0.000  0.000…0.000  -0.743…0.000  1.0000…1.0595   1.0000…1.0000   95.83
-         cards    decals  19   -1.341…0.000     0.00…67.55     0.00…38.00  -0.355…0.000  0.000…0.000  -0.743…0.000  1.0000…1.0595   1.0000…1.0000   95.60
-         cards    extras  10   -0.861…0.000     0.00…39.95     0.00…38.00  -0.320…0.000  0.000…0.000  -0.666…0.000  1.0000…1.0475   1.0000…1.0000   61.35
+         cards    wedges  25   -1.341…0.000     0.00…67.55    -3.73…38.00  -0.318…0.378  0.000…0.000  -0.661…0.000  1.0000…1.0468   1.0000…1.0000   95.83
+         cards    decals  19   -1.341…0.000     0.00…67.55     0.00…38.00  -0.314…0.378  0.000…0.000  -0.653…0.000  1.0000…1.0457   1.0000…1.0000   95.60
+         cards    extras  10   -0.861…0.000     0.00…39.95     0.00…38.00  -0.320…0.338  0.000…0.000  -0.666…0.000  1.0000…1.0475   1.0000…1.0000   61.35
          cards  interior  65   -1.330…0.000     0.00…63.61   -18.67…38.00  -0.315…0.000  0.000…0.000  -0.655…0.000  1.0000…1.0459   1.0000…1.0000   88.81
          cards  elements  13    0.000…0.000      0.00…0.00      0.00…0.00   0.000…0.000  0.000…0.000   0.000…0.000  1.0000…1.0000   1.0000…1.0000    0.00
          cards     other  75    0.000…0.000      0.00…0.00      0.00…0.00   0.000…0.000  0.000…0.000   0.000…0.000  1.0000…1.0000   1.0000…1.0000    0.00
@@ -106,15 +106,15 @@ a wide range is a cast moving symmetrically.
           zoom  interior   0.000    0.00    0.00   0.000  0.000   0.000   1.0000     1.0000
           zoom  elements   0.000    0.00    0.00   0.000  0.000   0.000   1.0000     1.0000
           zoom     other   0.000    0.00    0.00   0.000  0.000   0.000   1.0000     1.0000
-          peel    wedges  -0.905   46.71    8.58  -0.247  0.045  -0.449   1.0285     1.0185
-          peel    decals  -0.914   47.26   12.77  -0.249  0.039  -0.461   1.0300     1.0181
-          peel    extras  -0.430   20.28   21.41  -0.219  0.064  -0.365   1.0209     1.0100
-          peel  interior  -0.492   22.05   -0.12  -0.152  0.037  -0.262   1.0126     1.0322
+          peel    wedges  -0.906   45.96    8.58  -0.154  0.012  -0.359   1.0234     1.0037
+          peel    decals  -0.915   46.30   12.77  -0.143  0.012  -0.355   1.0230     1.0037
+          peel    extras  -0.433   19.53   21.41  -0.027  0.033  -0.190   1.0106     1.0040
+          peel  interior  -0.492   22.05   -0.12  -0.152  0.025  -0.262   1.0127     1.0026
           peel  elements   0.000    0.00    0.00   0.000  0.000   0.000   1.0000     1.0000
           peel     other   0.000    0.00    0.00   0.000  0.000   0.000   1.0000     1.0000
-         cards    wedges  -0.583   29.59    5.42  -0.138  0.000  -0.286   1.0193     1.0000
-         cards    decals  -0.580   29.60    7.88  -0.140  0.000  -0.291   1.0201     1.0000
-         cards    extras  -0.340   15.57   15.83  -0.138  0.000  -0.286   1.0192     1.0000
+         cards    wedges  -0.584   29.09    5.42  -0.081  0.000  -0.228   1.0153     1.0000
+         cards    decals  -0.581   28.98    7.88  -0.076  0.000  -0.226   1.0153     1.0000
+         cards    extras  -0.341   14.99   15.83   0.004  0.000  -0.143   1.0096     1.0000
          cards  interior  -0.367   15.92   -0.32  -0.096  0.000  -0.198   1.0107     1.0000
          cards  elements   0.000    0.00    0.00   0.000  0.000   0.000   1.0000     1.0000
          cards     other   0.000    0.00    0.00   0.000  0.000   0.000   1.0000     1.0000
@@ -136,24 +136,24 @@ constellations    extras   0.000    0.00    0.00   0.000  0.000   0.000   1.0000
 constellations  interior   0.000    0.00    0.00   0.000  0.000   0.000   1.0000     1.0000
 constellations  elements   0.000    0.00    0.00   0.000  0.000   0.000   1.0000     1.0000
 constellations     other   0.000    0.00    0.00   0.000  0.000   0.000   1.0000     1.0000
-        trails    wedges  -0.146   66.84   82.27   0.000  0.000  -0.206   1.0163     1.0000
-        trails    decals  -0.550   66.80   84.95   0.000  0.000  -0.204   1.0162     1.0000
-        trails    extras   0.242   23.46   53.66   0.000  0.000  -0.086   1.0068     1.0000
-        trails  interior   0.117   29.48   50.22   0.000  0.000  -0.138   1.0090     1.0000
-        trails  elements   0.000    0.00   39.90   0.000  0.000   0.000   1.0000     1.0000
-        trails     other  -0.356   29.63   40.12   0.000  0.000  -0.076   1.0059     1.0000
+        trails    wedges  -0.167   76.40   94.07   0.000  0.000  -0.235   1.0187     1.0000
+        trails    decals  -0.628   76.36   97.13   0.000  0.000  -0.233   1.0185     1.0000
+        trails    extras   0.311   30.16   68.99   0.000  0.000  -0.110   1.0087     1.0000
+        trails  interior   0.168   35.61   61.66   0.000  0.000  -0.169   1.0109     1.0000
+        trails  elements   0.000    0.00   51.31   0.000  0.000   0.000   1.0000     1.0000
+        trails     other  -0.454   37.55   51.06   0.000  0.000  -0.083   1.0064     1.0000
         rewrap    wedges  -0.291  133.72  164.86   0.000  0.000  -0.411   1.0326     1.0000
         rewrap    decals  -1.099  133.69  170.26   0.000  0.000  -0.407   1.0325     1.0000
         rewrap    extras   0.725   70.37  160.98   0.000  0.000  -0.257   1.0204     1.0000
         rewrap  interior   0.471   72.38  130.33   0.000  0.000  -0.356   1.0227     1.0000
         rewrap  elements   0.000    0.00  119.71   0.000  0.000   0.000   1.0000     1.0000
-        rewrap     other  -1.042   85.09  116.71   0.000  0.000  -0.207   1.0160     1.0000
+        rewrap     other  -1.042   85.09  116.71   0.000  0.000  -0.186   1.0144     1.0000
         capsOn    wedges  -0.165   60.05   65.98   0.020  0.100  -0.157   1.0845     1.0207
         capsOn    decals  -0.519   61.82   67.44   0.017  0.082  -0.159   1.1361     1.0177
         capsOn    extras   0.189   26.51   58.11   0.037  0.060  -0.050   1.1656     1.0060
         capsOn  interior   0.095   26.52   48.06   0.055  0.129  -0.083   1.0063     1.0605
         capsOn  elements   0.000    0.00   39.90   0.000  0.000   0.000   1.0000     1.0000
-        capsOn     other  -0.399   27.50   43.35   0.105  0.149  -0.012   0.9234     2.4342
+        capsOn     other  -0.399   27.44   43.35   0.105  0.149  -0.003   0.9227     2.4342
 ```
 
 ## The pieces that move — top 5 per scene

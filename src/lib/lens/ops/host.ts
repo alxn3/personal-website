@@ -9,8 +9,10 @@
 //     an identity pipeline subtracts to exactly zero.
 //  3. Hard idle gate: the emitted chain BRANCHES per recipe on
 //     `channel >= IDLE_EPS`, and a skipped branch adds nothing, so the seated
-//     render is bit-exact. A NaN inside a LIVE branch reaches the render, which
-//     is why every knob feeding the gate or a divisor carries a range.
+//     render is bit-exact on the plain graph (a shrink-wrapped decal rebuilds
+//     its point from barycentrics, seated to rounding). A NaN inside a LIVE
+//     branch reaches the render, which is why every knob feeding the gate or a
+//     divisor carries a range.
 //  4. The normal rotates `normalLocal` about the optical axis by the summed
 //     gated `rot` (no normalize); `rot` is a normal's only channel, so `aim` is
 //     an angle in the radial plane.
@@ -250,8 +252,8 @@ export function recipeKnobs(): Record<
 
 // ── The per-vertex graph ────────────────────────────────────────────────────
 
-// Rotate a vector about the optical axis by +rad — the convention the ops'
-// cumulative `rot` is written in.
+// Rotate a vector about the optical axis by +rad in the ops' `rot` convention.
+// That is three's R_y(−rad), so handing it a pivot's own `rotation.y` UN-spins.
 const rotateAboutAxis = (n: TslNode, rad: TslNode): TslNode => {
   const c = cos(rad);
   const s = sin(rad);
@@ -326,29 +328,20 @@ export function opsVariantKey(mesh: THREE.Object3D): string {
 const spinNodeOf = (mesh?: THREE.Object3D | null): TslNode | null =>
   (mesh?.userData[OPS_SPIN_KEY] as SpinTag | undefined)?.u ?? null;
 
-/** `R_y(−θ)·v` in the convention `Object3D.rotation.y` rotates by — the inverse
- *  of the pivot's own spin. NOT the sense `rotateAboutAxis` above uses. */
-const unspinY = (v: TslNode, theta: TslNode): TslNode => {
-  const c = cos(theta);
-  const s = sin(theta);
-  return vec3(v.x.mul(c).sub(v.z.mul(s)), v.y, v.x.mul(s).add(v.z.mul(c)));
-};
-
 // Unit vector with a length FLOOR: a collapsed facet yields the zero vector
 // rather than a NaN.
 const safeUnit = (v: TslNode): TslNode =>
   v.div(max(length(v), 1e-9)) as TslNode;
 
-/** Fold every active recipe over this vertex: the summed position delta and the
- *  summed normal rotation, each hard-gated per recipe. A null `spin` builds the
- *  plain graph, so an untagged mesh pays nothing. */
+/** Fold every active recipe over this vertex: the summed position delta and
+ *  the object-space normal graph, each hard-gated per recipe. A null `spin`
+ *  builds the plain graph, so an untagged mesh pays nothing. */
 function fold(
   spin: TslNode | null,
   wrap: boolean,
 ): {
   delta: TslNode;
-  rot: TslNode;
-  normal?: (n: TslNode) => TslNode;
+  normal: (n: TslNode) => TslNode;
 } {
   const p = positionLocal as TslNode;
   // The packed per-piece frame lanes — see ops/frames.ts FRAME_ATTRS.
@@ -373,10 +366,6 @@ function fold(
       k: uKnobs as TslNode,
     });
   };
-
-  const at = sampleAt(p);
-  const delta = at.xyz as TslNode;
-  const rot = at.w as TslNode;
 
   if (wrap) {
     // THE SHRINK-WRAP BINDING — see ops/frames.ts WRAP_ATTRS. The deform is
@@ -410,8 +399,7 @@ function fold(
     const bS = cross(nS, tS);
     const bF = cross(nF, tF);
     return {
-      delta: spin ? unspinY(wrapDelta, spin) : wrapDelta,
-      rot,
+      delta: spin ? rotateAboutAxis(wrapDelta, spin) : wrapDelta,
       // The shading normal rides the facet's own rotation: components read in
       // the seated triad, recombined in the deformed one. The deformed triad
       // crosses on varyings, so normalLocal is unit in the vertex stage only —
@@ -423,9 +411,17 @@ function fold(
           .add((varying(nF) as TslNode).mul(n.dot(nS))),
     };
   }
-  // Inside a spin pivot the delta lands in the ROTATED local frame; un-spin it
-  // so the piece spins about its own displaced axis. Position only.
-  return { delta: spin ? unspinY(delta, spin) : delta, rot };
+  const at = sampleAt(p);
+  const delta = at.xyz as TslNode;
+  const rot = at.w as TslNode;
+  return {
+    // Inside a spin pivot the delta lands in the ROTATED local frame; un-spin
+    // it so the piece spins about its own displaced axis. Position only.
+    delta: spin ? rotateAboutAxis(delta, spin) : delta,
+    // The normal turns about the optical axis by the summed gated rot, carried
+    // to the fragment on a varying.
+    normal: (n: TslNode) => rotateAboutAxis(n, varying(rot) as TslNode),
+  };
 }
 
 /** ONE fold() evaluation; position, view normal and object-space normal all
@@ -439,12 +435,7 @@ function opsGraph(
   normalLocal: TslNode;
 } {
   const f = fold(spin, wrap);
-  // A shrink-wrapped decal's normal rides its host FACET (fold's `normal`);
-  // everything else rotates about the optical axis by the summed gated rot,
-  // carried to the fragment on a varying.
-  const nLocal = f.normal
-    ? f.normal(normalLocal as TslNode)
-    : rotateAboutAxis(normalLocal as TslNode, varying(f.rot) as TslNode);
+  const nLocal = f.normal(normalLocal as TslNode);
   return {
     position: (positionLocal as TslNode).add(f.delta),
     // normalNode is consumed as a VIEW-space vector, so hand the object-space
@@ -523,9 +514,10 @@ export function hasOpFrames(mesh: THREE.Mesh): boolean {
 // Per-attribute fallback for edge vertices that match no source vertex: a
 // SELF-CONSISTENT frame (own radius, own meridian, a full turn of span) so the
 // deform there is ~identity and nothing divides by R = 0. `src` is the source
-// attribute, for the lanes that are constant over the whole mesh.
+// attribute, for the lanes that are constant over the whole mesh. Keyed on
+// FRAME_ATTRS' names, so a new lane cannot ship without a fallback.
 const EDGE_FALLBACK: Record<
-  string,
+  (typeof FRAME_ATTRS)[number]["name"],
   (x: number, y: number, z: number, src: THREE.BufferAttribute) => number[]
 > = {
   // (t0, R, span, rank): own meridian, own radius (R = 0 guarded), a full turn.

@@ -373,9 +373,9 @@ export function storyCostAt(p: number, table: PartTable): StoryCost {
     constellation: inSpan(p, SKY_INK_P0, SKY_INK_P1) ? 1 : 0,
     sprites: inSpan(p, SKY_INK_P0, SKY_INK_P1) ? LABELS.length + 1 : 0,
     petals: petalsOn ? 1 : 0,
-    // the dust cloud goes out for the dive and for the bloom, and comes back
-    // with each; the three refraction lines are mounted throughout
-    cinematics: flyOn || petalsOn ? RAY_LINES : RAY_LINES + 1,
+    // the dust cloud is the driver's dust law; the three refraction lines are
+    // mounted throughout
+    cinematics: s.look.dust ? RAY_LINES + 1 : RAY_LINES,
   };
   const drawsSky = flyOn ? (STARFIELD_LOOK.staticLines ? 2 : 1) : 0;
   // no accessory column: the story shows none at any p

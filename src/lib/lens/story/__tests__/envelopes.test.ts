@@ -26,8 +26,11 @@ import {
   CARDS_APART,
   EXPLODE_PULSE,
   INTERIOR_BACK,
+  PETALS_P0,
   ROSE_PULSE,
+  SHELL_BACK,
   assembleAt,
+  dustAt,
   bgAt,
   bgStopsFor,
   bgTintAt,
@@ -46,16 +49,16 @@ import {
   zoomAt,
 } from "../envelopes";
 import { internalsApertureAt, internalsBreathAt } from "../internals";
+import { bodyTransparent } from "../../materials/unified";
+// the fly's look laws, read from their owner: the wink-cover law below is
+// about where the body is transparent, which is the dive's to say
+import { EXIT_END, HYST, flyBodyFadeAt, flyInkAt } from "../fly";
+import { SPAN_P0 as PETALS_SPAN_P0 } from "../petals";
 
 // ============================================================================
-// THE ENVELOPES, TRANSCRIBED.
-//
-// story/envelopes.ts holds expressions that once lived in the DOM-bound driver.
-// Each is transcribed back here and pinned with `toBe` — bit-identical, not
-// close — over every scene edge, every window edge and a dense sweep, so the
-// rendered story cannot move by an ulp.
-//
-// A deliberate retune means moving the number HERE too, and saying so.
+// THE ENVELOPES' LAWS — the relations between windows the story rests on,
+// pinned on the functions the driver calls. No hand copy of any number: a
+// retune that keeps the laws passes here and shows in STORY-MAP's diff.
 // ============================================================================
 
 const heroR = RANGES[0];
@@ -66,80 +69,6 @@ const inR = rangeOf("internals");
 const fR = rangeOf("flythrough");
 const rwR = rangeOf("rewrap");
 const capR = rangeOf("capsOn");
-
-const OLD_CHROME_FADE_P0 = atFrac(capR, 0.77);
-const OLD_F_STOPS = ["2.8", "4", "5.6", "8", "11", "16", "22"];
-
-const oldZoom = (p: number) =>
-  pulse(p, { rise: ["zoom", 0.15, 0.85], fall: ["peel", 0, 0.4] });
-// RETUNED, per the header's contract: the fall opens on the last scene's own
-// foot, so the middle pieces leave on the still face-on frame and the stack
-// follows under the camera's turn. The rise is the original.
-const oldExplode = (p: number) =>
-  pulse(p, {
-    rise: ["trails", 0.05, 0.5],
-    fall: ["capsOn", 0.03, 0.64],
-  });
-// RETUNED, same contract: two saturated recipes cannot sum into a rigid parked
-// pose, so the wrap runs over the cards chapter only — one pulse, not two. The
-// peel half fills the peel scene, its tail running into the wink; the fall
-// waits for the wink's end, now inside the cards scene.
-const oldAssemble = (p: number) =>
-  pulse(p, {
-    rise: [
-      ["zoom", 0.85],
-      ["peel", 0.96],
-    ],
-    fall: ["cards", 0.16, 0.3],
-  });
-const oldPreShut = (p: number) =>
-  smoothstep(atFrac(inR, 0.6), atFrac(inR, 0.95), p);
-const oldOwnsIris = (p: number) => p < atFrac(caR, 0.15) - 0.02 || p > inR.p1;
-const oldInkFill = (p: number) =>
-  0.5 * smoothstep(atFrac(zR, 0.0), atFrac(zR, 0.5), p) +
-  0.5 * smoothstep(peR.p0, atFrac(peR, 0.35), p);
-// RETUNED: the wink opens earlier and runs into the cards scene, so the pieces
-// dissolve under the turn and the cards are born on them.
-const oldShellFade = (p: number) =>
-  1 -
-  smoothstep(atFrac(peR, 0.57), atFrac(caR, 0.15), p) +
-  smoothstep(rwR.p0, atFrac(rwR, 0.05), p);
-// RETUNED, same contract: the interior's return WAITS for the camera's park, so
-// its edges are authored off the transit DIVE_P0 is derived from. The wink half
-// is the original.
-const oldInteriorFade = (p: number) =>
-  1 -
-  smoothstep(atFrac(peR, 0.57), atFrac(caR, 0.15), p) +
-  smoothstep(atFrac(fR, fR.scene.transit), atFrac(fR, fR.scene.transit + 0.07), p); // prettier-ignore
-const oldSceneIndex = (p: number) => {
-  let scn = RANGES.length - 1;
-  for (let k = 0; k < RANGES.length; k++) {
-    if (p < RANGES[k].p1) {
-      scn = k;
-      break;
-    }
-  }
-  return scn;
-};
-const oldFocal = (zoom: number) => Math.round(18 + zoom * 32);
-const oldFStop = (aperture: number) =>
-  OLD_F_STOPS[Math.round(clamp01(aperture) * (OLD_F_STOPS.length - 1))];
-const oldScrollCue = (p: number) =>
-  1 - smoothstep(atFrac(heroR, 0.1), atFrac(heroR, 0.9), p);
-const oldChrome = (p: number) => 1 - smoothstep(OLD_CHROME_FADE_P0, capR.p1, p);
-const oldBgStops = (light: boolean): [number, [number, number, number]][] =>
-  RANGES.map((r) => [(r.p0 + r.p1) / 2, light ? r.scene.bgLight : r.scene.bg]);
-const oldBgTint = (
-  stops: [number, [number, number, number]][],
-  p: number,
-): number[] => {
-  let i = 0;
-  while (i < stops.length - 2 && p > stops[i + 1][0]) i++;
-  const [pa, a] = stops[i];
-  const [pb, b] = stops[i + 1];
-  const t = clamp01((p - pa) / Math.max(1e-3, pb - pa));
-  return a.map((v, k) => Math.round(v + (b[k] - v) * t));
-};
 
 /** Every scene edge and every scene-fraction the driver's windows are authored
  *  at, plus a dense sweep — a plain lattice would miss the smoothstep feet,
@@ -281,81 +210,89 @@ describe("the spinning-top rock", () => {
   });
 });
 
-// THE RELATIONAL PIN the transcription above cannot give: both edges are
-// authored off the flythrough's transit, so this fails loudly the day the
-// approach is retuned and the return is left behind on a stale fraction.
-describe("the interior comes back on the camera's park", () => {
-  it("opens no earlier than the dive's first frame", () => {
-    expect(INTERIOR_BACK[0]).toBeGreaterThanOrEqual(DIVE_P0);
-    expect(INTERIOR_BACK[1]).toBeGreaterThan(DIVE_P0);
-    expect(INTERIOR_BACK[1]).toBeLessThan(fR.p1);
-    // …so not one mesh has come back while the camera is still swinging on,
-    // and the interior is whole again inside the dive
-    expect(interiorFadeAt(DIVE_P0)).toBe(0);
+// THE COVER LAW: a wink dissolves only while the body is transparent
+// (materials/unified.ts `bodyTransparent` — ink showing, or a body fade under
+// 1) or wholly faded out; on an opaque body the alphaTest turns every piece
+// into a pop. Each wink window is checked against the dive's own look laws.
+describe("every wink runs under cover", () => {
+  const covered = (p: number) =>
+    bodyTransparent(flyInkAt(p) > 0, flyBodyFadeAt(p) < 1) ||
+    flyBodyFadeAt(p) === 0;
+  const windows: [string, [number, number]][] = [
+    ["wink", WINK_SPAN],
+    ["shell.back", SHELL_BACK],
+    ["interior.back", INTERIOR_BACK],
+  ];
+  it("on every frame of every wink window", () => {
+    for (const [name, [p0, p1]] of windows)
+      for (let i = 0; i <= 200; i++) {
+        const p = p0 + ((p1 - p0) * i) / 200;
+        expect(covered(p), `${name} at ${p}`).toBe(true);
+      }
+  });
+
+  it("the interior returns under the approach's ink, whole before the dive draws opaque", () => {
+    expect(INTERIOR_BACK[0]).toBeGreaterThanOrEqual(fR.p0);
+    expect(INTERIOR_BACK[1]).toBeLessThan(DIVE_P0 - HYST);
     expect(interiorFadeAt(INTERIOR_BACK[1])).toBe(1);
+    expect(interiorFadeAt(DIVE_P0)).toBe(1);
+    // the ink is still a real share of the look where the last piece lands,
+    // so the arrival reads as the peel's dissolve reversed
+    expect(flyInkAt(INTERIOR_BACK[1])).toBeGreaterThan(0.2);
+    // …and the shell stays off until the rewrap
+    expect(shellFadeAt(DIVE_P0)).toBe(0);
+    expect(shellFadeAt(rwR.p0)).toBe(0);
   });
 });
 
-describe("the driver's envelopes, extracted", () => {
-  it("reproduces every channel pulse bit-for-bit", () => {
-    for (const p of SWEEP) {
-      expect(zoomAt(p), `zoom at ${p}`).toBe(oldZoom(p));
-      expect(explodeAt(p), `explode at ${p}`).toBe(oldExplode(p));
-      expect(assembleAt(p), `assemble at ${p}`).toBe(oldAssemble(p));
-      expect(preShutAt(p), `preShut at ${p}`).toBe(oldPreShut(p));
-    }
+describe("the dust has one law", () => {
+  it("is off through the dive and from the petals' mount on, and on elsewhere", () => {
+    for (const p of [0, holdCentreOf(zR), holdCentreOf(caR), DIVE_P0 - 1e-9])
+      expect(dustAt(p), `p ${p}`).toBe(true);
+    for (const p of [
+      DIVE_P0,
+      holdCentreOf(fR),
+      holdCentreOf(rwR) - 0.1,
+      EXIT_END,
+    ])
+      expect(dustAt(p), `p ${p}`).toBe(false);
+    expect(dustAt(EXIT_END + 1e-9)).toBe(true);
+    expect(dustAt(PETALS_SPAN_P0 - 1e-9)).toBe(true);
+    for (const p of [PETALS_SPAN_P0, 0.99, 1])
+      expect(dustAt(p), `p ${p}`).toBe(false);
+    // the petals' own mount edge IS the law's edge
+    expect(PETALS_SPAN_P0).toBe(PETALS_P0);
   });
+});
 
-  it("reproduces every look envelope bit-for-bit", () => {
-    for (const p of SWEEP) {
-      expect(inkFillAt(p), `inkFill at ${p}`).toBe(oldInkFill(p));
-      expect(shellFadeAt(p), `shellFade at ${p}`).toBe(oldShellFade(p));
-      expect(interiorFadeAt(p), `interiorFade at ${p}`).toBe(
-        oldInteriorFade(p),
-      );
-    }
-  });
-
-  it("reproduces the chrome, the cue and the scene index bit-for-bit", () => {
-    for (const p of SWEEP) {
-      expect(chromeAt(p), `chrome at ${p}`).toBe(oldChrome(p));
-      expect(scrollCueAt(p), `scrollCue at ${p}`).toBe(oldScrollCue(p));
-      expect(sceneIndexAt(p), `scene index at ${p}`).toBe(oldSceneIndex(p));
-      expect(driverOwnsIris(p), `iris owner at ${p}`).toBe(oldOwnsIris(p));
-    }
-    // the gate's own edges, where an off-by-an-epsilon would live
+describe("the iris gate and the HUD", () => {
+  it("hands the iris over at exact edges", () => {
     expect(driverOwnsIris(IRIS_HANDOVER)).toBe(false);
     expect(driverOwnsIris(IRIS_HANDOVER - 1e-12)).toBe(true);
     expect(driverOwnsIris(IRIS_HANDBACK)).toBe(false);
     expect(driverOwnsIris(IRIS_HANDBACK + 1e-12)).toBe(true);
-    expect(CHROME_FADE[0]).toBe(OLD_CHROME_FADE_P0);
-    expect(CHROME_FADE[1]).toBe(capR.p1);
   });
 
-  it("reproduces the HUD readouts bit-for-bit", () => {
-    expect(F_STOPS).toEqual(OLD_F_STOPS);
-    for (let i = 0; i <= 1000; i++) {
-      const v = i / 1000;
-      expect(focalMmAt(v), `focal at ${v}`).toBe(oldFocal(v));
-      expect(fStopOf(v), `f-stop at ${v}`).toBe(oldFStop(v));
-    }
-    // the clamp is load-bearing: the fly drives the aperture channel and the
-    // HUD reads the LIVE eased value, which overshoots on a fast scrub
+  it("clamps the f-stop: the live channel overshoots on a fast scrub", () => {
+    expect(F_STOPS[0]).toBe("2.8");
+    expect(F_STOPS[F_STOPS.length - 1]).toBe("22");
     expect(fStopOf(-0.4)).toBe("2.8");
     expect(fStopOf(1.7)).toBe("22");
+    expect(focalMmAt(0)).toBe(18);
+    expect(focalMmAt(1)).toBe(50);
   });
 
-  it("reproduces the stage tint bit-for-bit, both themes", () => {
+  it("tints the stage per theme, interpolating between the scenes' hold centres", () => {
     for (const light of [false, true]) {
       const stops = bgStopsFor(light);
-      const old = oldBgStops(light);
-      expect(stops).toEqual(old);
-      for (const p of SWEEP) {
-        expect(bgTintAt(stops, p), `tint at ${p} light=${light}`).toEqual(
-          oldBgTint(old, p),
+      expect(stops.map((s) => s[0])).toEqual(
+        RANGES.map((r) => (r.p0 + r.p1) / 2),
+      );
+      for (const r of RANGES)
+        expect(bgAt((r.p0 + r.p1) / 2, light)).toEqual(
+          light ? r.scene.bgLight : r.scene.bg,
         );
-        expect(bgAt(p, light)).toEqual(oldBgTint(old, p));
-      }
+      for (const p of SWEEP) expect(bgTintAt(stops, p)).toEqual(bgAt(p, light));
     }
   });
 });

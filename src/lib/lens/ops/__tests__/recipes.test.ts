@@ -12,7 +12,7 @@ import {
   makeRecipes,
   type Recipe,
 } from "../recipes";
-import { DEPTH_THIN, WRAP_DIR } from "../house";
+import { DEPTH_THIN, WRAP_DIR, bendTerm } from "../house";
 import {
   group,
   ladder,
@@ -111,6 +111,7 @@ function ctxOf(
     L,
     yN: v.yN,
     off: v.off,
+    height: 40,
     rung: p.rung,
     axi: 0,
     depth: 0,
@@ -265,11 +266,10 @@ describe("assemble at channel 1", () => {
 
   // The pipeline is TWO items: the sheet group (everything scoped to the pieces
   // that participate in the wrap) and the ladder inside its own keep-scope
-  // group. Inside the sheet group: the three selectors, the WRAP CHAIN (a seam
-  // re-aim, the anchor, three arcs and the re-aim spent again), sep, and the
-  // reel-in group. The wrap is a SLICE rather than one item.
+  // group. Inside the sheet group: the three selectors, the WRAP GROUP (the
+  // bend-cast selector, then the chain: a seam re-aim, the anchor, three arcs
+  // and the re-aim spent again), sep, and the reel-in group.
   const SHEET_WRAP = 3;
-  const SHEET_SEP = 9;
 
   function sheetOf(items: OpItem<number>[]): OpItem<number>[] {
     const sheet = items[0];
@@ -278,15 +278,15 @@ describe("assemble at channel 1", () => {
     return sheet.items;
   }
 
-  // The recipe's OWN wrap chain, so the probes below exercise the shipped ops
-  // rather than a copy of them.
+  // The recipe's OWN wrap chain (the bend-cast selector stripped), so the
+  // probes below exercise the shipped ops rather than a copy of them.
   function wrapOf(ctx: OpCtx<number>): OpItem<number>[] {
-    const chain = sheetOf(recipe.build(ctx, knobs)).slice(
-      SHEET_WRAP,
-      SHEET_SEP,
-    );
+    const wrap = sheetOf(recipe.build(ctx, knobs))[SHEET_WRAP];
+    if (wrap.kind !== "group" || wrap.items[0].kind !== "selector")
+      throw new Error("sheet item 3 is not the wrap group");
+    const chain = wrap.items.slice(1);
     if (chain.length !== 6 || chain.some((i) => i.kind === "selector"))
-      throw new Error("the sheet group's items 2..7 are not the wrap chain");
+      throw new Error("the wrap group's items 1..6 are not the wrap chain");
     return chain;
   }
 
@@ -346,8 +346,9 @@ describe("assemble at channel 1", () => {
     p: Piece,
     v: Vert,
     phase: { flight: number; stick: number },
+    over: Partial<OpCtx<number>> = {},
   ): VertexState<number> => {
-    const ctx = ctxOf(p, v, phase);
+    const ctx = ctxOf(p, v, phase, undefined, over);
     return runChain(wrapOf(ctx), p, ctx);
   };
 
@@ -416,7 +417,6 @@ describe("assemble at channel 1", () => {
 
     // Hand-composed: the same ops, arguments, order and SCOPING. The wrap CHAIN
     // is the recipe's own; everything around it is written out here.
-    const sheet = sheetOf(items);
     const hand: OpItem<number>[] = [
       group<number>([
         selSector<number>(knobs.maskCenter, knobs.maskWidth, 0.3),
@@ -447,7 +447,10 @@ describe("assemble at channel 1", () => {
                 ),
               ),
         ),
-        ...sheet.slice(SHEET_WRAP, SHEET_SEP),
+        group<number>([
+          selFront<number>((c) => bendTerm(NUM, c)),
+          ...wrapOf(ctx),
+        ]),
         spread<number>(knobs.sep),
         group<number>([
           selFront<number>((c) => 1 - NUM.smoothstep(0, 0.25, c.stick)),
@@ -469,7 +472,7 @@ describe("assemble at channel 1", () => {
                 ),
               ),
         ),
-        ladder<number>("attr", 0.4 * knobs.depth),
+        ladder<number>(0.4 * knobs.depth),
       ]),
     ];
     const asBuilt = runPipeline(items, seated, frame, ctx).v;
@@ -482,11 +485,12 @@ describe("assemble at channel 1", () => {
     // PERTURB: run the slow sep slide BEFORE the wrap. The chain's `anchor`
     // REPLACES the point off the material coordinate, so a translation
     // placed ahead of it is erased — the order is load-bearing, not cosmetic.
+    const sheet = sheetOf(items);
     const swappedSheet = [
       ...sheet.slice(0, SHEET_WRAP),
-      sheet[SHEET_SEP],
-      ...sheet.slice(SHEET_WRAP, SHEET_SEP),
-      ...sheet.slice(SHEET_SEP + 1),
+      sheet[SHEET_WRAP + 1],
+      sheet[SHEET_WRAP],
+      ...sheet.slice(SHEET_WRAP + 2),
     ];
     const perturbed = runPipeline(
       [group<number>(swappedSheet), items[1]],
@@ -508,6 +512,65 @@ describe("assemble at channel 1", () => {
   // Everyone else translates on the ladder ALONE.
   const LADDER_GAIN = 0.4;
   const FULL_RING = Math.PI; // halfSpan of a 2π piece
+
+  it("(b⁷) a DEEP sheet takes the slides RIGID: no breath, no roll, every distance kept", () => {
+    // The wrap group is on the bend cast (ops/house bendTerm): a piece deeper
+    // than DEPTH_THIN skips the chain and keeps sep, the throw, the swirl and
+    // the ladder — all rigid — so its probes keep their pairwise distances.
+    const dist3 = (a: VertexState<number>, b: VertexState<number>): number =>
+      Math.hypot(a.x - b.x, a.z - b.z, a.axial - b.axial);
+    let bent = 0;
+    for (const channel of [0.2, 0.5, 0.8]) {
+      for (const p of PIECES) {
+        for (const depth of [DEPTH_THIN, 0.3, 1]) {
+          const runs = VERTS.map((v) =>
+            runAt(recipe, p, v, channel, { depth }),
+          );
+          for (let i = 0; i < runs.length; i++)
+            for (let j = i + 1; j < runs.length; j++)
+              expect(dist3(runs[i].out, runs[j].out), `depth ${depth} t0 ${p.t0} @ ${channel} probes ${i},${j}`).toBeCloseTo(dist3(runs[i].seated, runs[j].seated), 8); // prettier-ignore
+        }
+        // …while a thin one at the same clock is bent (not vacuous)
+        const thin = VERTS.map((v) => runAt(recipe, p, v, channel, { depth: DEPTH_THIN - 0.01 })); // prettier-ignore
+        for (let i = 0; i < thin.length; i++)
+          for (let j = i + 1; j < thin.length; j++)
+            if (Math.abs(dist3(thin[i].out, thin[j].out) - dist3(thin[i].seated, thin[j].seated)) > 1e-6) bent++; // prettier-ignore
+      }
+    }
+    expect(bent).toBeGreaterThan(20);
+  });
+
+  it("(b⁸) the diagonal front has ONE slope in millimetres: a short piece is the tall one's central band", () => {
+    // front = yN·min(1, height/L): for height ≤ L a vertex `yMm` up the piece
+    // shears exactly as the vertex at yN = yMm/L of an L-tall piece, and above
+    // L the cap makes every taller piece the same. Radial-plane outputs only —
+    // the chain never moves axial.
+    const radial = (v: VertexState<number>): number[] => [v.x, v.z, v.rot];
+    for (const p of PIECES) {
+      const L = p.R * 2 * HALF;
+      for (const yN of [-0.5, -0.2, 0.3, 0.5]) {
+        for (const frac of [0.4, 0.7, 0.9]) {
+          const v: Vert = { frac, yN, off: 0.2 };
+          const short = wrapProbe(p, v, ROLL, { height: 0.6 });
+          const square = wrapProbe(p, { ...v, yN: (yN * 0.6) / L }, ROLL, { height: L }); // prettier-ignore
+          radial(short).forEach(
+            (c, k) =>
+            expect(c, `short t0 ${p.t0} yN ${yN} frac ${frac} [${k}]`).toBeCloseTo(radial(square)[k], 10), // prettier-ignore
+          );
+          const tall = wrapProbe(p, v, ROLL, { height: L });
+          const taller = wrapProbe(p, v, ROLL, { height: 1e6 });
+          radial(tall).forEach(
+            (c, k) =>
+            expect(c, `cap t0 ${p.t0} yN ${yN} frac ${frac} [${k}]`).toBeCloseTo(radial(taller)[k], 10), // prettier-ignore
+          );
+        }
+      }
+      // …and the front is live: a short piece is NOT the tall one
+      const a = wrapProbe(p, { frac: 0.7, yN: 0.5, off: 0.2 }, ROLL, { height: 0.6 }); // prettier-ignore
+      const b = wrapProbe(p, { frac: 0.7, yN: 0.5, off: 0.2 }, ROLL, { height: L }); // prettier-ignore
+      expect(Math.hypot(a.x - b.x, a.z - b.z)).toBeGreaterThan(0.1);
+    }
+  });
 
   it("(b⁗) non-participants ride the ladder alone — glass, the iris mechanism, axisymmetric solids and full rings", () => {
     const PASSENGERS: { name: string; over: Partial<OpCtx<number>> }[] = [

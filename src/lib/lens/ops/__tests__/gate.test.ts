@@ -5,7 +5,8 @@ import { gate, type GateSpec } from "../gate";
 // The gate on the NUM backend; the per-piece phase term is the `layerPhase`
 // input, not an angle-derived value.
 
-// The calibrated "assemble" values — the identity anchor.
+// A house-shaped spec (the shipped gates are covered by host-knobs.test.ts):
+// the identity anchor's laws hold at any legal values.
 const ASSEMBLE: GateSpec<number> = {
   layerStagger: 0.6,
   windowFrac: 0.4,

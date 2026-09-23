@@ -9,8 +9,6 @@
 export type Sc<S> = S | number;
 
 export interface Algebra<S> {
-  /** Coerce a scalar-or-number into the backend scalar type. */
-  lift(x: Sc<S>): S;
   /** A literal number as a backend scalar. */
   lit(n: number): S;
 
@@ -35,7 +33,6 @@ export interface Algebra<S> {
   /** GLSL atan(y, x): the two-arg form (a.k.a. atan2), signed by quadrant. */
   atan2(y: Sc<S>, x: Sc<S>): S;
   abs(a: Sc<S>): S;
-  sign(a: Sc<S>): S;
   pow(x: Sc<S>, e: Sc<S>): S;
   sqrt(a: Sc<S>): S;
   floor(a: Sc<S>): S;
@@ -43,9 +40,8 @@ export interface Algebra<S> {
   fract(a: Sc<S>): S;
 }
 
-// The number backend: `lift`/`lit` are identity, the rest are GLSL formulas.
+// The number backend: `lit` is identity, the rest are GLSL formulas.
 export const NUM: Algebra<number> = {
-  lift: (x) => x,
   lit: (n) => n,
 
   add: (a, b) => a + b,
@@ -69,7 +65,6 @@ export const NUM: Algebra<number> = {
   cos: (a) => Math.cos(a),
   atan2: (y, x) => Math.atan2(y, x),
   abs: (a) => Math.abs(a),
-  sign: (a) => Math.sign(a),
   pow: (x, e) => Math.pow(x, e),
   sqrt: (a) => Math.sqrt(a),
   floor: (a) => Math.floor(a),

@@ -10,6 +10,7 @@ import { clamp01, deg, smoothstep } from "../core/math";
 import { MODEL_BORE_X_Z } from "../core/scene";
 import {
   DIVE_P0,
+  FLY_EXIT_END,
   RANGES,
   atFrac,
   pulseFn,
@@ -263,18 +264,30 @@ export const winkPAt = (level: number): number => {
 export const shellFadeAt = (p: number): number =>
   winkLevelAt(p) + smoothstep(SHELL_BACK[0], SHELL_BACK[1], p);
 
-/** The interior's return waits for the camera to park ON the bore: it may not
- *  open before DIVE_P0 or the approach swing shows the arriving pieces in
- *  profile with no shell to hide them. Both edges ride the flythrough transit. */
-export const INTERIOR_BACK = span("interior.back", [
-  DIVE_P0,
-  atFrac(fR, fR.scene.transit + 0.07),
-]);
+/** The interior's return, UNDER THE INK: a wink only dissolves while the body
+ *  is transparent (materials/unified.ts `bodyTransparent`), and the dive draws
+ *  the body opaque from DIVE_P0 − HYST on, so the window sits inside the
+ *  approach's ink-out (story/fly.ts flyInkAt), where the pieces arrive as ink
+ *  the way they left. envelopes.test.ts pins every wink window to that cover. */
+export const INTERIOR_BACK = span("interior.back", [fR.p0, atFrac(fR, 0.12)]);
 
 /** Cladding + rest-cast leave on the shell's window but return over the
  *  flythrough approach, so the dive flies through the full interior. */
 export const interiorFadeAt = (p: number): number =>
   winkLevelAt(p) + smoothstep(INTERIOR_BACK[0], INTERIOR_BACK[1], p);
+
+// --- the dust ----------------------------------------------------------------
+
+/** Where the bloom's petals mount (story/petals.ts SPAN_P0): a pad below the
+ *  rose's foot, so a scrub parked on the edge cannot thrash the mount. */
+export const PETALS_P0 = windowEdges(ROSE_PULSE.rise)[0] - 0.01;
+
+/** THE DUST: the ambient motes (story/cinematics.ts) are off through the dive,
+ *  where they would float in front of the sky, and from the petals' mount on,
+ *  where the petals replace them. ONE writer — the driver — so the two spans
+ *  cannot race on a resume. */
+export const dustAt = (p: number): boolean =>
+  !(p >= DIVE_P0 && p <= FLY_EXIT_END) && p < PETALS_P0;
 
 // --- the stage tint ----------------------------------------------------------
 

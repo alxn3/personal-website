@@ -91,3 +91,8 @@ html.dark[data-palette="poster"] {
   --accent-soft: #45301c4d;
   --highlight: #ff9e42;
 }
+
+.palette-tryout button:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}

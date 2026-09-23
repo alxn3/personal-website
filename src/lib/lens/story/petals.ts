@@ -1,7 +1,7 @@
 // THE BLOOM'S PETALS — the rose ending's ambient: cut-paper petals drifting
 // down the frame while the flower holds open. They REPLACE the ambient dust
-// (story/cinematics.ts) for the length of the bloom — the motes go out at the
-// span's edge and come back with it, the way the dive hands the dust off.
+// (story/cinematics.ts) for the length of the bloom; the driver's dust law
+// (story/envelopes.ts dustAt) turns the motes off at this span's foot.
 //
 // LAZY MODULE, like story/fly.ts and story/trails.ts: reached ONLY through
 // hero-driver's dynamic import(), never re-exported from index.ts.
@@ -37,7 +37,7 @@ import type { SceneHandle } from "../core/scene";
 import { lerp, smoothstep } from "../core/math";
 import { isLightTheme, watchTheme } from "../core/theme";
 import { STORY_R, rangeOf, windowEdges } from "./story";
-import { ROSE_PULSE } from "./envelopes";
+import { PETALS_P0, ROSE_PULSE } from "./envelopes";
 
 const TAU = Math.PI * 2;
 
@@ -54,10 +54,10 @@ export const PETAL_RISE = ROSE_P0 + 0.5 * (ROSE_P1 - ROSE_P0);
 export const petalEnvAt = (p: number): number =>
   smoothstep(ROSE_P0, PETAL_RISE, p);
 
-/** Slack below the envelope's foot before the field is mounted, so a scrub
- *  parked on the edge cannot thrash attach/detach. */
-const SPAN_PAD = 0.01;
-export const SPAN_P0 = ROSE_P0 - SPAN_PAD;
+/** Where the field mounts: a pad below the envelope's foot, authored with the
+ *  dust law in story/envelopes.ts, so a scrub parked on the edge cannot thrash
+ *  attach/detach. */
+export const SPAN_P0 = PETALS_P0;
 /** …and the top: the track's end. The bloom is the last thing the story does. */
 export const SPAN_P1 = 1;
 
@@ -366,10 +366,8 @@ export interface StoryPetals {
 export function createStoryPetals(scene: SceneHandle): StoryPetals {
   const field = buildPetalObject(isLightTheme());
   let shown = false;
-  /** the field's own clock, seconds — accrues only inside the span */
+  /** the field's own clock, seconds — accrues only while petals are drawn */
   let t = 0;
-  /** whether THIS module is the one holding the ambient dust down */
-  let dustHeld = false;
 
   watchTheme((l) => {
     const pal = l ? PETAL_INK.light : PETAL_INK.dark;
@@ -383,29 +381,24 @@ export function createStoryPetals(scene: SceneHandle): StoryPetals {
     const dt = dtMs / 1000;
     // written unconditionally: a flick can leave the bloom between two frames,
     // and a held envelope freezes a field of petals on the stage
-    field.uEnv.value = petalEnvAt(p);
+    const env = petalEnvAt(p);
+    field.uEnv.value = env;
 
     if (p < SPAN_P0) {
       if (shown) {
         scene.removeOverlay(field.mesh);
         shown = false;
       }
-      if (dustHeld) {
-        scene.setDust(true);
-        dustHeld = false;
-      }
       return false; // outside the bloom: nothing drawn, no time accrued
     }
 
-    if (!dustHeld) {
-      // the petals REPLACE the motes for the ending (story/cinematics.ts)
-      scene.setDust(false);
-      dustHeld = true;
-    }
     if (!shown) {
       scene.addOverlay(field.mesh);
       shown = true;
     }
+    // mounted at envelope 0 (the pad below the foot) nothing is drawn, so the
+    // fall neither runs nor asks for a frame
+    if (env <= 0) return false;
     t += dt;
     field.uTime.value = t;
     // the frame the fall is written against, live: a resize or a fov change

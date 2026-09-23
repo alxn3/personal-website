@@ -15,7 +15,7 @@ Astro 7 personal site: Tailwind v4, Alpine.js, three.js (WebGPU/TSL) lens viewer
 
 ## Client-side JS
 
-- No `is:inline` scripts for logic — they skip bundling, minification and typechecking. The only inline scripts are the pre-paint bootstraps that must run during HTML parse: the theme-class + `?embed` bootstrap in `HtmlShell.astro` and the panel-state applier in the project page. Everything else goes in bundled `<script>` modules or `src/lib/alpine.ts`.
+- No `is:inline` scripts for logic — they skip bundling, minification and typechecking. The only inline scripts are the pre-paint bootstraps that must run during HTML parse: the theme-class + `html.js` + `?embed` bootstrap in `HtmlShell.astro` (reveal styling gates on `html.js`, so a no-JS page paints everything) and the panel-state applier in the project page. Everything else goes in bundled `<script>` modules or `src/lib/alpine.ts`.
 - `src/lib/alpine.ts` is the `@astrojs/alpinejs` entrypoint: every `Alpine.data()` and `Alpine.store()` registers there. Data names are JS identifiers (`projectPanels`) because `x-data` is evaluated as a JS expression; localStorage keys and `data-*` attributes are kebab-case.
 - The desktop breakpoint lives once in `src/lib/constants.ts` (`DESKTOP_MEDIA`, mirroring Tailwind `lg`): JS imports it, Alpine templates use `$isDesktop()`, inline scripts receive it via `define:vars`. Never hard-code `64rem`.
 

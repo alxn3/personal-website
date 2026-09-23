@@ -4,7 +4,7 @@ import fs from "node:fs";
 import { deriveFrames, frameOf, rankKeyOf, type Frame } from "../frames";
 import { NUM } from "../algebra";
 import { DEPTH_THIN, WRAP_DIR, sheetTerm } from "../house";
-import { type OpCtx } from "../ops";
+import { PART_CLASS, type OpCtx } from "../ops";
 import { createMechanism, MECHANISM } from "../mechanism";
 import { recipeChannel, RECIPE_NAMES } from "../host";
 import { displaceInto } from "../../dev/ops-cpu";
@@ -552,7 +552,7 @@ describe("the RADIAL DEPTH lane the bend cast reads", () => {
   deriveFrames(root);
 
   const ctxOf = (f: Frame): OpCtx<number> => ({
-    A: NUM, t0: f.t0, R: f.R, rank01: f.rank, layerPhase: f.phase, halfSpan: f.span / 2, partClass: f.cls, phi: 0, d: 0, L: 0, yN: 0, off: 0, rung: f.rung, axi: f.axi, depth: f.depth, adopted: f.adopted, channel: 0, gateAt: () => ({ flight: 0, stick: 0 }), flight: 0, stick: 0, wrapDir: WRAP_DIR }); // prettier-ignore
+    A: NUM, t0: f.t0, R: f.R, rank01: f.rank, layerPhase: f.phase, halfSpan: f.span / 2, partClass: f.cls, phi: 0, d: 0, L: 0, yN: 0, off: 0, height: 1, rung: f.rung, axi: f.axi, depth: f.depth, adopted: f.adopted, channel: 0, gateAt: () => ({ flight: 0, stick: 0 }), flight: 0, stick: 0, wrapDir: WRAP_DIR }); // prettier-ignore
 
   /** every own-framed sheet-like piece, by name → depth */
   const sheets = new Map<string, number>();
@@ -601,16 +601,48 @@ describe("the RADIAL DEPTH lane the bend cast reads", () => {
         if (group(name) === g) expect(depth, name).toBeLessThan(DEPTH_THIN);
   });
 
-  it("hands bolted hardware its host's depth, so it bends or rides with its shell", () => {
+  it("gives bolted hardware its OWN wall about the host's R, floored at the host's", () => {
     const depthOf = (name: string): number =>
       frameOf((root.getObjectByName(name) as THREE.Mesh).geometry)!.depth;
     const wedges = (host: string): number[] =>
       [0, 1, 2, 3, 4].map((i) => depthOf(`${host}_Seg${i}`));
-    // exactly a host wedge's float, not the feature's own measurement
-    expect(wedges("Chassis_Fixed")).toContain(depthOf("Focus_Motor"));
-    expect(depthOf("Focus_Motor")).toBeLessThan(DEPTH_THIN);
+    // the focus motor and guide rods are solids deep inside a thin chassis
+    // ring: rigid on their own terms, whatever the chassis does
+    for (const w of wedges("Chassis_Fixed")) expect(w).toBeLessThan(0.02);
+    expect(depthOf("Focus_Motor")).toBeGreaterThan(DEPTH_THIN);
+    expect(depthOf("Focus_GuideRods")).toBeGreaterThan(DEPTH_THIN);
+    // a screw is a thin tab (~0.18 of its own) on a deep mount: exactly a host
+    // wedge's float, so it rides the mount's rigid slide
     expect(wedges("Mount_Bayonet")).toContain(depthOf("Mount_Screws"));
     expect(depthOf("Mount_Screws")).toBeGreaterThan(DEPTH_THIN);
+  });
+
+  it("every adopted piece's depth covers its own vertices — the wall-strain law's probe radius is honest", () => {
+    // ops/frames.ts `wallDepthOf`: a bend about the lane's R strains a vertex
+    // by |r − R| / R, so no vertex may sit outside the wall the lane declares.
+    // Decals ride their host's facets and carry the host's wall instead.
+    let adopted = 0;
+    let decals = 0;
+    root.traverse((o) => {
+      if (!(o instanceof THREE.Mesh)) return;
+      const pos = o.geometry.getAttribute("position");
+      const a = o.geometry.getAttribute("_opA");
+      const y = o.geometry.getAttribute("_opY");
+      for (let i = 0; i < pos.count; i++) {
+        const f = frameOf(o.geometry, i)!;
+        if (!f.adopted) continue;
+        if (f.cls === PART_CLASS.decal) {
+          decals++;
+          continue;
+        }
+        adopted++;
+        const R = a.getY(i);
+        const wall = Math.abs(Math.hypot(pos.getX(i), pos.getZ(i)) - R) / R;
+        expect(y.getZ(i) + 1e-5, `${o.name} vertex ${i}`).toBeGreaterThanOrEqual(wall); // prettier-ignore
+      }
+    });
+    expect(adopted).toBeGreaterThan(1000);
+    expect(decals).toBeGreaterThan(100);
   });
 });
 

@@ -161,7 +161,7 @@ const fmtDate = (d: Date) =>
   }
   :global(html.dark body:has(#lens-hero)) :global(footer) {
     --color-border: rgba(236, 231, 218, 0.13);
-    --color-text-muted: rgba(236, 231, 218, 0.5);
+    --color-text-muted: rgba(236, 231, 218, 0.6);
     background: #1d1a14;
   }
 
@@ -189,11 +189,12 @@ const fmtDate = (d: Date) =>
     color: var(--color-highlight);
   }
 
-  [data-reveal] {
+  /* hidden only when JS is present (HtmlShell's `js` class), so no-JS shows it */
+  :global(html.js) [data-reveal] {
     opacity: 0;
     transform: translateY(18px);
   }
-  [data-reveal].is-in {
+  :global(html.js) [data-reveal].is-in {
     opacity: 1;
     transform: none;
     transition:
@@ -202,7 +203,7 @@ const fmtDate = (d: Date) =>
     transition-delay: var(--d, 0ms);
   }
   @media (prefers-reduced-motion: reduce) {
-    [data-reveal] {
+    :global(html.js) [data-reveal] {
       opacity: 1;
       transform: none;
     }

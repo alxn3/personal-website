@@ -2,12 +2,13 @@ import * as THREE from "three/webgpu";
 import { deg } from "../core/math";
 import { opsSpinBox, tagOpsSpin } from "./host";
 
-// THE MECHANISM — the real-lens motions only: zoom, focus, aperture, as object
-// transforms (constants per lens_work/lens_mechanism.md). Object names are the
-// API; the group empties (Optics_G2..G4, Iris_Housing, Barrel_Inner) are the
-// drive targets. The teardown is the op recipes', in-shader. One seam: the
-// focus lead screw spins about its own pivot, so its op delta lands inside that
-// rotation and the deform host un-spins it (`tagMechanismSpins`).
+// THE MECHANISM — the real-lens motions (zoom, focus, aperture) plus the
+// story's huddle, as object transforms (constants per
+// lens_work/lens_mechanism.md). Object names are the API; the group empties
+// (Optics_G2..G4, Iris_Housing, Barrel_Inner) are the drive targets. The
+// teardown is the op recipes', in-shader. One seam: the focus lead screw spins
+// about its own pivot, so its op delta lands inside that rotation and the
+// deform host un-spins it (`tagMechanismSpins`).
 
 /** The node whose ±FOCUS_MM slide IS the focus travel: L4 (Element_12) rides
  *  the Optics_G4_Focus empty, exactly as the Blender rig drives it. */

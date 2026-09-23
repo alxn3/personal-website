@@ -130,7 +130,6 @@ export interface StarTrails {
   setEnvelope(o: number): void;
   /** re-palette in place: two uniform writes, no rebuild */
   setTheme(light: boolean): void;
-  dispose(): void;
 }
 
 /** Build the trail engine: one BufferGeometry and one material over the
@@ -274,11 +273,6 @@ export function createStarTrails(opts: { light: boolean }): StarTrails {
       uInk.value.setHex(pal.trail ?? pal.star);
       uInkOpacity.value = pal.starOpacity;
       uInkFloor.value = l ? TRAIL_LOOK.lightInkFloor : 0;
-    },
-    dispose() {
-      mesh.removeFromParent();
-      geo.dispose();
-      mat.dispose();
     },
   };
 }

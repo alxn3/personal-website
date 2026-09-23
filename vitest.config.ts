@@ -1,13 +1,9 @@
 import { configDefaults, defineConfig } from "vitest/config";
 
-/** The GLB-loading instruments: every piece through the real pipeline over the
- *  shipped model. `npm run test:structural` runs them; `npm test` does not. */
-const STRUCTURAL = [
-  "src/lib/lens/story/__tests__/story-ending.test.ts",
-  "src/lib/lens/story/__tests__/piece-flow.test.ts",
-  "src/lib/lens/story/__tests__/story-cost.test.ts",
-  "src/lib/lens/story/__tests__/story-portrait.test.ts",
-];
+/** The slow instrument: every piece through the real pipeline at every story
+ *  edge over the shipped model. `npm run test:structural` runs it; `npm test`
+ *  does not. Everything else, GLB readers included, is in the default tier. */
+const STRUCTURAL = ["src/lib/lens/story/__tests__/piece-flow.test.ts"];
 
 export default defineConfig({
   test: {

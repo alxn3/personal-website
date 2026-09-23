@@ -109,12 +109,9 @@ function buildLensMaterial(spec: LensMaterialSpec): THREE.Material {
 export interface LensModel {
   /** The body scene — ready to render on its own. */
   scene: THREE.Group;
-  /** Whether this load asked for the accessories GLB at all. False on the
-   *  hero, so nothing downstream may expect hood/caps/filter nodes to exist. */
-  hasAccessories: boolean;
   /** Resolves once the accessories GLB is merged into `scene`. Loaded in the
    *  background after the body, so callers must await this before touching
-   *  hood/caps/filter nodes; resolves immediately when `hasAccessories` is
+   *  hood/caps/filter nodes; resolves immediately when `accessories` was
    *  false. */
   accessoriesReady: Promise<void>;
 }
@@ -175,39 +172,17 @@ export async function loadLensModel({
       })
     : Promise.resolve();
 
-  return { scene, hasAccessories: accessories, accessoriesReady };
+  return { scene, accessoriesReady };
 }
 
-/**
- * Give the scene a PMREM'd room environment and return the texture for
- * disposal. Transmissive glass only reads as glass with something to refract.
- */
+/** Give the scene a PMREM'd room environment. Transmissive glass only reads
+ *  as glass with something to refract. The scene is never torn down — one per
+ *  document — so nothing keeps the texture for disposal. */
 export function setLensEnvironment(
   renderer: THREE.WebGPURenderer,
   scene: THREE.Scene,
-): THREE.Texture {
+): void {
   const pmrem = new THREE.PMREMGenerator(renderer);
-  const texture = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-  scene.environment = texture;
+  scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
   pmrem.dispose();
-  return texture;
-}
-
-/** Dispose every geometry/material under a loaded model root. Materials are
- *  shared across meshes, so the Set guards against a double-dispose. */
-export function disposeLensModel(root: THREE.Object3D): void {
-  const seenMat = new Set<THREE.Material>();
-  root.traverse((child) => {
-    if (child instanceof THREE.Mesh) {
-      child.geometry.dispose();
-      const mats = Array.isArray(child.material)
-        ? child.material
-        : [child.material];
-      for (const m of mats) {
-        if (!m || seenMat.has(m)) continue;
-        seenMat.add(m);
-        m.dispose();
-      }
-    }
-  });
 }

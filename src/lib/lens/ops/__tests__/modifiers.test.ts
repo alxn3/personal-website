@@ -64,6 +64,7 @@ function ctxAt(d: number, over: Partial<OpCtx<number>> = {}): OpCtx<number> {
     L,
     yN: 0,
     off: 0,
+    height: 40,
     rung: 0,
     axi: 0,
     depth: 0, // a thin sheet

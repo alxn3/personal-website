@@ -82,6 +82,7 @@ const isCurrentPath = (href: string) => {
         type="button"
         class="text-text-muted hover:text-accent focus-visible:ring-accent focus-visible:ring-offset-bg inline-flex size-9 items-center justify-center rounded-md transition-colors focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none sm:hidden"
         x-on:click="open = !open"
+        aria-expanded="false"
         x-bind:aria-expanded="open"
         aria-label="Toggle menu"
       >

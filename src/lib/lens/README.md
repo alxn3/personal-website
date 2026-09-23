@@ -56,7 +56,8 @@ exact, so rests are exact. DOM chrome (`--beat-*`, HUD, tint) draws at the raw
 scroll `p` in `frame()` — the captions' own clock. Per-scene behaviour lives in
 its own rider module. `fly`, `trails`, `petals`, `constellations`, `state`,
 `cost` and `flow` are LAZY: reached by `import()` only and never re-exported
-from the barrel (`story-state.test.ts` pins the chunk law). Caption visibility
+from the barrel (`story-state.test.ts` pins the chunk law for all seven, over
+every static import form under `src/`). Caption visibility
 is layout: each scene renders a scroll-space band with a `position: sticky`
 caption faded by a CSS `view()` timeline; `lib/cap-fades.ts` is the
 IntersectionObserver fallback.
@@ -93,7 +94,9 @@ optics/                the sky and the dive's own math/engines
 core/
   scene.ts             orchestrator: renderer, CHANNEL_REGISTRY, tick, lifecycle
   visibility.ts        the one writer of every model `.visible` flag
-  model.ts             GLB loading, materials, environment, disposal
+  model.ts             GLB loading, materials, environment
+  warm.ts              the dry-frame queue: one warm step per tick, never a
+                       second pass draw;  body-fade.ts  the fade's capture law
   parts.ts             node-name classification;  names.ts  the vocabulary
   theme.ts  transitions.ts  math.ts
 materials/
@@ -101,10 +104,11 @@ materials/
   shading.ts           the look swapper + roster + the bench's socket, over
   shading-bench.ts     LAZY, /lens only — the technical looks
   depthfade.ts         camera-relative dissolve for exploded pieces
-dev/                   DEV ONLY, all dynamically imported — motion-path overlay
-                       + GPU probe + JSON analysis, the piece inspector and its
-                       CPU proxies, the boot contract tripwire, the prescription
-                       probe, ?diag, ?mtrace
+dev/                   all dynamically imported — the motion-path overlay + GPU
+                       probe + JSON analysis and the piece inspector with its
+                       CPU proxies ship as lazy /lens chunks; the boot contract
+                       tripwire, the prescription probe, ?diag and ?mtrace are
+                       DEV only
 ```
 
 Generated, never hand-edited: `STORY-MAP.md` (pose, channels and open windows
@@ -113,23 +117,28 @@ at every scene edge — byte-pinned, the at-rest identity proof), `STORY-COST.md
 in bore-cylindrical coordinates) — on-demand instruments whose tests check
 shape and coverage, not bytes. Regenerate all three with `npm run lens:regen`.
 
-Two test tiers (`vitest.config.ts`): `npm test` runs the seam and exclusion
-laws in seconds; `npm run test:structural` runs the GLB-loading instruments
-(`story-ending`, `piece-flow`, `story-cost`, `story-portrait`) — what a
-structural wave runs before review. `npm run test:all` runs both.
+Two test tiers (`vitest.config.ts`): `npm test` runs everything but
+`piece-flow` in seconds — the seam and exclusion laws, the driver's evaluate
+step and the riders' liveness against a recording scene
+(`story/__tests__/fake-scene.ts`), and the GLB readers (`story-ending`,
+`story-cost`, `story-portrait`); `npm run test:structural` runs `piece-flow`,
+every piece through the real pipeline at every story edge — what a structural
+wave runs before review. `npm run test:all` runs both.
 
 ## Dev surfaces
 
-All `import.meta.env.DEV`-stripped from production. `/?story` opens the story
-scrubber (live `p` / scene / channel readout, a slider that overrides scroll,
-per-scene jumps) and exposes `window.__lensStory.stateAt(p)`. On `/lens`,
-"Motion paths" draws representative wedges' world-space tracks coloured by edge
-stretch and exposes `window.__lensPaths` (`analyze` / `compare` / `interference`
-/ `curlCorners`, all JSON); "Inspect" gives hover/click node names off
-CPU-re-evaluated picking proxies; `window.__lensStars` / `window.__lensWormhole`
-retune sky and post live; `window.__lensPrescriptionProbe()` re-measures the
-optical table. `?webgl` forces the WebGL fallback, `?diag` overlays backend and
-post state, `?mtrace` records one row per frame.
+`import.meta.env.DEV`-stripped from production, except the two `/lens` toggles
+below, which ship as lazy chunks fetched only when ticked. `/?story` opens the
+story scrubber (live `p` / scene / channel readout, a slider that overrides
+scroll, per-scene jumps) and exposes `window.__lensStory.stateAt(p)`. On
+`/lens`, "Motion paths" draws representative wedges' world-space tracks
+coloured by edge stretch and exposes `window.__lensPaths` (`analyze` /
+`compare` / `interference` / `curlCorners`, all JSON); "Inspect" gives
+hover/click node names off CPU-re-evaluated picking proxies — both ship on
+`/lens`. `window.__lensStars` / `window.__lensWormhole` retune sky and post
+live; `window.__lensPrescriptionProbe()` re-measures the optical table.
+`?webgl` forces the WebGL fallback, `?diag` overlays backend and post state,
+`?mtrace` records one row per frame.
 
 ## Boundaries and load order
 

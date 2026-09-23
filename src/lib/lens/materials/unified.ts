@@ -272,7 +272,6 @@ export interface UnifiedLook {
   needsWarm(ctx: RenderCtx): boolean;
   /** Re-tint the ink for the site theme. A value write — no rebuild. */
   setTheme(light: boolean): void;
-  dispose(): void;
 }
 
 /** The ink edge-lines' opacity graph, its own function so the law is testable
@@ -375,12 +374,6 @@ export function createUnified(
   const tints: Tint[] = [];
   const inkLines: THREE.LineSegments[] = [];
   const edgeGeo = edges ?? new Map<number, THREE.BufferGeometry>();
-  const created = new Set<THREE.Material>();
-
-  const track = <T extends THREE.Material>(m: T): T => {
-    created.add(m);
-    return m;
-  };
 
   /** The target class must track the source: NodeMaterial.copy only copies
    *  properties the target declares, so a MeshPhysicalMaterial copied into a
@@ -454,7 +447,7 @@ export function createUnified(
       dark,
       light: lit,
     });
-    track(mat);
+    mat;
     if (twinsBuilt) buildTwins(rec);
     return rec;
   }
@@ -483,7 +476,7 @@ export function createUnified(
     m.transparent = true;
     const mat = m as unknown as THREE.Material;
     twins.add(mat);
-    return track(mat);
+    return mat;
   }
 
   function buildTwins(rec: BodyMats) {
@@ -516,7 +509,7 @@ export function createUnified(
     const mat = m as unknown as THREE.Material;
     glassInk.set(key, mat);
     tints.push({ write: (h) => m.color.setHex(h), dark, light: lit });
-    return track(mat);
+    return mat;
   }
 
   function lineMaterial(mesh: THREE.Mesh, framed: boolean) {
@@ -538,7 +531,7 @@ export function createUnified(
       dark: INK_EDGE.dark,
       light: INK_EDGE.light,
     });
-    track(m);
+    m;
     return m;
   }
 
@@ -598,7 +591,7 @@ export function createUnified(
     m.transparent = true;
     const mat = m as unknown as THREE.Material;
     merged.set(key, mat);
-    return track(mat);
+    return mat;
   }
 
   /** One mesh's edge lines. The geometry is cached per mesh — a pure function
@@ -786,15 +779,6 @@ export function createUnified(
     for (const t of tints) t.write(l ? t.light : t.dark);
   }
 
-  function dispose() {
-    for (const l of inkLines) l.removeFromParent();
-    inkLines.length = 0;
-    created.forEach((m) => m.dispose());
-    created.clear();
-    edgeGeo.forEach((g) => g.dispose());
-    edgeGeo.clear();
-  }
-
   integrate(root);
 
   return {
@@ -810,6 +794,5 @@ export function createUnified(
     warmBodyLooks,
     needsWarm: (ctx) => coldKeys[ctx] > 0,
     setTheme,
-    dispose,
   };
 }

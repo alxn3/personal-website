@@ -31,7 +31,9 @@ const railGroups = buildRailGroups(projects);
 
 // internal demos get ?embed so their page hides its own chrome (HtmlShell)
 const url = project.data.url!;
-const demoSrc = url.startsWith("/") ? `${url}?embed` : url;
+const demoSrc = url.startsWith("/")
+  ? `${url}${url.includes("?") ? "&" : "?"}embed`
+  : url;
 ---
 
 <ProjectLayout title={project.data.title} description={project.data.summary}>

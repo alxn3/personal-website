@@ -57,6 +57,7 @@ const ASSEMBLE_PIN_END = 0.25; // the reel-in pin is spent by 25% stuck
 // The gate's second stagger: each layer's own pieces, round the bore.
 const ASSEMBLE_PART_STAGGER = 0.25;
 const ASSEMBLE_LADDER_GAIN = 0.4; // rung → model-mm, scaled by the depth knob
+const ASSEMBLE_ROLL_WALL = 2; // roll radius floor, as a multiple of the wall
 
 // ── EXPLODE constants ───────────────────────────────────────────────────────
 /** The gate's grain: no rank stagger (the `during` slot below is the order),
@@ -202,6 +203,13 @@ export function makeRecipes<S>(
         A.mul(A.step(0.5, A.fract(A.mul(ctx.R, 5.13))), 2),
         1,
       );
+      // The diagonal front is keyed on axial MILLIMETRES (yN·height/L), capped
+      // at the piece's own height, so a thin ring shears by its 0.6 mm rather
+      // than by a whole sheet's worth.
+      const front = A.mul(
+        ctx.yN,
+        A.min(1, A.div(ctx.height, A.max(ctx.L, 1e-6))),
+      );
       // The roll cannot consume more material than the sheet HAS: rollLen > L
       // would overrun the chain's material budget.
       const rollLen = A.clamp(
@@ -210,7 +218,7 @@ export function makeRecipes<S>(
           A.sub(
             1,
             A.mul(
-              A.mul(A.mul(ctx.yN, shearSign), ASSEMBLE_WRAP_SHEAR),
+              A.mul(A.mul(front, shearSign), ASSEMBLE_WRAP_SHEAR),
               A.mul(A.mul(ctx.stick, A.sub(1, ctx.stick)), 4),
             ),
           ),
@@ -218,7 +226,15 @@ export function makeRecipes<S>(
         0,
         ctx.L,
       );
-      const rollR = A.mul(ctx.R, A.mix(0.45, 0.18, knobs.curl));
+      // The roll can be no tighter than the piece's own wall: a wall at
+      // R·depth folded on a radius below it passes the roll's centre.
+      const rollR = A.mul(
+        ctx.R,
+        A.max(
+          A.mix(0.45, 0.18, knobs.curl),
+          A.mul(ctx.depth, ASSEMBLE_ROLL_WALL),
+        ),
+      );
       const hasRoll = A.step(1e-6, rollLen);
       return {
         // Re-aim off the piece's own meridian: one half-span reaches the seam
@@ -270,24 +286,29 @@ export function makeRecipes<S>(
           // …and off the KEEP-set while `keepScope` is up.
           selNotKept(A, knobs.keepScope),
           // THE WRAP FIRST: the chain rebuilds the point from the material
-          // coordinate, so every transform after it moves the BENT sheet.
-          rot<S>((c) => wrap(c).seamTurn),
-          anchor<S>((c) => wrap(c).Rb),
-          arc<S>(
-            (c) => wrap(c).qMain,
-            (c) => wrap(c).mainLen,
-          ),
-          // participation = curlRamp: only that share of the roll's material
-          // bends, the rest trails straight off the exit tangent.
-          arc<S>(
-            (c) => wrap(c).qRoll,
-            (c) => wrap(c).curlLen,
-            { participation: (c) => wrap(c).curlRamp },
-          ),
-          straight<S>(),
-          // Put the direction back on the piece's own meridian: a re-aim
-          // threads FORWARD, and `sep` below slides along the sector centre.
-          rot<S>((c) => A.neg(wrap(c).seamTurn)),
+          // coordinate, so every transform after it moves the BENT sheet. On
+          // the bend cast only (ops/house bendTerm): a deep piece skips the
+          // breath and the roll and takes the slides below rigid.
+          group<S>([
+            selFront<S>((c) => bendTerm(A, c)),
+            rot<S>((c) => wrap(c).seamTurn),
+            anchor<S>((c) => wrap(c).Rb),
+            arc<S>(
+              (c) => wrap(c).qMain,
+              (c) => wrap(c).mainLen,
+            ),
+            // participation = curlRamp: only that share of the roll's
+            // material bends, the rest trails straight off the exit tangent.
+            arc<S>(
+              (c) => wrap(c).qRoll,
+              (c) => wrap(c).curlLen,
+              { participation: (c) => wrap(c).curlRamp },
+            ),
+            straight<S>(),
+            // Put the direction back on the piece's own meridian: a re-aim
+            // threads FORWARD, and `sep` below slides along the sector centre.
+            rot<S>((c) => A.neg(wrap(c).seamTurn)),
+          ]),
           // sep — the slow unpinned slide along the sector centre.
           spread<S>(knobs.sep),
           // REEL-IN: seam-meridian throw plus fly-in swirl, both spent by
@@ -311,7 +332,7 @@ export function makeRecipes<S>(
         // but for the keep-set, so it covers the whole model.
         group<S>([
           selNotKept(A, knobs.keepScope),
-          ladder<S>("attr", A.mul(ASSEMBLE_LADDER_GAIN, knobs.depth)),
+          ladder<S>(A.mul(ASSEMBLE_LADDER_GAIN, knobs.depth)),
         ]),
       ];
     },
@@ -354,10 +375,11 @@ export function makeRecipes<S>(
       snapExp: EXPLODE_SNAP_EXP,
     }),
     // THE DEFAULT SELECTION: accessories drop out at the head, and the optics
-    // ride the axial ladder alone. The parked pose (channel 1) is UNIFORM and
-    // RIGID — `bloom`, one `orbit`, `rise` + the ladder — while the dispersal
-    // and curl windows are exactly 0 at both the park and the seat. Every term
-    // rides the SAME per-piece flight, so the fall is one helix.
+    // ride the axial ladder alone. The parked pose (channel 1) is UNIFORM per
+    // ring — `bloom`, one `orbit`, `rise` + the ladder, plus the `rebend` that
+    // re-curves the thin cast onto its ring while solids slide rigid — and the
+    // dispersal and curl windows are exactly 0 at both the park and the seat.
+    // Every term rides the SAME per-piece flight, so the fall is one helix.
     build: (ctx, knobs) => {
       // The order key: radius sets the run and the piece's own meridian winds
       // it, so landings step around the bore going outward. Both terms are
@@ -467,7 +489,7 @@ export function makeRecipes<S>(
               A.add(1, A.mul(EXPLODE_HOVER_RANK, ctx.rank01)),
             ),
           ),
-          ladder<S>("attr", EXPLODE_AXIAL_GAIN),
+          ladder<S>(EXPLODE_AXIAL_GAIN),
         ]),
       ];
     },
@@ -479,8 +501,9 @@ export function makeRecipes<S>(
       // turns of parked azimuth per model-mm of ladder station
       ringPhase: { default: 0 },
       // 1 = a parked wedge is re-bent to lie ON its ring (drawn radius matches
-      // the slide's circle at every flight). /lens keeps the authored shapes.
-      rebend: { default: 0, range: [0, 10] },
+      // the slide's circle at every flight); above 1 the sheet's slide share
+      // goes negative. /lens keeps the authored shapes.
+      rebend: { default: 0, range: [0, 1] },
     },
   });
 

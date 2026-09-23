@@ -446,10 +446,53 @@ describe("deriveFrames — feature adoption", () => {
     // adopted features ride a wedge; they are not pieces OF the layer
     expect([...layerCount.values()].reduce((a, b) => a + b, 0)).toBe(5);
     expect(layerCount.get(rankKeyOf(constFrame(host, "R")))).toBe(5);
-    // …and the DEPTH is the host's too: a 2mm box standing 3mm off a 30mm
-    // shell would measure ~0.13 of its own, and bend or not on its own terms.
-    expect(constFrame(screw, "depth")).toBe(constFrame(host, "depth"));
-    expect(constFrame(screw, "depth")).toBeLessThan(0.01);
+    // …but NOT the depth: adoption governs the ring, thinness stays the
+    // feature's own. A 2mm box standing 3mm off a 30mm shell is a 0.137 wall
+    // about the host's R, on a host wall of ~0.
+    expect(constFrame(host, "depth")).toBeLessThan(0.01);
+    expect(constFrame(screw, "depth")).toBeGreaterThan(0.13);
+    expect(constFrame(screw, "depth")).toBeLessThan(0.145);
+  });
+
+  it("an adopted feature's depth is its own wall about the host's R, floored at the host's", () => {
+    // A deep solid on a thin shell (the focus rods on the chassis) must not
+    // bend with it; a thin tab on a deep host rides the host's rigid slide.
+    const root = new THREE.Object3D();
+    root.add(shell("Chassis_Fixed", 30, 5, -4, 0));
+    const rods = new THREE.Object3D();
+    rods.name = "Focus_GuideRods";
+    const rod = new THREE.Mesh(
+      new THREE.BoxGeometry(2, 4, 2).translate(15 * Math.cos(0.1), -2, 15 * Math.sin(0.1)), // prettier-ignore
+    );
+    rod.name = "Rod_A";
+    rods.add(rod);
+    root.add(rods);
+    // a deep host: one vertex of every wedge pushed 30% out (the depth is a max)
+    const bayonet = shell("Mount_Bayonet", 60, 5, -12, -8);
+    bayonet.traverse((o) => {
+      if (!(o instanceof THREE.Mesh)) return;
+      const pos = o.geometry.getAttribute("position");
+      pos.setX(0, pos.getX(0) * 1.3);
+      pos.setZ(0, pos.getZ(0) * 1.3);
+    });
+    root.add(bayonet);
+    const notch = new THREE.Mesh(
+      new THREE.BoxGeometry(1, 1, 1).translate(60 * Math.cos(0.2), -10, 60 * Math.sin(0.2)), // prettier-ignore
+    );
+    notch.name = "Mount_Notch";
+    root.add(notch);
+    deriveFrames(root);
+
+    const chassis = constFrame(named(root, "Chassis_Fixed_Seg0"), "depth");
+    expect(chassis).toBeLessThan(0.01);
+    // (15 − 1.4) mm inside a 30 mm ring: ≈ 0.48 of R, deep by a margin
+    expect(constFrame(rod, "R")).toBeCloseTo(30, 3);
+    expect(constFrame(rod, "depth")).toBeGreaterThan(0.45);
+    expect(constFrame(rod, "depth")).toBeLessThan(0.55);
+    // the tab is ~0.02 of its own, but its host's wall is 0.3: floored there
+    const bay = constFrame(named(root, "Mount_Bayonet_Seg0"), "depth");
+    expect(bay).toBeCloseTo(0.3, 4);
+    expect(constFrame(notch, "depth")).toBe(bay);
   });
 
   it("a DECAL adopts the wedge it is printed on, host DERIVED from the segmentation", () => {
@@ -632,6 +675,27 @@ describe("deriveFrames — derived ladder", () => {
     const hostRung = constFrame(named(root, "Mount_Bayonet_Seg0"), "rung");
     expect(hostRung).toBeLessThan(0);
     expect(constFrame(notch, "rung")).toBeCloseTo(hostRung, 4);
+  });
+
+  it("a group with own-framed pieces keeps its derived rung when a member adopts", () => {
+    // the reported rung of a MIXED group is its own; only the adopted piece
+    // reads its host's, so one bolted tab cannot drag a whole group onto the
+    // host's rung
+    const root = ladderScene();
+    root.add(shell("Mount_Bayonet", 30, 5, -52, -48));
+    const drive = new THREE.Object3D();
+    drive.name = "Focus_Drive";
+    drive.add(box("Focus_LeadScrew", -20));
+    drive.add(box("Mount_Notch", -50, 2));
+    root.add(drive);
+    const { ladderRungs } = deriveFrames(root);
+    const hostRung = constFrame(named(root, "Mount_Bayonet_Seg0"), "rung");
+    const driveRung = ladderRungs.get("Focus_Drive")!;
+    expect(hostRung).toBeLessThan(0);
+    expect(driveRung).toBeLessThan(0);
+    expect(Math.abs(driveRung - hostRung)).toBeGreaterThan(1);
+    expect(constFrame(named(root, "Focus_LeadScrew"), "rung")).toBeCloseTo(driveRung, 4); // prettier-ignore
+    expect(constFrame(named(root, "Mount_Notch"), "rung")).toBeCloseTo(hostRung, 4); // prettier-ignore
   });
 
   it("tierOrder overrides win over the derived rung", () => {

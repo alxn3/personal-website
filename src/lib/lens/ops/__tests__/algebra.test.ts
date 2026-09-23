@@ -39,10 +39,4 @@ describe("NUM algebra — GLSL semantics", () => {
     expect(NUM.atan2(1, 0)).toBe(Math.PI / 2);
     expect(NUM.atan2(0, 1)).toBe(0);
   });
-
-  it("sign(0) is 0", () => {
-    expect(NUM.sign(0)).toBe(0);
-    expect(NUM.sign(-3)).toBe(-1);
-    expect(NUM.sign(3)).toBe(1);
-  });
 });

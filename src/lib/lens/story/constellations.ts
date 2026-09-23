@@ -772,23 +772,24 @@ export function createStoryConstellations(
     quote.uOpacity.value = qEnv * quoteInk;
 
     if (env <= 0 && qEnv <= 0) {
-      // the clock stops here, so nothing ages invisibly. Past the chapter's
-      // edges the group comes off the starfield; inside them it stays attached
-      // at zero, saving the re-attach on a small scrub.
+      // Past the chapter's edges the group comes off the starfield; inside
+      // them it stays attached at zero, saving the re-attach on a small scrub.
       if (group.parent && (p < SPAN_P0 || p > SPAN_P1))
         scene.starfieldDetach(group);
       return false;
     }
 
-    tAcc += dt;
-    lines.setTime(tAcc);
-
     // story/fly.ts mounts and unmounts the starfield under us, so the attach is
-    // re-asked every active frame; it is a no-op once attached
+    // re-asked every drawn frame; it is a no-op once attached, and a frame is
+    // asked for until the mount lands
     if (!scene.starfieldAttach(group)) return true;
 
-    // the strokes are done spawning while the quote holds through the trails
-    if (env <= 0) return true;
+    // the strokes are spent and the quote holds still: the clock stops here,
+    // so nothing ages invisibly and the scene may sleep
+    if (env <= 0) return false;
+
+    tAcc += dt;
+    lines.setTime(tAcc);
     if (tAcc < nextSpawn) return true;
     nextSpawn = tAcc + SPAWN_MS;
     for (let k = live.length - 1; k >= 0; k--)

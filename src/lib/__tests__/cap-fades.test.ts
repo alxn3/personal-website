@@ -6,6 +6,12 @@ import {
   capFadeState,
   type CapFadeTarget,
 } from "../cap-fades";
+import {
+  CAPTION_BANDS,
+  TRACK_MAX_PX,
+  TRACK_MIN_PX,
+  TRACK_SVH,
+} from "../lens/story/story";
 
 // The fallback that carries the hero captions on browsers without CSS
 // scroll-driven animations. The observer BODY is split out so it is testable
@@ -33,7 +39,7 @@ describe("applyCapFades", () => {
   it("marks a band in when its scene starts", () => {
     const a = spy();
     const state = capFadeState([a.el]);
-    applyCapFades(state, [{ target: a.el, isIntersecting: true }]);
+    applyCapFades(state, [{ target: a.el, isIntersecting: true, above: true }]);
     expect(a.calls).toEqual([["is-in", true]]);
   });
 
@@ -41,10 +47,10 @@ describe("applyCapFades", () => {
     const a = spy();
     const b = spy();
     const state = capFadeState([a.el, b.el]);
-    applyCapFades(state, [{ target: a.el, isIntersecting: true }]);
+    applyCapFades(state, [{ target: a.el, isIntersecting: true, above: true }]);
     applyCapFades(state, [
-      { target: a.el, isIntersecting: false },
-      { target: b.el, isIntersecting: true },
+      { target: a.el, isIntersecting: false, above: false },
+      { target: b.el, isIntersecting: true, above: true },
     ]);
     expect(lit(a, b)).toEqual([false, true]);
   });
@@ -54,8 +60,8 @@ describe("applyCapFades", () => {
     const b = spy();
     const state = capFadeState([a.el, b.el]);
     applyCapFades(state, [
-      { target: b.el, isIntersecting: true },
-      { target: a.el, isIntersecting: true },
+      { target: b.el, isIntersecting: true, above: true },
+      { target: a.el, isIntersecting: true, above: true },
     ]);
     expect(lit(a, b)).toEqual([true, false]);
   });
@@ -65,47 +71,62 @@ describe("applyCapFades", () => {
     const b = spy();
     const state = capFadeState([a.el, b.el]);
     applyCapFades(state, [
-      { target: a.el, isIntersecting: true },
-      { target: b.el, isIntersecting: true },
+      { target: a.el, isIntersecting: true, above: true },
+      { target: b.el, isIntersecting: true, above: true },
     ]);
     expect(lit(a, b)).toEqual([true, false]);
     // only `a` reports out — `b` is still intersecting and never re-reported
-    applyCapFades(state, [{ target: a.el, isIntersecting: false }]);
+    applyCapFades(state, [
+      { target: a.el, isIntersecting: false, above: false },
+    ]);
     expect(lit(a, b)).toEqual([false, true]);
   });
 
-  it("falls back to the LAST band when none crosses the line", () => {
-    // the bands tile the track, so this only happens past the last one — at
-    // maximum scroll, where the line lands exactly on its bottom edge and the
-    // CSS path deliberately keeps the final caption lit
+  it("keeps the LAST band lit once it has started and none crosses the line", () => {
+    // at maximum scroll the line lands exactly on the final band's bottom edge
     const a = spy();
     const b = spy();
     const state = capFadeState([a.el, b.el]);
     applyCapFades(state, [
-      { target: a.el, isIntersecting: false },
-      { target: b.el, isIntersecting: false },
+      { target: a.el, isIntersecting: false, above: true },
+      { target: b.el, isIntersecting: false, above: true },
     ]);
     expect(lit(a, b)).toEqual([false, true]);
+  });
+
+  it("lights nothing in a gap before the last band", () => {
+    const a = spy();
+    const b = spy();
+    const state = capFadeState([a.el, b.el]);
+    applyCapFades(state, [
+      { target: a.el, isIntersecting: false, above: true },
+      { target: b.el, isIntersecting: false, above: false },
+    ]);
+    expect(lit(a, b)).toEqual([false, false]);
   });
 
   it("gets there the same way whether the reader scrolled or jumped", () => {
     const a = spy();
     const b = spy();
     const scrolled = capFadeState([a.el, b.el]);
-    applyCapFades(scrolled, [{ target: a.el, isIntersecting: true }]);
     applyCapFades(scrolled, [
-      { target: a.el, isIntersecting: false },
-      { target: b.el, isIntersecting: true },
+      { target: a.el, isIntersecting: true, above: true },
     ]);
-    applyCapFades(scrolled, [{ target: b.el, isIntersecting: false }]);
+    applyCapFades(scrolled, [
+      { target: a.el, isIntersecting: false, above: false },
+      { target: b.el, isIntersecting: true, above: true },
+    ]);
+    applyCapFades(scrolled, [
+      { target: b.el, isIntersecting: false, above: true },
+    ]);
     const viaScroll = lit(a, b);
 
     const c = spy();
     const d = spy();
     const jumped = capFadeState([c.el, d.el]);
     applyCapFades(jumped, [
-      { target: c.el, isIntersecting: false },
-      { target: d.el, isIntersecting: false },
+      { target: c.el, isIntersecting: false, above: true },
+      { target: d.el, isIntersecting: false, above: true },
     ]);
     expect(lit(c, d)).toEqual(viaScroll);
   });
@@ -125,14 +146,76 @@ describe("the fade contract", () => {
     // bottom; every other side is untouched, so the line spans the viewport.
     expect(top).toBe("-100%");
     expect([right, bottom, left]).toEqual(["0px", "0px", "0px"]);
-    // Why the bottom and not the top: a band for [a, b] spans document
-    // [a·S, b·S + 100svh], so it crosses the bottom line over
-    // scrollY ∈ [a·S − 100dvh, b·S + (100svh − 100dvh)] — and with the
-    // first-in-document-order rule above, a caption is lit over its own scene
-    // shifted by one CAPTION_PAD of scroll. Anchoring to the TOP
-    // (`0px 0px -100% 0px`) adds a whole viewport to both ends. The only
-    // viewport-height term left is (100svh − 100dvh), zero outside an iOS
-    // Safari with the toolbar hidden, so this holds at every screen size —
-    // nothing here to "tune".
+  });
+});
+
+describe("the fallback against the band geometry", () => {
+  /** Scroll the real CAPTION_BANDS past the line at viewport (w×)vh: which band
+   *  the fallback lights, and which captions the CSS view-timelines light. */
+  const sweep = (vh: number) => {
+    const track = Math.min(
+      TRACK_MAX_PX,
+      Math.max(TRACK_MIN_PX, (TRACK_SVH / 100) * vh),
+    );
+    const S = track - vh;
+    const spies = CAPTION_BANDS.map(() => spy());
+    const state = capFadeState(spies.map((s) => s.el));
+    const rows: { y: number; io: number; css: number[] }[] = [];
+    for (let y = 0; y <= S; y++) {
+      const line = y + vh;
+      applyCapFades(
+        state,
+        CAPTION_BANDS.map((band, i) => ({
+          target: spies[i].el,
+          isIntersecting: band.a * S < line && line < band.b * S + vh,
+          above: band.a * S < line,
+        })),
+      );
+      const io = lit(...spies).indexOf(true);
+      // CSS: lit over (a·S, b·S); the hero from 0, the final band to the end
+      const css = CAPTION_BANDS.flatMap((band, i) =>
+        (i === 0 || band.a * S < y) && (band.final || y < band.b * S)
+          ? [i]
+          : [],
+      );
+      rows.push({ y, io, css });
+    }
+    return rows;
+  };
+
+  const FINAL = CAPTION_BANDS.length - 1;
+
+  // a short landscape phone (the track clamps to its minimum), a tall phone, a
+  // laptop
+  for (const vh of [390, 844, 900]) {
+    it(`lights the final caption only where the CSS path does at ${vh}px`, () => {
+      for (const { y, io, css } of sweep(vh)) {
+        if (io === FINAL) expect(css, `y=${y}`).toContain(FINAL);
+        if (css.length === 1 && css[0] === FINAL)
+          expect(io, `y=${y}`).toBe(FINAL);
+      }
+    });
+
+    it(`otherwise lights a CSS-lit caption, or one entering a gap, at ${vh}px`, () => {
+      // in a gap (a capEnd scene) the next band crosses the line up to one
+      // viewport before its CSS fade-in starts
+      const track = sweep(vh);
+      for (const { y, io, css } of track) {
+        if (io < 0 || css.includes(io)) continue;
+        expect(css, `y=${y}`).toEqual([]);
+        expect(y, `y=${y}`).toBeGreaterThan(
+          CAPTION_BANDS[io].a * (track.length - 1) - vh,
+        );
+      }
+    });
+
+    it(`holds the final caption at max scroll at ${vh}px`, () => {
+      expect(sweep(vh).at(-1)!.io).toBe(FINAL);
+    });
+  }
+
+  it("has a mid-track gap at 390px that the old last-band fallback lit", () => {
+    const gap = sweep(390).filter((r) => r.css.length === 0);
+    expect(gap.length).toBeGreaterThan(0);
   });
 });

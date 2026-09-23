@@ -25,6 +25,11 @@ export const REVEAL_END_F = 0.25;
  *  flyRevealAt's far edge) and then creep off zero rate. */
 export const CAM_RELEASE_F = 0.16;
 
+/** THE DIVE'S LAST FRAME — a fraction through `rewrap`, where story/fly.ts hands
+ *  the scene back. Here, not in fly.ts, because the dust law in
+ *  story/envelopes.ts needs it and fly.ts is lazy. */
+export const FLY_EXIT_F = 0.58;
+
 /** Where the last of the sky is exactly gone — a fraction through `rewrap`:
  *  the far edge of the starfield's fade (story/fly.ts skyOutAt), the frame the
  *  fov hand-back may open (story/fly.ts FOV_BACK) and the frame the sky's turn
@@ -538,6 +543,9 @@ export const REVEAL_END = atFrac(rangeOf("rewrap"), REVEAL_END_F);
 /** SKY_OUT_END_F as an absolute story p. */
 export const SKY_OUT_END = atFrac(rangeOf("rewrap"), SKY_OUT_END_F);
 
+/** FLY_EXIT_F as an absolute story p — the far edge of the fly span. */
+export const FLY_EXIT_END = atFrac(rangeOf("rewrap"), FLY_EXIT_F);
+
 /** THE DIVE'S FIRST FRAME as an absolute story p: the end of the `flythrough`
  *  scene's camera approach, where the camera parks and the LENS starts moving.
  *  Also the body-fade channel's writer seam — hero-driver below, story/fly.ts
@@ -601,6 +609,11 @@ export const pulseFn = (
   const [r0, r1] = span(`${name}.rise`, pulseEdges(w.rise, "rise"));
   if (!w.fall) return (p: number) => smoothstep(r0, r1, p);
   const [f0, f1] = span(`${name}.fall`, pulseEdges(w.fall, "fall"));
+  // an overlapping fall eats the rise: the pulse never reaches 1
+  if (f0 < r1)
+    throw new Error(
+      `lens story: pulse "${name}" fall opens (p ${f0}) before its rise is spent (p ${r1})`,
+    );
   return (p: number) => smoothstep(r0, r1, p) * (1 - smoothstep(f0, f1, p));
 };
 
@@ -616,12 +629,22 @@ export interface StoryWindowSpan {
 const WINDOWS = new Map<string, StoryWindowSpan>();
 
 /** Record a named window and hand its edges back, so every window is
- *  reportable by construction. A name registers once; re-registering (HMR)
- *  replaces it. */
+ *  reportable by construction. A name registers once: a second registration
+ *  with other edges is a collision and throws, except under HMR, where a
+ *  retuned module re-registers its own windows. */
 export const span = (
   name: string,
   edges: [number, number],
 ): [number, number] => {
+  const prev = WINDOWS.get(name);
+  if (
+    prev &&
+    !import.meta.hot &&
+    (prev.p0 !== edges[0] || prev.p1 !== edges[1])
+  )
+    throw new Error(
+      `lens story: window "${name}" is already registered at [${prev.p0}, ${prev.p1}]`,
+    );
   WINDOWS.set(name, { name, p0: edges[0], p1: edges[1] });
   return edges;
 };

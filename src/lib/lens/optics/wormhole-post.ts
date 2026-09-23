@@ -355,12 +355,9 @@ export function createWormholePost(
     );
   }
 
-  // Compile the pipeline now: three builds a RenderPipeline's shader lazily on
-  // its first `render()`, so otherwise the compile lands on the dive's first
-  // tick and the pass pops on. Safe to draw here because uWormhole boots at 0,
-  // where the remap is a bit-exact passthrough.
+  // No draw here: three compiles a RenderPipeline's shader on its first
+  // `render()`, and core/scene.ts pays that on a warm tick of its own.
   sync(camera);
-  pipeline.render();
 
   // the live look knobs, same shape as starfield.ts's `__lensStars`
   if (import.meta.env.DEV && typeof window !== "undefined") {

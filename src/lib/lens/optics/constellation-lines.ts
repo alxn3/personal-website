@@ -140,7 +140,6 @@ export interface ConstellationLines {
   setEnvelope(o: number): void;
   /** re-palette in place: one uniform write, no rebuild */
   setTheme(light: boolean): void;
-  dispose(): void;
 }
 
 /** The four corners of a stroke quad as (side, t): side ±1 across the width,
@@ -316,11 +315,6 @@ export function createConstellationLines(opts: {
       const pal = palette();
       uInk.value.setHex(pal.line);
       uInkOpacity.value = pal.lineOpacity * CONST_LINES_LOOK.inkGain;
-    },
-    dispose() {
-      mesh.removeFromParent();
-      geo.dispose();
-      mat.dispose();
     },
   };
 }

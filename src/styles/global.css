@@ -59,8 +59,9 @@
     --border: #e3dccb; /* soft warm border */
     --accent: #5f6f52; /* olive-sage */
     --accent-soft: #e8e7d4; /* light olive tint */
-    --highlight: #d18a5d; /* warm orange — active / emphasis */
+    --highlight: #94532a; /* terracotta — active / emphasis, AA as text */
     font-family: var(--font-body);
+    color-scheme: light;
   }
 
   html.dark {

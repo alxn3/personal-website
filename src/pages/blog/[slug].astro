@@ -22,7 +22,7 @@ const linkedProjects = (
   await Promise.all(post.data.projects.map((ref) => getEntry(ref)))
 ).filter((entry): entry is NonNullable<typeof entry> => entry != null);
 
-const dateFormatter = new Intl.DateTimeFormat(undefined, {
+const dateFormatter = new Intl.DateTimeFormat("en-US", {
   year: "numeric",
   month: "long",
   day: "numeric",

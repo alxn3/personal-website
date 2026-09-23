@@ -13,7 +13,8 @@
 import type { Algebra, Sc } from "./algebra";
 
 /** INVARIANT: `split < rollEnd + overlap` — the stick ramp's denominator
- *  `rollEnd − split + min(overlap, split)` must be positive, else NaN. */
+ *  `rollEnd − split + min(overlap, split)` must be positive: at zero the ramp
+ *  is ±Inf and clamps to a pop, negative it runs backwards. */
 export interface GateSpec<S> {
   layerStagger: Sc<S>;
   windowFrac: Sc<S>;

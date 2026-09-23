@@ -77,4 +77,23 @@ export default (Alpine: Alpine) => {
       },
     };
   });
+
+  // /projects search: cards show while their data-search text matches `q`
+  Alpine.data("projectSearch", () => ({
+    q: "",
+    root: null as HTMLElement | null,
+    init() {
+      this.root = this.$el;
+    },
+    matches(search: string) {
+      const term = this.q.trim().toLowerCase();
+      return term === "" || search.includes(term);
+    },
+    get visible() {
+      const cards = this.root?.querySelectorAll<HTMLElement>("[data-search]");
+      return [...(cards ?? [])].filter((el) =>
+        this.matches(el.dataset.search ?? ""),
+      ).length;
+    },
+  }));
 };

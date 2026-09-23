@@ -78,7 +78,7 @@ const { scene, track, label, side = "right", class: className } = Astro.props;
     text-transform: uppercase;
     white-space: nowrap;
     color: var(--ink, #ece7da);
-    text-shadow: 0 1px 10px rgba(0, 0, 0, 0.8);
+    text-shadow: var(--cap-shadow-sm, 0 1px 10px rgba(0, 0, 0, 0.8));
   }
   /* leader line from the dot out to the label */
   .pin-label::before {

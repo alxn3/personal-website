@@ -221,7 +221,7 @@ describe("seatedPointDisplacer", () => {
     expectSame(after, freshDisplace(mesh, centre));
   });
 
-  it("writes the caller's point in place and allocates no result", () => {
+  it("writes the caller's point in place and hands the same object back", () => {
     const { mesh } = scene();
     recipeChannel("explode").value = 0.7;
     const displacer = seatedPointDisplacer(mesh);

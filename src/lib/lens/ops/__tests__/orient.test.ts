@@ -49,6 +49,7 @@ function makeCtx(over: Partial<OpCtx<number>> = {}): OpCtx<number> {
     L: 1,
     yN: 0,
     off: 0,
+    height: 40,
     rung: 0,
     axi: 0,
     depth: 0,

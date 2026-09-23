@@ -1,11 +1,6 @@
 import * as THREE from "three/webgpu";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import {
-  disposeLensModel,
-  GLASS_SPECULAR,
-  loadLensModel,
-  setLensEnvironment,
-} from "./model";
+import { GLASS_SPECULAR, loadLensModel, setLensEnvironment } from "./model";
 import { createShading, type ShadingMode } from "../materials/shading";
 import {
   createUnified,
@@ -45,6 +40,8 @@ import {
   type TransitionName,
   type TransitionRun,
 } from "./transitions";
+import { createWarmQueue, warmDrawSteps, type WarmStep } from "./warm";
+import { captureBodyFade, restoreBodyFade } from "./body-fade";
 // Type-only: erased at build, so the dev instruments stay out of every bundle
 // until their dynamic imports run.
 import type { PathViz } from "../dev/paths";
@@ -84,6 +81,9 @@ interface ChannelSpec {
   /** Recipe channel the instrument's idle-identity check must zero before
    *  probing seated geometry: at 0 the deform graph is an exact identity. */
   idleZero?: boolean;
+  /** Moves pieces off the seated body: the depth-fade band widens with the
+   *  largest live one (materials/depthfade.ts). */
+  spread?: boolean;
 }
 
 /**
@@ -106,15 +106,15 @@ const CHANNEL_REGISTRY = {
    *  story's cards chapter only; /lens never writes it */
   huddle: { default: 0 },
   /** explode ladder recipe: 0 (assembled) .. 1 (parts spread along the axis) */
-  explode: { default: 0, animReset: true, idleZero: true },
+  explode: { default: 0, animReset: true, idleZero: true, spread: true },
   /** reassembly spread: 0 (seated) .. 1 (sheets unwrapped, off the ladder) */
-  assemble: { default: 0, animReset: true, idleZero: true },
+  assemble: { default: 0, animReset: true, idleZero: true, spread: true },
   /** the story's unroll recipe, scoped to the shell cast: 0 (seated) .. 1
    *  (rolled out flat). Driven by the peel scene, not by a /lens slider. */
-  peel: { default: 0, animReset: true, idleZero: true },
+  peel: { default: 0, animReset: true, idleZero: true, spread: true },
   /** the origami-bloom recipe: 0 (seated) .. 1 (petals hinged open in ranked
    *  whorl waves). Driven by the story's ending and by the /lens bench. */
-  rose: { default: 0, animReset: true, idleZero: true },
+  rose: { default: 0, animReset: true, idleZero: true, spread: true },
   /** 0..1 scroll-story progress; drives the scripted camera (hero) */
   story: { default: 0 },
 } satisfies Record<string, ChannelSpec>;
@@ -138,6 +138,10 @@ export const ANIM_RESET_CHANNELS = CHANNELS.filter((c) => specOf(c).animReset);
 /** Every deform channel the instrument's idle-identity check zeroes. Derived,
  *  so a new deform channel can't silently fall out of the contract. */
 export const IDLE_ZERO_CHANNELS = CHANNELS.filter((c) => specOf(c).idleZero);
+
+/** Every channel that spreads pieces off the body — the depth-fade band reads
+ *  the largest live one. */
+export const SPREAD_CHANNELS = CHANNELS.filter((c) => specOf(c).spread);
 
 export type { Channel };
 
@@ -589,7 +593,7 @@ export async function initScene(
   const camDist = opts.cameraDistance ?? 1;
   camera.position.set(3.5 * camDist, 1.6 * camDist, 5 * camDist);
 
-  const environment = setLensEnvironment(renderer, scene);
+  setLensEnvironment(renderer, scene);
 
   const key = new THREE.DirectionalLight(0xffffff, 2.0);
   key.position.set(3, 5, 6);
@@ -902,6 +906,8 @@ export async function initScene(
     glassFade = 1;
     glassElementFade.clear();
     glassGlint = 1;
+    // the elements are the body fade's again: fold them into a running fade
+    if (bodySaved.size) captureBody();
   }
 
   /**
@@ -919,7 +925,7 @@ export async function initScene(
 
   // Body fade (setBodyFade): the glass fade's opposite number, writing shared
   // material properties where the glass had to clone. `bodySaved` is what each
-  // touched material wore, so the restore is exact.
+  // touched material wore (core/body-fade.ts), so the restore is exact.
   let bodyFade = 1;
   let bodyFadedOut = false;
   const bodySaved = new Map<
@@ -930,9 +936,8 @@ export async function initScene(
   /** Every distinct material worn by a piece the body fade owns — the shapes
    *  applyVisibility walks, plus the child passes riding a host mesh (outline
    *  hulls, line-work). The glass is in it except while the dive owns it, where
-   *  the passage fades own the clones' opacity; the capture is lazy and
-   *  re-taken after every restore, so that exclusion is exactly the dive's
-   *  span. */
+   *  the passage fades own the clones' opacity; the swap-off recaptures, so
+   *  the exclusion is exactly the transmissive span. */
   function bodyMaterials(): Set<THREE.Material> {
     const out = new Set<THREE.Material>();
     gltfScene.traverse((o) => {
@@ -944,6 +949,18 @@ export async function initScene(
       for (const m of Array.isArray(mat) ? mat : [mat]) out.add(m);
     });
     return out;
+  }
+
+  /** Fold the current body set into the capture at the live level. Lazy — a
+   *  shading switch or a theme flip re-materials every mesh, so a set captured
+   *  at boot would write opacity onto materials nothing wears. */
+  function captureBody() {
+    captureBodyFade(
+      bodySaved,
+      bodyMaterials(),
+      unified.ownsTransparent,
+      bodyFade,
+    );
   }
 
   function applyGlassFade(opacity: number) {
@@ -995,33 +1012,9 @@ export async function initScene(
     // off: this function owns `opacity` on whatever the meshes wear when it
     // captures them.
     unified.bodyFadeActive(o < 1);
-    if (o >= 1) {
-      // back to the shipped state exactly: opacity, plus the transparent flag
-      // on everything whose flag is this function's
-      for (const [m, was] of bodySaved) {
-        m.opacity = was.opacity;
-        if (unified.ownsTransparent(m)) continue; // …but not that flag (below)
-        // …and only when it actually moves: three keys a pipeline on
-        // `transparent`, so a needsUpdate here is a program rebuild.
-        if (m.transparent === was.transparent) continue;
-        m.transparent = was.transparent;
-        m.needsUpdate = true;
-      }
-      bodySaved.clear();
-    } else {
-      // Captured lazily and re-captured after every restore: a shading switch
-      // or a theme flip re-materials every mesh, so a set captured at boot
-      // would write opacity onto materials nothing wears.
-      if (!bodySaved.size)
-        for (const m of bodyMaterials()) {
-          bodySaved.set(m, { transparent: m.transparent, opacity: m.opacity });
-          if (unified.ownsTransparent(m)) continue;
-          if (m.transparent) continue; // already there — see the restore above
-          m.transparent = true;
-          m.needsUpdate = true;
-        }
-      for (const m of bodySaved.keys()) m.opacity = o;
-    }
+    if (o >= 1) restoreBodyFade(bodySaved, unified.ownsTransparent);
+    else if (!bodySaved.size) captureBody();
+    else for (const m of bodySaved.keys()) m.opacity = o;
     const out = o <= 0;
     if (out !== bodyFadedOut) {
       bodyFadedOut = out;
@@ -1301,7 +1294,6 @@ export async function initScene(
     start: number;
     pending: ShadingMode;
     swapped: boolean;
-    raf: number;
     onProgress?: (t: number) => void;
   } | null = null;
   function swapShading(mode: ShadingMode, opts: SwapShadingOptions = {}) {
@@ -1325,7 +1317,6 @@ export async function initScene(
       start: performance.now(),
       pending: mode,
       swapped: false,
-      raf: 0,
       onProgress: opts.onProgress,
     };
     const step = (now: number) => {
@@ -1343,10 +1334,10 @@ export async function initScene(
         run.finish();
         activeSwap = null;
       } else {
-        activeSwap.raf = requestAnimationFrame(step);
+        requestAnimationFrame(step);
       }
     };
-    activeSwap.raf = requestAnimationFrame(step);
+    requestAnimationFrame(step);
   }
 
   /**
@@ -1394,6 +1385,109 @@ export async function initScene(
     return explodeT;
   }
 
+  let paused = false;
+  let pathViz: PathViz | null = null;
+  let inspector: Inspector | null = null;
+  // The dive's drawn starfield, dynamically imported. The page's live choice is
+  // tracked separately because the import is awaited, so an on→off during the
+  // fetch must resolve off. While mounted it owns scene.background.
+  let starfield: import("../optics/starfield").Starfield | null = null;
+  let starsWanted = false;
+  let starsBgSaved: THREE.Scene["background"] = null;
+  // The fly-through's screen-space wormhole — same lazy-import shape and
+  // latest-state rule as the starfield: `postMounted` is what tick() renders
+  // through and is only ever set from `postWanted` after the await, so an exit
+  // during the import cannot strand the pipeline.
+  let wormholePost: import("../optics/wormhole-post").WormholePost | null =
+    null;
+  /** the pass factory, kept from the first import so a rebuild is synchronous */
+  let makePost:
+    typeof import("../optics/wormhole-post").createWormholePost | null =
+    null;
+  let postWanted = false;
+  let postMounted = false;
+
+  /**
+   * Every dry frame the scene owes (core/warm.ts), one step per drawn tick
+   * ahead of its own render. A `bare` step waits for a tick with the pass down
+   * and no dive live; a pass step on a mounted tick rides the real draw.
+   */
+  const warmQueue = createWarmQueue();
+  function queueWarm(...steps: WarmStep[]) {
+    warmQueue.push(...steps);
+    dirty = true;
+  }
+  /** a step that runs only with the pass down and no dive live */
+  const bareStep = (run: () => void): WarmStep => ({ bare: true, run });
+
+  /** One frame through the dive's pass into a 1×1 target — the scene compiles
+   *  against the pass's own target format and sample count, a different
+   *  pipeline from the canvas's for every material drawn. */
+  function warmPassFrame() {
+    if (!wormholePost) return;
+    const dry = new THREE.RenderTarget(1, 1);
+    try {
+      renderer.setRenderTarget(dry);
+      wormholePost.render();
+    } finally {
+      renderer.setRenderTarget(null);
+      dry.dispose();
+    }
+  }
+
+  /** The pass's own compile, owed after every build: dry while the pass is
+   *  down; a mounted tick's real draw pays it instead. */
+  const warmPassStep: WarmStep = {
+    bare: false,
+    run(mounted) {
+      if (!mounted) warmPassFrame();
+    },
+  };
+
+  /** Build the pass if it is not up. The caller owns `postMounted`. */
+  async function startPost(): Promise<boolean> {
+    if (wormholePost) return true;
+    try {
+      makePost ??= (await import("../optics/wormhole-post"))
+        .createWormholePost;
+      if (wormholePost) return true; // a concurrent call built it meanwhile
+      wormholePost = makePost(renderer, scene, camera, () => {
+        dirty = true;
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `lens optics: the wormhole post pass failed to start — ${msg}`,
+        err,
+      );
+      if (diag) diag.post = `FAILED: ${msg}`;
+      return false;
+    }
+    queueWarm(warmPassStep);
+    return true;
+  }
+
+  /** How long the buffer must hold still before the pass is rebuilt, so a
+   *  window drag pays one rebuild rather than one per resize event. */
+  const POST_RESIZE_SETTLE_MS = 250;
+
+  /** Swap the resized-out pass for a fresh one, synchronously, so a mounted
+   *  dive draws through the new pass on this very tick and never a frame
+   *  without one. */
+  function rebuildPost() {
+    postStaleAt = 0;
+    if (!wormholePost || !makePost) return;
+    const stale = wormholePost;
+    wormholePost = makePost(renderer, scene, camera, () => {
+      dirty = true;
+    });
+    stale.dispose();
+    queueWarm(warmPassStep);
+  }
+
+  /** The ink twin's compile goes on the frame after the first, never on it.
+   *  Until a warm frame is paid the body wears the blend material. */
+  let firstFrameDone = false;
   /** the last tick's clock reading, for the one dt every consumer gets */
   let lastTickAt = performance.now();
   function tick() {
@@ -1448,16 +1542,13 @@ export async function initScene(
       );
     }
 
-    // Depth-fade planes, from the live camera and the live spread
+    // Depth-fade planes, from the live camera and the largest live spread
     // (materials/depthfade.ts owns the placement). They track the dolly because
     // the ink look folds this fade into its opacity, so planes centred on the
     // origin would put the parked lens deep into its own far fade.
-    writeFadeBands(
-      camera.position,
-      dollyX,
-      modelRadius,
-      Math.max(state.explode, state.assemble),
-    );
+    let spread = 0;
+    for (const c of SPREAD_CHANNELS) if (state[c] > spread) spread = state[c];
+    writeFadeBands(camera.position, dollyX, modelRadius, spread);
 
     // The drawn sky rides ON the camera: parking it on this frame's eye
     // position is what makes near geometry behave like an infinitely distant
@@ -1468,7 +1559,7 @@ export async function initScene(
     if (postMounted) wormholePost?.sync(camera);
 
     const explodeT = driveChannels();
-    cinematics.update(explodeT, now);
+    cinematics.update(explodeT, dt);
 
     // one owner writes every `.visible` flag, and only when a gate writer
     // marked the composition stale (see applyVisibility)
@@ -1477,9 +1568,6 @@ export async function initScene(
       applyVisibility();
     }
 
-    // Two render paths: mounted, the frame goes through the wormhole pass;
-    // unmounted, it is the direct render. Warm-up frames are taken here, ahead
-    // of this tick's own render, because the pass renders once per frame.
     // the pose for this frame is final here — record it before the render
     motionTrace?.record(camera, state, modelRadius);
     // The body's warm-up, from the frame after the first: the ink twin's
@@ -1490,20 +1578,22 @@ export async function initScene(
       unified.warmBodyLooks("canvas", () =>
         drewScene(() => renderer.render(scene, camera)),
       );
-    // One warm step per tick, and never on a tick the pass will draw for real:
-    // the pass draws its scene once per tick, so a second step sharing the tick
-    // would get an output quad alone.
-    if (warmQueue.length && !postMounted) {
-      warmQueue.shift()!();
-      if (warmQueue.length) dirty = true;
-    }
     // Which context this frame draws in — one reading, since three keys a
     // pipeline on the render context and it decides whether the twin may be
     // worn. The resolution and the render must not disagree.
     const viaPass = postMounted && wormholePost !== null ? wormholePost : null;
+    // One warm step, ahead of this tick's own render and checked against the
+    // tick's state, not the queue's: the pass draws its scene once per tick,
+    // so a pass step here rides the real draw below rather than adding one.
+    const warm = warmQueue.step({
+      mounted: viaPass !== null,
+      bare: !postMounted && !glassTransmissive,
+    });
+    if (warm && warmQueue.length) dirty = true;
     unified.syncBody(viaPass ? "pass" : "canvas");
     if (viaPass) viaPass.render();
     else renderer.render(scene, camera);
+    warm?.after?.();
     // after the render, so annotations see this frame's final transforms
     for (const cb of frameCbs) if (cb(project, dt)) dirty = true;
 
@@ -1512,78 +1602,9 @@ export async function initScene(
       performance.mark("lens:first-frame"); // model visible (pipelines compiled)
     }
   }
-  /** The ink twin's compile goes on the frame after the first, never on it.
-   *  Until a warm frame is paid the body wears the blend material. */
-  let firstFrameDone = false;
-  renderer.setAnimationLoop(tick);
-  let paused = false;
-  let pathViz: PathViz | null = null;
-  let inspector: Inspector | null = null;
-  // The dive's drawn starfield, dynamically imported. The page's live choice is
-  // tracked separately because the import is awaited, so an on→off during the
-  // fetch must resolve off. While mounted it owns scene.background.
-  let starfield: import("../optics/starfield").Starfield | null = null;
-  let starsWanted = false;
-  let starsBgSaved: THREE.Scene["background"] = null;
-  // The fly-through's screen-space wormhole — same lazy-import shape and
-  // latest-state rule as the starfield: `postMounted` is what tick() renders
-  // through and is only ever set from `postWanted` after the await, so an exit
-  // during the import cannot strand the pipeline.
-  let wormholePost: import("../optics/wormhole-post").WormholePost | null =
-    null;
-  let postWanted = false;
-  let postMounted = false;
-  /** Build the pass if it is not up. The caller owns `postMounted`. */
-  async function startPost(): Promise<boolean> {
-    if (wormholePost) return true;
-    try {
-      const { createWormholePost } = await import("../optics/wormhole-post");
-      wormholePost = createWormholePost(renderer, scene, camera, () => {
-        dirty = true;
-      });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.warn(
-        `lens optics: the wormhole post pass failed to start — ${msg}`,
-        err,
-      );
-      if (diag) diag.post = `FAILED: ${msg}`;
-      return false;
-    }
-    return true;
-  }
-
-  /** How long the buffer must hold still before the pass is rebuilt, so a
-   *  window drag pays one rebuild rather than one per resize event. */
-  const POST_RESIZE_SETTLE_MS = 250;
-
-  /** Drop the resized-out pass and put the wanted one back up. */
-  function rebuildPost() {
-    postStaleAt = 0;
-    if (!wormholePost) return;
-    wormholePost.dispose();
-    wormholePost = null;
-    postMounted = false; // the direct render carries the frames until it lands
-    void startPost().then((ok) => {
-      if (ok) postMounted = postWanted;
-      if (diag) diag.post = postMounted ? "mounted" : "unmounted";
-      dirty = true;
-    });
-  }
 
   /** warmFly runs once per page — see the handle method. */
   let warmedFly = false;
-  /**
-   * Every dry frame the scene owes, one per tick. The wormhole pass draws its
-   * scene once per tick (three's own frame guard on `PassNode`), so two pass
-   * warms sharing a tick leave the second compiling nothing. Every step gets a
-   * tick of its own and chains the next through `dirty`.
-   */
-  const warmQueue: (() => void)[] = [];
-  function queueWarm(...steps: (() => void)[]) {
-    warmQueue.push(...steps);
-    dirty = true;
-  }
 
   /** Did `body` reach the scene, or only the pass's output quad (one draw)?
    *  The renderer's draw count is the probe, which lets a warm refuse to mark a
@@ -1592,46 +1613,6 @@ export async function initScene(
     const before = renderer.info.render.drawCalls;
     body();
     return renderer.info.render.drawCalls - before > 1;
-  }
-
-  /** One frame through the dive's pass, into a 1×1 target — the scene compiles
-   *  against the pass's own target format and sample count, a different
-   *  pipeline from the canvas's for every material drawn. */
-  function warmPassFrame() {
-    if (!wormholePost) return;
-    const dry = new THREE.RenderTarget(1, 1);
-    try {
-      renderer.setRenderTarget(dry);
-      wormholePost.render();
-    } finally {
-      renderer.setRenderTarget(null);
-      dry.dispose();
-    }
-  }
-
-  /** One draw of `objects`, shown nowhere — their buffers and textures upload
-   *  here instead of on the frame their scene arrives. `viaPass` adds a
-   *  pass-context draw because three keys a pipeline on the render context.
-   *  Culling is off for the draw: a culled object uploads nothing. */
-  function warmDrawFrame(objects: THREE.Object3D[], viaPass: boolean) {
-    const parked = objects.filter((o) => !o.parent);
-    const culled: THREE.Object3D[] = [];
-    for (const o of objects)
-      o.traverse((c) => {
-        if (c.frustumCulled) {
-          c.frustumCulled = false;
-          culled.push(c);
-        }
-      });
-    for (const o of parked) scene.add(o);
-    try {
-      renderer.render(scene, camera);
-      if (viaPass) warmPassFrame();
-    } finally {
-      for (const o of parked) scene.remove(o);
-      for (const c of culled) c.frustumCulled = true;
-    }
-    dirty = true;
   }
 
   /** The dive's sky, up for the duration of one dry frame: a warm frame must
@@ -2033,16 +2014,25 @@ export async function initScene(
       // Three steps, three ticks (see `warmQueue`): the crossing's clones, the
       // ink twin, and the hand-back's own material each need the pass's one
       // scene render of a tick.
-      queueWarm(() => warmFlyFrame(spans), warmFlyTwinFrame, warmFlyGlassFrame);
+      queueWarm(
+        bareStep(() => warmFlyFrame(spans)),
+        bareStep(warmFlyTwinFrame),
+        bareStep(warmFlyGlassFrame),
+      );
       return true;
     },
     warmDraw(objects, viaPass = false) {
       // Taken by tick(), like the dive's own dry frames: the renderer is not
-      // re-entered from the idle callback that asked, and a `viaPass` job needs
-      // a tick to itself.
+      // re-entered from the idle callback that asked, and each draw gets a
+      // tick of its own.
       if (objects.length === 0) return;
-      const job = objects.slice();
-      queueWarm(() => warmDrawFrame(job, viaPass));
+      queueWarm(
+        ...warmDrawSteps(objects.slice(), viaPass, {
+          scene,
+          render: () => renderer.render(scene, camera),
+          dryPass: warmPassFrame,
+        }),
+      );
     },
     setInkMix(v) {
       unified.setInk(v);
@@ -2086,5 +2076,7 @@ export async function initScene(
       return camera.aspect;
     },
   };
+  // last, once everything tick() closes over is declared
+  renderer.setAnimationLoop(tick);
   return handle;
 }

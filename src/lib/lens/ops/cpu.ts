@@ -20,7 +20,10 @@ import {
 
 export { IDLE_EPS };
 
-const RECIPES = makeRecipes<number>(NUM);
+/** The NUM recipe table, built on first use: only `liveRecipes` (dev and
+ *  tests) reads it, so the homepage never pays for it. */
+let recipes: Record<Recipe<number>["name"], Recipe<number>> | null = null;
+const recipesOf = () => (recipes ??= makeRecipes<number>(NUM));
 
 /** A summed position delta, xyz. Callers own the array (no allocation). */
 export type Delta = [number, number, number];
@@ -143,7 +146,7 @@ export function liveRecipes(): LiveRecipe[] {
   for (const name of RECIPE_NAMES) {
     const channel = ch[name].value;
     if (channel < IDLE_EPS) continue;
-    live.push({ recipe: RECIPES[name], channel, knobs: knobValues(name) });
+    live.push({ recipe: recipesOf()[name], channel, knobs: knobValues(name) });
   }
   return live;
 }

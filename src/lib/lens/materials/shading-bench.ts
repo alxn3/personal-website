@@ -273,7 +273,6 @@ export interface ShadingBench {
    *  keeping the parked ones would re-wear the old theme's colours on the next
    *  switch. The caller re-`wear`s the current mode. */
   setTheme(light: boolean): void;
-  dispose(): void;
 }
 
 export type ShadingBenchFactory = (light: boolean) => ShadingBench;
@@ -570,12 +569,6 @@ export const createShadingBench: ShadingBenchFactory = (light) => {
       light = l;
       flushBuilds();
       currentMode = null;
-    },
-    dispose() {
-      flushBuilds();
-      edgeGeoCache.forEach((g) => g.dispose());
-      edgeGeoCache.clear();
-      bronzeMatcap?.dispose();
     },
   };
 };

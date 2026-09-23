@@ -1,0 +1,228 @@
+// A recording SceneHandle for the story tests: every setter logs its last
+// value, `state` is a plain object, and the evaluate/frame callbacks are kept
+// so a test can run the tick's evaluate step itself. `installHeroDom` adds the
+// little DOM hero-driver and the card field reach for.
+
+import type * as THREE from "three/webgpu";
+import type { SceneHandle } from "../../core/scene";
+import { CHANNEL_DEFAULTS } from "../../core/scene";
+
+type EvaluateCb = (pE: number, dt: number) => boolean | void;
+type FrameCb = Parameters<SceneHandle["onFrame"]>[0];
+
+export interface FakeScene {
+  scene: SceneHandle;
+  state: Record<string, number>;
+  evaluateCbs: EvaluateCb[];
+  frameCbs: FrameCb[];
+  /** the last value each setter was handed, by setter name */
+  writes: Record<string, unknown>;
+  /** every setter call in order, as `name` — for "never calls X" pins */
+  calls: string[];
+  /** overlays attached at the scene root, on the model, and on the starfield */
+  overlays: Set<THREE.Object3D>;
+  modelOverlays: Set<THREE.Object3D>;
+  skyChildren: Set<THREE.Object3D>;
+  /** whether starfieldAttach succeeds (the starfield is "mounted") */
+  starfieldMounted: boolean;
+  /** run every evaluate callback in registration order — the tick's step */
+  evaluate(pE: number, dt?: number): boolean;
+  /** run every frame callback — after the render */
+  frame(dt?: number): void;
+}
+
+export function fakeScene(): FakeScene {
+  const state: Record<string, number> = {};
+  for (const [c, v] of Object.entries(CHANNEL_DEFAULTS)) {
+    state[c] = v;
+    state[`${c}Target`] = v;
+  }
+  const evaluateCbs: EvaluateCb[] = [];
+  const frameCbs: FrameCb[] = [];
+  const writes: Record<string, unknown> = {};
+  const calls: string[] = [];
+  const overlays = new Set<THREE.Object3D>();
+  const modelOverlays = new Set<THREE.Object3D>();
+  const skyChildren = new Set<THREE.Object3D>();
+  const fake = {
+    starfieldMounted: true,
+  } as FakeScene;
+  const rec =
+    (name: string) =>
+    (...args: unknown[]) => {
+      calls.push(name);
+      writes[name] = args.length === 1 ? args[0] : args;
+    };
+  const project = () => null;
+  const scene = {
+    state,
+    onEvaluate: (cb: EvaluateCb) => void evaluateCbs.push(cb),
+    onFrame: (cb: FrameCb) => void frameCbs.push(cb),
+    invalidate: rec("invalidate"),
+    setInkMix: rec("setInkMix"),
+    setStoryFov: rec("setStoryFov"),
+    setStoryCentre: rec("setStoryCentre"),
+    setDust: rec("setDust"),
+    setGlassTransmissive: rec("setGlassTransmissive"),
+    setGlassFade: rec("setGlassFade"),
+    setGlassElementFade: rec("setGlassElementFade"),
+    setGlassGlint: rec("setGlassGlint"),
+    setBodyFade: rec("setBodyFade"),
+    setShellFade: rec("setShellFade"),
+    setInteriorFade: rec("setInteriorFade"),
+    setRoomLight: rec("setRoomLight"),
+    setModelOrientation: (e: { x: number; y: number; z: number } | null) => {
+      calls.push("setModelOrientation");
+      writes.setModelOrientation = e === null ? null : { ...e };
+    },
+    setLensDolly: rec("setLensDolly"),
+    setSkyDim: rec("setSkyDim"),
+    worldAxialSpans: () => ({}),
+    enableStarfield: (on: boolean) => {
+      calls.push("enableStarfield");
+      writes.enableStarfield = on;
+      fake.starfieldMounted = on;
+      return Promise.resolve(true);
+    },
+    enableWormholePost: (on: boolean) => {
+      calls.push("enableWormholePost");
+      writes.enableWormholePost = on;
+      return Promise.resolve(true);
+    },
+    buildWormholePost: () => Promise.resolve(true),
+    warmFly: () => Promise.resolve(true),
+    warmDraw: rec("warmDraw"),
+    addOverlay: (o: THREE.Object3D) => void overlays.add(o),
+    removeOverlay: (o: THREE.Object3D) => void overlays.delete(o),
+    addModelOverlay: (o: THREE.Object3D) => void modelOverlays.add(o),
+    removeModelOverlay: (o: THREE.Object3D) => void modelOverlays.delete(o),
+    starfieldAttach: (o: THREE.Object3D) => {
+      if (!fake.starfieldMounted) return false;
+      skyChildren.add(o);
+      return true;
+    },
+    starfieldDetach: (o: THREE.Object3D) => void skyChildren.delete(o),
+    frameHalf: () => 0.58,
+    frameAspect: () => 16 / 9,
+  } as unknown as SceneHandle;
+  Object.assign(fake, {
+    scene,
+    state,
+    evaluateCbs,
+    frameCbs,
+    writes,
+    calls,
+    overlays,
+    modelOverlays,
+    skyChildren,
+    evaluate(pE: number, dt = 16) {
+      let live = false;
+      for (const cb of evaluateCbs) if (cb(pE, dt)) live = true;
+      return live;
+    },
+    frame(dt = 16) {
+      for (const cb of frameCbs) cb(project, dt);
+    },
+  });
+  return fake;
+}
+
+/** A 2D context that swallows every call: the card faces and the sky's type
+ *  paint into it, and only `measureText` needs a shape back. */
+const canvasStub = () => ({
+  width: 0,
+  height: 0,
+  getContext: () =>
+    new Proxy({} as Record<string, unknown>, {
+      get: (t, k: string) => (k in t ? t[k] : () => ({ width: 8 })),
+      set: (t, k: string, v) => ((t[k] = v), true),
+    }),
+});
+
+export interface HeroDom {
+  hud: { textContent: string };
+  /** dispatch a scroll: the driver's listener, then its rAF */
+  scroll(y: number): void;
+  setDark(dark: boolean): void;
+}
+
+/** The hero markup hero-driver.ts queries, plus the globals the riders reach
+ *  for. `p = (scrollY − trackTop) / (trackHeight − innerHeight)`. */
+export function installHeroDom(opts: {
+  scrollY: number;
+  trackTop?: number;
+  trackHeight?: number;
+  innerHeight?: number;
+}): HeroDom {
+  const trackTop = opts.trackTop ?? 0;
+  const trackHeight = opts.trackHeight ?? 11_000;
+  const innerHeight = opts.innerHeight ?? 1000;
+  const g = globalThis as unknown as Record<string, unknown>;
+  const el = (extra: Record<string, unknown> = {}) => ({
+    style: { setProperty() {} } as Record<string, unknown>,
+    textContent: "",
+    dataset: {},
+    classList: { toggle() {}, contains: () => dark },
+    querySelectorAll: () => [],
+    querySelector: () => null,
+    ...extra,
+  });
+  let dark = false;
+  const track = el({
+    getBoundingClientRect: () => ({ top: trackTop - (g.scrollY as number) }),
+    offsetHeight: trackHeight,
+  });
+  const byId: Record<string, unknown> = {
+    "lens-track": track,
+    "lens-stage": el(),
+    hud: el(),
+    "scene-rail": el(),
+    "scroll-cue": el(),
+  };
+  const listeners: Record<string, (() => void)[]> = {};
+  let raf: (() => void) | null = null;
+  const win = {
+    scrollY: opts.scrollY,
+    innerHeight,
+    devicePixelRatio: 1,
+    addEventListener: (type: string, cb: () => void) =>
+      void (listeners[type] ??= []).push(cb),
+    removeEventListener() {},
+  };
+  Object.assign(g, {
+    window: Object.assign(g, win),
+    document: {
+      getElementById: (id: string) => byId[id] ?? null,
+      documentElement: el(),
+      createElement: canvasStub,
+      fonts: { ready: Promise.resolve() },
+      head: { append() {} },
+      body: { append() {} },
+    },
+    location: { search: "" },
+    requestAnimationFrame: (cb: () => void) => void (raf = cb),
+    ResizeObserver: class {
+      observe() {}
+    },
+    MutationObserver: class {
+      observe() {}
+    },
+    Image: class {
+      crossOrigin = "";
+      src = "";
+      onload: (() => void) | null = null;
+    },
+  });
+  return {
+    hud: byId.hud as { textContent: string },
+    scroll(y) {
+      (g as { scrollY: number }).scrollY = y;
+      for (const cb of listeners.scroll ?? []) cb();
+      raf?.();
+      raf = null;
+    },
+    setDark(d) {
+      dark = d;
+    },
+  };
+}

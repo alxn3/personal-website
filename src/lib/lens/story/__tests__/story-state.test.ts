@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import * as THREE from "three/webgpu";
 import { DIVE_P0, RANGES, atFrac, rangeOf } from "../story";
 import { sampleStory } from "../camera";
@@ -9,6 +9,7 @@ import {
   bgAt,
   chromeAt,
   driverOwnsIris,
+  dustAt,
   explodeAt,
   focalMmAt,
   inkFillAt,
@@ -26,19 +27,18 @@ import { revealRollAt, turnAt } from "../reveal";
 import { internalsEnvAt } from "../internals";
 import {
   EXIT_END,
-  flyApertureAt,
   flyBodyFadeAt,
   flyCentreAt,
   flyDarkAt,
-  flyDiveP,
   flyDollyAt,
-  flyFocusAt,
   flyFovMixAt,
   flyFovOf,
   flyInkAt,
   flyPoseAt,
   flyRevealAt,
   flySkyMixAt,
+  flySpanApertureAt,
+  flySpanFocusAt,
   flyStreakAt,
   flyWarpAt,
 } from "../fly";
@@ -89,6 +89,7 @@ describe("storyStateAt agrees with the modules that own each law", () => {
       expect(s.look.storyCentre, `storyCentre ${p}`).toBe(flyCentreAt(p));
       expect(s.look.shellFade, `shellFade ${p}`).toBe(shellFadeAt(p));
       expect(s.look.interiorFade, `interiorFade ${p}`).toBe(interiorFadeAt(p));
+      expect(s.look.dust, `dust ${p}`).toBe(dustAt(p));
       expect(s.look.reveal, `reveal ${p}`).toBe(flyRevealAt(p));
       // the fly's span uniforms, read from their owner at EVERY p — the report
       // does not zero them outside the span, because the ramps already are
@@ -177,9 +178,9 @@ describe("the writer maps, as the report sees them", () => {
         expect(s.channels.aperture).toBe(preShutAt(p));
         expect(s.hud.fStop).not.toBe(null);
       } else if (s.irisOwner === "fly") {
-        expect(s.channels.aperture).toBe(flyApertureAt(flyDiveP(p)));
-        // both of the fly's iris ramps are its own exported laws
-        expect(s.channels.focus).toBe(flyFocusAt(flyDiveP(p)));
+        // both of the fly's iris laws in story p — the ramps plus the hand-back
+        expect(s.channels.aperture).toBe(flySpanApertureAt(p));
+        expect(s.channels.focus).toBe(flySpanFocusAt(p));
         expect(s.hud.fStop).not.toBe(null);
       } else {
         // the internals ambient runs on a phase clock — only the envelopes are
@@ -238,69 +239,93 @@ describe("the writer maps, as the report sees them", () => {
 });
 
 describe("the chunk law, on the source", () => {
-  // story/state.ts drags optics/ in, so a single STATIC import of it from
-  // anything the homepage reaches would put the whole dive in the first chunk.
-  // hero-driver's `import("./state")` sits behind `import.meta.env.DEV`, so
-  // a production build drops it entirely.
-  const root = new URL("../../", import.meta.url).pathname;
+  // Seven story modules drag optics/ (three/tsl node graphs) in: the four
+  // riders fly / trails / petals / constellations and the three instruments
+  // state / cost / flow. A single STATIC import of any from something the
+  // homepage reaches would put the whole dive in the first chunk, so each may
+  // be reached only by import(), by a test, or by another module on this
+  // list. hero-driver's `import("./state")` sits behind
+  // `import.meta.env.DEV`, so a production build drops it entirely.
+  const root = new URL("../../../../", import.meta.url).pathname; // src/
   const files: string[] = [];
   (function walk(dir: string) {
     for (const e of readdirSync(dir)) {
       const f = join(dir, e);
+      if (e === "node_modules") continue;
       if (statSync(f).isDirectory()) walk(f);
-      else if (f.endsWith(".ts")) files.push(f);
+      else if (f.endsWith(".ts") || f.endsWith(".astro")) files.push(f);
     }
   })(root);
 
-  /** every non-test source file with a STATIC import of `<name>.js` */
+  /** every non-test source file under src/ with a STATIC, non-type import of
+   *  `<name>.js` — `import … from`, `export … from` and the bare `import "…"` */
   const staticImportersOf = (name: string) =>
     files
       .filter(
         (f) =>
           !f.includes("__tests__") &&
           new RegExp(
-            `(^|\\n)\\s*import[^;]*from\\s*["'][^"']*/${name}\\.js["']`,
+            `(^|\\n)\\s*(import|export)(?!\\s+type\\b)(\\s*[^;]*?\\s+from)?\\s*["'][^"']*/${name}\\.js["']`,
           ).test(readFileSync(f, "utf8")),
       )
-      .map((f) => f.slice(root.length));
+      .map((f) => relative(root, f))
+      .sort();
 
-  it("is imported statically by nothing but its two instrument siblings", () => {
-    // story/cost.ts and story/flow.ts are state.ts's only static consumers, and
-    // both live under this same law themselves (below).
-    expect(
-      staticImportersOf("state"),
-      "story/state.ts must be reached by import() or by a test only",
-    ).toEqual(["story/cost.ts", "story/flow.ts"]);
-  });
+  const LAW: Record<string, string[]> = {
+    // the instruments: state.ts's only static consumers are its two siblings,
+    // flow.ts takes the deform set and sample grid off cost.ts
+    state: ["lib/lens/story/cost.ts", "lib/lens/story/flow.ts"],
+    cost: ["lib/lens/story/flow.ts"],
+    flow: [],
+    // the riders: read statically by the instruments alone
+    fly: ["lib/lens/story/cost.ts", "lib/lens/story/state.ts"],
+    trails: ["lib/lens/story/cost.ts", "lib/lens/story/state.ts"],
+    petals: ["lib/lens/story/cost.ts"],
+    constellations: ["lib/lens/story/cost.ts", "lib/lens/story/state.ts"],
+  };
 
-  it("carries story/cost.ts under the same law", () => {
-    // story/flow.ts takes the pinned deform set and sample grid off cost.ts
-    // rather than rebuilding either — the only static reach into it.
-    expect(
-      staticImportersOf("cost"),
-      "story/cost.ts must be reached by import() or by a test only",
-    ).toEqual(["story/flow.ts"]);
-  });
+  for (const [name, allowed] of Object.entries(LAW))
+    it(`story/${name}.ts is reached statically only from the lazy set`, () => {
+      expect(staticImportersOf(name)).toEqual(allowed);
+    });
 
-  it("carries story/flow.ts under the same law", () => {
-    expect(
-      staticImportersOf("flow"),
-      "story/flow.ts must be reached by import() or by a test only",
-    ).toEqual([]);
+  it("sees the import forms a static reach can take", () => {
+    // the checker's own regex, against the forms a mutant could use
+    const re = (name: string) =>
+      new RegExp(
+        `(^|\\n)\\s*(import|export)(?!\\s+type\\b)(\\s*[^;]*?\\s+from)?\\s*["'][^"']*/${name}\\.js["']`,
+      );
+    for (const src of [
+      'import { flyPoseAt } from "./fly";',
+      'import * as fly from "../story/fly";',
+      'export { flyPoseAt } from "./fly";',
+      'export * from "./fly";',
+      'import "./fly";',
+      '\nimport {\n  a,\n  b,\n} from "./fly";',
+    ])
+      expect(re("fly").test(src), src).toBe(true);
+    for (const src of [
+      'import type { StoryFly } from "./fly";',
+      'const m = await import("./fly");',
+      'import { x } from "./flyer";',
+    ])
+      expect(re("fly").test(src), src).toBe(false);
   });
 
   it("is not re-exported from the barrel", () => {
-    const barrel = readFileSync(join(root, "index.ts"), "utf8");
-    expect(barrel).not.toContain("state.js");
+    const barrel = readFileSync(join(root, "lib/lens/index.ts"), "utf8");
+    for (const name of Object.keys(LAW))
+      expect(barrel, name).not.toContain(`${name}.js`);
     expect(barrel).not.toContain("storyStateAt");
-    expect(barrel).not.toContain("cost.js");
     expect(barrel).not.toContain("storyCostAt");
-    expect(barrel).not.toContain("flow.js");
     expect(barrel).not.toContain("pieceStateAt");
   });
 
   it("is reached from hero-driver only behind a DEV gate", () => {
-    const driver = readFileSync(join(root, "story/hero-driver.ts"), "utf8");
+    const driver = readFileSync(
+      join(root, "lib/lens/story/hero-driver.ts"),
+      "utf8",
+    );
     const dev = driver.indexOf("import.meta.env.DEV");
     expect(dev, "hero-driver needs a DEV gate").toBeGreaterThan(-1);
     // all three lazy riders sit behind it — state.ts and its two siblings

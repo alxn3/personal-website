@@ -7,8 +7,11 @@
 // Two adoptions override the measurement so a rigid sub-assembly cannot fly
 // apart: bolted hardware and decals copy their host wedge's frame (SHELL_ADOPT;
 // the component split exists so each screw snaps to its own wedge), and the
-// explode rung is per group. The ladder is derived about the Chassis_Fixed
-// anchor; `overrides.tierOrder` / `overrides.anchorY` override it.
+// explode rung is per group. Adoption governs the ring, not thinness: bolted
+// hardware keeps its own wall extent in `depth` (never shallower than the
+// host's), only a decal — a printed skin — takes the host's. The ladder is
+// derived about the Chassis_Fixed anchor; `overrides.tierOrder` /
+// `overrides.anchorY` override it.
 
 import * as THREE from "three/webgpu";
 import { isGraphGroup, isSegWedge, partClassOf } from "../core/parts";
@@ -54,7 +57,8 @@ export interface Frame {
   axi: number;
   yMin: number;
   yMax: number;
-  /** Radial depth: the piece's widest wall offset from R, as a fraction of R. */
+  /** Radial depth: the piece's widest wall offset from R, as a fraction of R.
+   *  An adopted feature measures it about its HOST's R, floored at the host's. */
   depth: number;
   /** 1 when the frame was adopted from a host shell wedge (SHELL_ADOPT). */
   adopted: number;
@@ -330,6 +334,22 @@ function measureVerts(parts: PiecePart[]): LocalPiece {
     cy,
     cz,
   };
+}
+
+/** max |r − R| / R over every vertex under `node` about a GIVEN R — the wall
+ *  extent a bend about that radius strains. */
+function wallDepthOf(node: THREE.Object3D, R: number): number {
+  let depth = 0;
+  node.traverse((o) => {
+    if (!(o instanceof THREE.Mesh)) return;
+    const pos = o.geometry.getAttribute("position");
+    for (let i = 0; i < pos.count; i++)
+      depth = Math.max(
+        depth,
+        Math.abs(Math.hypot(pos.getX(i), pos.getZ(i)) - R) / R,
+      );
+  });
+  return depth;
 }
 
 /** All of a mesh's vertices. */
@@ -780,15 +800,23 @@ export function deriveFrames(
           }
         }
         // The snapped host UNIT's frame, copied EXACTLY — R included. Every
-        // lane below must end byte-identical to the host's, `cls` and
-        // `adopted` excepted, or the adopter lands in a different rank bucket.
+        // lane below must end byte-identical to the host's, `cls`, `adopted`
+        // and hardware's `depth` excepted, or the adopter lands in a different
+        // rank bucket.
         pc.t0 = best.t0;
         pc.R = best.R;
         pc.span = best.span;
         pc.axi = best.axi;
         pc.yMin = best.yMin;
         pc.yMax = best.yMax;
-        pc.depth = best.depth;
+        // A decal is a skin on the host's surface and must deform with the
+        // host's facets bit for bit; bolted hardware bends only if the WHOLE
+        // feature (every island of its node) is a thin wall about the host's R
+        // AND the host bends, so a solid's islands never part.
+        pc.depth =
+          pc.cls === PART_CLASS.decal
+            ? best.depth
+            : Math.max(best.depth, wallDepthOf(pc.node, best.R));
         pc.hostGroup = hostGroup;
         pc.adoptFrom = best;
       }
@@ -901,9 +929,12 @@ export function deriveFrames(
   // Authored overrides win over the derived ordering, by group name...
   const tierOrder = new Map(Object.entries(overrides?.tierOrder ?? {}));
   for (const [name, rung] of tierOrder) ladderRungs.set(name, rung);
-  // ...and an adopted feature rides its (possibly overridden) host's rung.
+  // ...and a group made only of adopted features reports its host's rung. A
+  // group that also holds own-framed pieces keeps its derived rung; every
+  // adopted piece reads its host's below regardless.
   for (const pc of pieces) {
     if (!pc.hostGroup || !pc.group || tierOrder.has(pc.group)) continue;
+    if (groups.get(pc.group)?.onLadder) continue;
     ladderRungs.set(pc.group, ladderRungs.get(pc.hostGroup) ?? 0);
   }
   for (const pc of pieces)

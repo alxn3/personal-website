@@ -23,6 +23,7 @@ import {
   huddleAt,
   chromeAt,
   driverOwnsIris,
+  dustAt,
   explodeAt,
   fStopOf,
   focalMmAt,
@@ -44,13 +45,10 @@ import { internalsEnvAt } from "./internals";
 import { frameZoom } from "../core/scene";
 import {
   EXIT_END,
-  flyApertureAt,
   flyBodyFadeAt,
   flyCentreAt,
   flyDarkAt,
-  flyDiveP,
   flyDollyAt,
-  flyFocusAt,
   flyFovBackAt,
   flyFovMixAt,
   flyFovOf,
@@ -60,6 +58,8 @@ import {
   flyReturnAt,
   flySeatAt,
   flySkyMixAt,
+  flySpanApertureAt,
+  flySpanFocusAt,
   flyStreakAt,
   flyWarpAt,
   skyOutAt,
@@ -166,6 +166,8 @@ export interface StoryState {
     bodyFade: number;
     /** which module owns setBodyFade at this p (the range-tiled writer map) */
     bodyFadeOwner: "driver" | "fly";
+    /** SceneHandle.setDust — the ambient motes, off for the dive and the bloom */
+    dust: boolean;
     shellFade: number;
     interiorFade: number;
     /** the stage tint for opts.light (default: the dark palette) */
@@ -293,16 +295,15 @@ export function storyStateAt(p: number, opts: StoryStateOpts = {}): StoryState {
     : driverOwnsIris(p)
       ? "driver"
       : "internals";
-  const pFly = flyDiveP(p);
   // inside the internals span both channels ride a phase clock, so there is no
   // value at p — only the envelopes, reported in `ambient`
   const focus =
-    irisOwner === "driver" ? 0 : irisOwner === "fly" ? flyFocusAt(pFly) : null;
+    irisOwner === "driver" ? 0 : irisOwner === "fly" ? flySpanFocusAt(p) : null;
   const aperture =
     irisOwner === "driver"
       ? preShutAt(p)
       : irisOwner === "fly"
-        ? flyApertureAt(pFly)
+        ? flySpanApertureAt(p)
         : null;
 
   const bandSpec = CAPTION_BANDS[index];
@@ -363,6 +364,7 @@ export function storyStateAt(p: number, opts: StoryStateOpts = {}): StoryState {
       storyCentre: flyCentreAt(p),
       bodyFade: p < DIVE_P0 ? 1 : flyBodyFadeAt(p),
       bodyFadeOwner: p < DIVE_P0 ? "driver" : "fly",
+      dust: dustAt(p),
       shellFade: shellFadeAt(p),
       interiorFade: interiorFadeAt(p),
       bg: bgAt(p, light),

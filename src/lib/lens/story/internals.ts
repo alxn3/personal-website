@@ -90,13 +90,17 @@ export function createInternalsAmbient(scene: SceneHandle): void {
       inside = true;
       tAcc = 0; // re-entry: both loops restart from home
     }
-    tAcc += dt;
-    const f = internalsFocusAt(tAcc, internalsEnvAt(p).rack);
+    const env = internalsEnvAt(p);
+    // the phase clock runs only while an envelope is open: with both shut the
+    // writes below are constants of p, and the scene may sleep
+    const live = env.rack > 0 || env.breath > 0;
+    if (live) tAcc += dt;
+    const f = internalsFocusAt(tAcc, env.rack);
     scene.state.focus = f;
     scene.state.focusTarget = f;
     const a = internalsApertureAt(tAcc, p);
     scene.state.aperture = a;
     scene.state.apertureTarget = a;
-    return true; // the phase clock runs on time
+    return live;
   });
 }

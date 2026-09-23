@@ -19,6 +19,7 @@ import {
   FOV_BACK,
   GLASS_OUT,
   INK_RETURN,
+  IRIS_BACK,
   REVEAL_X,
   createStoryFly,
   flyBodyFadeAt,
@@ -41,7 +42,20 @@ import {
   flyFovOf,
   flySkyInAt,
   flySkyMixAt,
+  flySpanApertureAt,
+  flySpanFocusAt,
 } from "../fly";
+import {
+  uStarMix,
+  uStarRing,
+  uStarSize,
+  uStarStreak,
+  uStreakGain,
+} from "../../optics/starfield";
+import { uWormhole } from "../../optics/wormhole-post";
+import { driverOwnsIris, preShutAt } from "../envelopes";
+import { storyStateAt } from "../state";
+import { fakeScene } from "./fake-scene";
 // the quote's own envelope, read rather than copied: the warp's far edge exists
 // to clear it, so the coupling is pinned against the thing that owns the number.
 import { quoteEnvAt } from "../constellations";
@@ -820,5 +834,129 @@ describe("story fly span", () => {
       };
       expect(zeroAt(flyWarpAt)).toBeCloseTo(zeroAt(flyStreakAt), 12);
     });
+  });
+});
+
+// THE REST FRAME IS A PURE FUNCTION OF p. The enter/exit hysteresis gates the
+// span's MOUNTS (glass, starfield, post); every value the span writes is a law
+// of p that equals the driver's tile across both hysteresis bands, so a reader
+// parked inside a band sees the same frame whichever way they arrived.
+describe("the hysteresis bands draw the same frame from either side", () => {
+  /** the driver's own iris writes, as hero-driver orders them before the fly */
+  const tile = (state: Record<string, number>, p: number) => {
+    if (driverOwnsIris(p)) {
+      state.focus = state.focusTarget = 0;
+      state.aperture = state.apertureTarget = preShutAt(p);
+    }
+  };
+  /** every drawn value, after walking `path` and parking on its last p */
+  const restAfter = (path: number[]) => {
+    const f = fakeScene();
+    const fly = createStoryFly(f.scene);
+    for (const p of path) {
+      tile(f.state, p);
+      fly.evaluate(p);
+    }
+    const w = f.writes;
+    const fov: [number | null, number] = Array.isArray(w.setStoryFov)
+      ? (w.setStoryFov as [number | null, number])
+      : [null, 0];
+    return {
+      aperture: f.state.aperture,
+      focus: f.state.focus,
+      fov: fov[0] === null || fov[1] <= 0 ? null : fov,
+      dolly: w.setLensDolly ?? 0,
+      bodyFade: w.setBodyFade ?? 1,
+      roomLight: w.setRoomLight ?? 1,
+      glint: w.setGlassGlint ?? 1,
+      inkMix: w.setInkMix,
+      centre: w.setStoryCentre,
+      skyMix: uStarMix.value,
+      warp: uWormhole.value,
+      streak: uStarStreak.value,
+      ring: uStarRing.value,
+      gain: uStreakGain.value,
+      size: uStarSize.value,
+    };
+  };
+
+  it("at the dive edge, and at the exit edge", () => {
+    const step = HYST / 8;
+    for (const [lo, hi] of [
+      [DIVE_P0 - HYST, DIVE_P0],
+      [EXIT_END, EXIT_END + HYST],
+    ]) {
+      for (let p = lo + step; p < hi; p += step) {
+        const below = restAfter([lo - 0.05, lo - 0.01, p]);
+        const above = restAfter([hi + 0.05, hi + 0.01, p]);
+        expect(below, `arriving at ${p} from either side`).toEqual(above);
+        // …and it is the frame the report names
+        const s = storyStateAt(p);
+        expect(below.aperture, `aperture ${p}`).toBe(s.channels.aperture);
+        expect(below.focus, `focus ${p}`).toBe(s.channels.focus);
+        expect(below.fov, `fov ${p}`).toBe(null);
+      }
+    }
+  });
+
+  it("hands the iris back under the body cover, so the span's edge is a rest", () => {
+    // both dive channels equal the driver's tile at the span's far edge…
+    expect(flySpanApertureAt(EXIT_END)).toBe(preShutAt(EXIT_END));
+    expect(flySpanFocusAt(EXIT_END)).toBe(0);
+    // …and at the near edge, where the dive parks shut and home
+    expect(flySpanApertureAt(DIVE_P0)).toBe(preShutAt(DIVE_P0));
+    expect(flySpanFocusAt(DIVE_P0)).toBe(0);
+    // the ramp back runs while the body is not drawn at all
+    for (let i = 0; i <= 50; i++) {
+      const p = IRIS_BACK[0] + ((IRIS_BACK[1] - IRIS_BACK[0]) * i) / 50;
+      expect(flyBodyFadeAt(p), `body fade at ${p}`).toBe(0);
+    }
+    expect(IRIS_BACK[1]).toBeLessThan(EXIT_END);
+    // the dive's own ramps are untouched inside the dive
+    for (let i = 0; i <= 50; i++) {
+      const p = DIVE_P0 + ((flyR.p1 - DIVE_P0) * i) / 50;
+      expect(flySpanApertureAt(p), `aperture ${p}`).toBe(
+        flyApertureAt(flyDiveP(p)),
+      );
+      expect(flySpanFocusAt(p), `focus ${p}`).toBe(flyFocusAt(flyDiveP(p)));
+    }
+  });
+});
+
+describe("what the span does not own", () => {
+  it("never writes the dust — that is the driver's law", () => {
+    const f = fakeScene();
+    const fly = createStoryFly(f.scene);
+    for (const p of [0, DIVE_P0, atFrac(flyR, 0.7), EXIT_END + 0.1, 0.3])
+      fly.evaluate(p);
+    expect(f.calls.filter((c) => c === "setDust")).toEqual([]);
+  });
+
+  it("multiplies the __lensStars size and streak-gain knobs instead of stomping them", () => {
+    // the uniforms are module-wide: the fly instances above left their writes
+    uStarSize.value = 1;
+    uStreakGain.value = 1;
+    const f = fakeScene();
+    const fly = createStoryFly(f.scene);
+    const peak = DIVE_P0 + (flyR.p1 - DIVE_P0) * 0.44;
+    const quiet = DIVE_P0 + (flyR.p1 - DIVE_P0) * 0.8;
+    fly.evaluate(quiet);
+    expect(uStarSize.value).toBe(1);
+    expect(uStreakGain.value).toBe(1);
+    // the knob, set live while parked in the dive
+    uStarSize.value = 0.6;
+    uStreakGain.value = 2;
+    fly.evaluate(peak);
+    expect(uStarSize.value).toBeCloseTo(0.6 * 1.3, 12);
+    expect(uStreakGain.value).toBeCloseTo(2 * 1.6, 12);
+    fly.evaluate(quiet);
+    expect(uStarSize.value).toBeCloseTo(0.6, 12);
+    expect(uStreakGain.value).toBeCloseTo(2, 12);
+    // exit() hands the knobs back at their own values
+    fly.evaluate(EXIT_END + 2 * HYST);
+    expect(uStarSize.value).toBeCloseTo(0.6, 12);
+    expect(uStreakGain.value).toBeCloseTo(2, 12);
+    uStarSize.value = 1;
+    uStreakGain.value = 1;
   });
 });

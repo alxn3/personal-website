@@ -6,8 +6,10 @@ import {
   EXTRA_BAND,
   SHELL_FEATHER,
   WINK_WIDTH,
+  stampWinkLanes,
   winkOpacity,
 } from "../../core/visibility";
+import { shippedModel } from "./shipped-model";
 import { NUM } from "../../ops/algebra";
 import { gate } from "../../ops/gate";
 import { makeRecipes } from "../../ops/recipes";
@@ -46,6 +48,7 @@ import {
   MOUNT_HI,
   MOUNT_HYST,
   MOUNT_LO,
+  SEG_COUNT,
   segSectorAngle,
 } from "../peelcards";
 
@@ -218,10 +221,26 @@ describe("the hand-off", () => {
     expect(new Set(CARD_TS).size).toBe(CARD_COUNT);
   });
 
-  it("conserves the crossfade: card + wedge = 1 at every p", () => {
-    for (const k of KS)
+  it("conserves the crossfade against the card's OWN seed wedge, as the model is stamped", () => {
+    // the wedge is found by its LANE on the shipped model — the f32 threshold
+    // the shader reads — not by re-deriving the card's own number
+    const lanes = stampWinkLanes(shippedModel());
+    for (const k of KS) {
+      const t = Math.fround(CARD_TS[k]);
+      const mates = [...lanes].filter(
+        ([, w]) => w.channel === "shell" && Math.fround(w.threshold) === t,
+      );
+      expect(mates, `card ${k} has one wedge on its threshold`).toHaveLength(1);
+      const [mesh, wedge] = mates[0];
+      // …and it is the sector the card is seeded from: cards 0–4 sit ON their
+      // strip's meridian, 5–7 halfway past it (cardPhaseAt), same sector
+      expect(isSegWedge(mesh.name), mesh.name).toBe(true);
+      expect(Number(/_Seg(\d+)$/.exec(mesh.name)![1]), mesh.name).toBe(
+        k % SEG_COUNT,
+      );
       for (const p of PS)
-        expect(cardInAt(k, p) + winkOpacity(CARD_TS[k], winkLevelAt(p)), `card ${k} p ${p}`).toBeCloseTo(1, 12); // prettier-ignore
+        expect(cardInAt(k, p) + winkOpacity(wedge.threshold, winkLevelAt(p)), `card ${k} p ${p}`).toBeCloseTo(1, 6); // prettier-ignore
+    }
   });
 
   it("is exactly 0 while the wedge is whole and exactly 1 where the wedge is gone", () => {
@@ -675,11 +694,11 @@ describe("the card field's mount window", () => {
   // EXPORTED so story/cost.ts can count the eight draws without spelling the
   // window twice; pinned here, where it is owned.
 
-  it("mounts a whole scene early and leaves before the dive", () => {
-    // the eight texture uploads land in the zoom's quiet beat, not on the
-    // peel's first frames
-    expect(MOUNT_LO).toBe(rangeOf("zoom").p0);
-    expect(MOUNT_LO).toBeLessThan(peR.p0);
+  it("mounts one hysteresis ahead of the first card and leaves before the dive", () => {
+    // the uploads are warm()'s, paid at boot idle; the mount itself only has
+    // to precede the first fade by the slack that guards it
+    expect(MOUNT_LO).toBe(CARDS_IN_SPAN[0] - MOUNT_HYST);
+    expect(MOUNT_LO).toBeGreaterThan(peR.p0);
     // …and the tail is the cards scene's own end: the field dissolves inside
     // the scene, so no invisible card survives into the internals or the dive
     expect(MOUNT_HI).toBe(cdR.p1);
@@ -690,14 +709,10 @@ describe("the card field's mount window", () => {
   });
 
   it("covers the whole span the cards are ever drawn over", () => {
-    for (const p of [
-      CARDS_IN_SPAN[0],
-      cdR.p0,
-      cdR.p1,
-      atFrac(cdR, 0.5),
-      peR.p0,
-    ])
+    for (const p of [CARDS_IN_SPAN[0], cdR.p0, cdR.p1, atFrac(cdR, 0.5)])
       expect(p, `card p ${p}`).toBeGreaterThanOrEqual(MOUNT_LO);
+    for (const k of KS)
+      expect(cardInAt(k, MOUNT_LO), `card ${k} unborn at the mount`).toBe(0);
     expect(cdR.p1).toBeLessThanOrEqual(MOUNT_HI);
   });
 

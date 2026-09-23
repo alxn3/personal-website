@@ -23,11 +23,12 @@ const {
   <head>
     <meta charset="UTF-8" />
 
-    <!-- Blocking, un-bundled: MUST run before first paint — the initial theme
-         class (no FOUC) and the ?embed chrome flag. Everything else (OS-change
-         listener, toggle) lives bundled in src/lib/alpine.ts. -->
+    <!-- Blocking, un-bundled: MUST run before first paint — the `js` class that
+         gates JS-only hidden states, the initial theme class (no FOUC) and the
+         ?embed chrome flag. Everything else lives bundled in src/lib/alpine.ts. -->
     <script is:inline>
       const t = localStorage.getItem("theme");
+      document.documentElement.classList.add("js");
       document.documentElement.classList.toggle(
         "dark",
         t ? t === "dark" : matchMedia("(prefers-color-scheme: dark)").matches,

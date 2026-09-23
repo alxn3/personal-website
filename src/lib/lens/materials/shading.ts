@@ -57,7 +57,6 @@ export interface ShadingController {
    *  at 0 on the way out — `transparent` rides that blend and pipelines are
    *  keyed on it, so a warm-up under the wrong blend warms nothing. */
   withOriginals(cb: () => void): void;
-  dispose(): void;
 }
 
 export function createShading(
@@ -149,8 +148,5 @@ export function createShading(
     integrate,
     setTheme,
     withOriginals,
-    dispose() {
-      bench?.dispose();
-    },
   };
 }

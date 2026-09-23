@@ -14,6 +14,7 @@ import {
 import { emitDeform, emitStats, IDLE_EPS } from "../emit";
 import { LAYOUT } from "../layout";
 import { WRAP_DIR } from "../../house";
+import { packFlags, WINK_NONE } from "../../frames";
 import { DEFORM_WGSL } from "../deform.wgsl";
 import { DEFORM_GLSL } from "../deform.glsl";
 import { opsFold as checkedFold, type OpsFold } from "../deform.js";
@@ -27,15 +28,12 @@ import { opsFold as checkedFold, type OpsFold } from "../deform.js";
 //
 // and review the diff, exactly as STORY-MAP.md and the recipe goldens are kept.
 //
-// WHY THE EMIT IS SHORTER THAN THE NODE GRAPH IT MIRRORS: the source backend
-// memoises on EXPRESSION TEXT, so a repeat of `step(2.5, b.y)` inside a scope
-// returns the first one's temp. TSL cannot — it does not compare across distinct
-// node objects (ops/recipes.ts's `memoCtx` exists to work around exactly that),
-// so the house selectors' step-products are re-emitted per call site. Scopes are
-// honoured, so an expression shared by two BRANCHES is still emitted twice: a
-// branch's temps die at its brace. `(g)` is what proves the arithmetic is
-// nonetheless the same; `(b)`'s within-scope duplicate check is what proves the
-// memo is doing the collapsing.
+// THE MEMO: the source backend memoises on EXPRESSION TEXT, so a repeat of
+// `step(2.5, b.y)` inside a scope returns the first one's temp (ops/house.ts's
+// `memoCtx` does the same one level up, per ctx object). Scopes are honoured,
+// so an expression shared by two BRANCHES is still emitted twice: a branch's
+// temps die at its brace. `(g)` proves the arithmetic is the recipes' own over
+// every lane; `(k)` proves the memo is doing the collapsing.
 
 const url = (rel: string) => fileURLToPath(new URL(rel, import.meta.url));
 
@@ -196,6 +194,24 @@ const CHANNELS = [0.25, 0.5, 0.75, 1];
 /** the axial extent the emit derives yN from — chosen so yN comes back as the
  *  probe's own value and yMid lands on the goldens' frame axial of 0 */
 const Y_HALF = 20;
+/** The lane rows: what the fixture's flags (`b.w`) and depth (`y.z`) carry,
+ *  and the knobs the branch runs at. `adopted` reaches the deform only through
+ *  `sheetTerm` once `axi` has switched the sector term off, so its row carries
+ *  both; the live rows are the story's explode (rebend 1, curl 2) on a thin and
+ *  a deep piece. */
+const LANE_ROWS: {
+  axi: number;
+  adopted: number;
+  depth: number;
+  knobs?: Partial<Record<RecipeName, Record<string, number>>>;
+}[] = [
+  { axi: 0, adopted: 0, depth: 0 },
+  { axi: 1, adopted: 0, depth: 0 },
+  { axi: 1, adopted: 1, depth: 0 },
+  { axi: 0, adopted: 0, depth: 0.5 },
+  { axi: 0, adopted: 0, depth: 0, knobs: { explode: { rebend: 1, curl: 2 } } },
+  { axi: 0, adopted: 0, depth: 0.5, knobs: { explode: { rebend: 1, curl: 2 } } }, // prettier-ignore
+];
 
 describe("emitted ≡ NUM over the goldens' grid", () => {
   const recipes = makeRecipes(NUM);
@@ -226,102 +242,106 @@ describe("emitted ≡ NUM over the goldens' grid", () => {
       for (let ri = 0; ri < LAYOUT.names.length; ri++) {
         const name = LAYOUT.names[ri] as RecipeName;
         const recipe = recipes[name];
-        const knobs = recipe.knobDefaults as Record<string, number>;
-        for (const p of PIECES) {
-          for (const v of PROBES) {
-            for (const channel of CHANNELS) {
-              // ---- the NUM reference, exactly as recipe-goldens.test.ts runs it
-              const L = p.R * 2 * HALF;
-              const d = v.frac * L;
-              const gateAt = (c: number) =>
-                gate(NUM, recipe.gateSpec(knobs), c, {
+        for (const row of LANE_ROWS) {
+          const knobs = { ...recipe.knobDefaults, ...row.knobs?.[name] };
+          for (const p of PIECES) {
+            for (const v of PROBES) {
+              for (const channel of CHANNELS) {
+                // ---- the NUM reference, exactly as recipe-goldens.test.ts runs it
+                const L = p.R * 2 * HALF;
+                const d = v.frac * L;
+                const gateAt = (c: number) =>
+                  gate(NUM, recipe.gateSpec(knobs), c, {
+                    rank01: p.rank01,
+                    layerPhase: p.layerPhase,
+                  });
+                const phase = gateAt(channel);
+                const phi = HALF - d / p.R;
+                const ctx: OpCtx<number> = {
+                  A: NUM,
+                  channel,
+                  gateAt,
+                  t0: p.t0,
+                  R: p.R,
                   rank01: p.rank01,
                   layerPhase: p.layerPhase,
-                });
-              const phase = gateAt(channel);
-              const phi = HALF - d / p.R;
-              const ctx: OpCtx<number> = {
-                A: NUM,
-                channel,
-                gateAt,
-                t0: p.t0,
-                R: p.R,
-                rank01: p.rank01,
-                layerPhase: p.layerPhase,
-                halfSpan: HALF,
-                partClass: PART_CLASS.structure,
-                phi,
-                d,
-                L,
-                yN: v.yN,
-                off: v.off,
-                rung: p.rung,
-                axi: 0,
-                depth: 0,
-                adopted: 0,
-                flight: phase.flight,
-                stick: phase.stick,
-                wrapDir: WRAP_DIR,
-              };
-              const seatTheta = p.t0 + phi;
-              const seatR = p.R + v.off;
-              const axial = v.yN * 40;
-              const seat: VertexState<number> = {
-                x: seatR * Math.cos(seatTheta),
-                z: seatR * Math.sin(seatTheta),
-                axial,
-                rot: 0,
-                aim: p.t0,
-                rem: 0,
-              };
-              const frame0: PieceFrame<number> = {
-                x: p.R * Math.cos(p.t0),
-                z: p.R * Math.sin(p.t0),
-                axial: 0,
-                orient: p.t0,
-              };
-              const ref = runPipeline(
-                recipe.build(ctx, knobs),
-                seat,
-                frame0,
-                ctx,
-              ).v;
-              const want = [
-                ref.x - seat.x,
-                ref.axial - seat.axial,
-                ref.z - seat.z,
-                ref.rot,
-              ];
+                  halfSpan: HALF,
+                  partClass: PART_CLASS.structure,
+                  phi,
+                  d,
+                  L,
+                  yN: v.yN,
+                  off: v.off,
+                  height: Y_HALF * 2,
+                  rung: p.rung,
+                  axi: row.axi,
+                  depth: row.depth,
+                  adopted: row.adopted,
+                  flight: phase.flight,
+                  stick: phase.stick,
+                  wrapDir: WRAP_DIR,
+                };
+                const seatTheta = p.t0 + phi;
+                const seatR = p.R + v.off;
+                const axial = v.yN * 40;
+                const seat: VertexState<number> = {
+                  x: seatR * Math.cos(seatTheta),
+                  z: seatR * Math.sin(seatTheta),
+                  axial,
+                  rot: 0,
+                  aim: p.t0,
+                  rem: 0,
+                };
+                const frame0: PieceFrame<number> = {
+                  x: p.R * Math.cos(p.t0),
+                  z: p.R * Math.sin(p.t0),
+                  axial: 0,
+                  orient: p.t0,
+                };
+                const ref = runPipeline(
+                  recipe.build(ctx, knobs),
+                  seat,
+                  frame0,
+                  ctx,
+                ).v;
+                const want = [
+                  ref.x - seat.x,
+                  ref.axial - seat.axial,
+                  ref.z - seat.z,
+                  ref.rot,
+                ];
 
-              // ---- the EMITTED run: only this recipe's channel is up, and the
-              // lanes carry that recipe's defaults
-              const ch = v4();
-              ch[XYZW[ri]] = channel;
-              const k = knobArray((n) => (n === name ? knobs : {}));
-              const got = fold(
-                { x: seat.x, y: axial, z: seat.z },
-                v4(p.t0, p.R, HALF * 2, p.rank01),
-                v4(p.layerPhase, PART_CLASS.structure, p.rung, 0),
-                v4(-Y_HALF, Y_HALF, 5, 0),
-                ch,
-                k,
-                out,
-              );
-              expect(got).toBe(out);
-              for (let c = 0; c < 4; c++) {
-                const delta = Math.abs(got[c] - want[c]);
-                if (delta > worst) worst = delta;
-                expect(
-                  got[c],
-                  `${label} ${name} t0=${p.t0} frac=${v.frac} ch=${channel} [${"xyzr"[c]}]`,
-                ).toBeCloseTo(want[c], 9);
+                // ---- the EMITTED run: only this recipe's channel is up, and the
+                // lanes carry the row's knobs. The wink lane is WINK_NONE: a
+                // decode that read it for depth would see −1, not the row's.
+                const ch = v4();
+                ch[XYZW[ri]] = channel;
+                const k = knobArray((n) => (n === name ? knobs : {}));
+                const got = fold(
+                  { x: seat.x, y: axial, z: seat.z },
+                  v4(p.t0, p.R, HALF * 2, p.rank01),
+                  v4(p.layerPhase, PART_CLASS.structure, p.rung, packFlags(row.axi, row.adopted)), // prettier-ignore
+                  v4(-Y_HALF, Y_HALF, row.depth, WINK_NONE),
+                  ch,
+                  k,
+                  out,
+                );
+                expect(got).toBe(out);
+                for (let c = 0; c < 4; c++) {
+                  const delta = Math.abs(got[c] - want[c]);
+                  if (delta > worst) worst = delta;
+                  expect(
+                    got[c],
+                    `${label} ${name} ${JSON.stringify(row)} t0=${p.t0} frac=${v.frac} ch=${channel} [${"xyzr"[c]}]`,
+                  ).toBeCloseTo(want[c], 9);
+                }
+                cases++;
               }
-              cases++;
             }
           }
         }
       }
-      expect(cases).toBe(LAYOUT.names.length * PIECES.length * PROBES.length * CHANNELS.length); // prettier-ignore
+      expect(cases).toBe(LAYOUT.names.length * LANE_ROWS.length * PIECES.length * PROBES.length * CHANNELS.length); // prettier-ignore
       // the only spread is the preamble's re-derivation of phi/d/off through
       // atan2 and sqrt, where the reference is handed them directly
       expect(worst, label).toBeLessThan(1e-9);
@@ -344,7 +364,7 @@ describe("emitted ≡ NUM over the goldens' grid", () => {
               { x: 10 * Math.cos(0.3), y: 4, z: 10 * Math.sin(0.3) },
               v4(0.3, 10, 0.8, 0.5),
               v4(0, PART_CLASS.structure, 2.5, 0),
-              v4(-Y_HALF, Y_HALF, 5, 0),
+              v4(-Y_HALF, Y_HALF, 0, WINK_NONE),
               ch,
               k,
               out,

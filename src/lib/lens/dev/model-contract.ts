@@ -142,7 +142,7 @@ function report(scope: string, v: string[]): void {
  *  accessories once their background load lands. `frames` is passed through
  *  rather than re-read off a dev probe. */
 export function reportModelContract(
-  model: LensModel,
+  model: LensModel & { hasAccessories: boolean },
   frames: DerivedFrames,
 ): void {
   report("body", [

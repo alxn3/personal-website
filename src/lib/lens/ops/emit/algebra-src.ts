@@ -31,7 +31,6 @@ const SPEC: Record<Dialect, DialectSpec> = {
       cos: "cos",
       atan2: "atan2",
       abs: "abs",
-      sign: "sign",
       pow: "pow",
       sqrt: "sqrt",
       floor: "floor",
@@ -51,7 +50,6 @@ const SPEC: Record<Dialect, DialectSpec> = {
       cos: "cos",
       atan2: "atan", // GLSL's two-arg atan IS atan2
       abs: "abs",
-      sign: "sign",
       pow: "pow",
       sqrt: "sqrt",
       floor: "floor",
@@ -74,7 +72,6 @@ const SPEC: Record<Dialect, DialectSpec> = {
       cos: "__.cos",
       atan2: "__.atan2",
       abs: "__.abs",
-      sign: "__.sign",
       pow: "__.pow",
       sqrt: "__.sqrt",
       floor: "__.floor",
@@ -101,30 +98,25 @@ export interface SrcEmitter {
   /** a nested scope: its own lines, reading this scope's temps but not
    *  publishing into it (a shader block's temps die at the brace) */
   fork(): SrcEmitter;
-  stats(): { temps: number; hits: number };
 }
 
 /** One emitter over `dialect`. `counter` is shared by every fork so temp names
  *  stay globally unique and monotonic — the determinism the byte-pin rests on. */
 export function srcAlgebra(
   dialect: Dialect,
-  parent?: { memo: Map<string, string>; counter: { n: number }; hits: { n: number } }, // prettier-ignore
+  parent?: { memo: Map<string, string>; counter: { n: number } },
 ): SrcEmitter {
   const spec = SPEC[dialect];
   const lines: string[] = [];
   const memo = new Map<string, string>(parent?.memo);
   const counter = parent?.counter ?? { n: 0 };
-  const hits = parent?.hits ?? { n: 0 };
 
   const lift = (x: Sc<string>): string =>
     typeof x === "number" ? litOf(dialect, x) : x;
 
   const emit = (expr: string): string => {
     const hit = memo.get(expr);
-    if (hit !== undefined) {
-      hits.n++;
-      return hit;
-    }
+    if (hit !== undefined) return hit;
     const v = `t${counter.n++}`;
     lines.push(spec.decl(v, expr));
     memo.set(expr, v);
@@ -141,7 +133,6 @@ export function srcAlgebra(
       emit(`${spec.call[name]}(${args.map(lift).join(", ")})`);
 
   const A: Algebra<string> = {
-    lift,
     lit: (n) => litOf(dialect, n),
     add: bin("+"),
     sub: bin("-"),
@@ -158,7 +149,6 @@ export function srcAlgebra(
     cos: call("cos"),
     atan2: (y, x) => call("atan2")(y, x),
     abs: call("abs"),
-    sign: call("sign"),
     pow: (x, e) => call("pow")(x, e),
     sqrt: call("sqrt"),
     floor: call("floor"),
@@ -168,7 +158,6 @@ export function srcAlgebra(
   return {
     A,
     lines,
-    fork: () => srcAlgebra(dialect, { memo, counter, hits }),
-    stats: () => ({ temps: counter.n, hits: hits.n }),
+    fork: () => srcAlgebra(dialect, { memo, counter }),
   };
 }

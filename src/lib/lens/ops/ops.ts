@@ -94,6 +94,8 @@ export interface OpCtx<S> {
   L: S;
   yN: S;
   off: S; // material arc coord, arc length, norm axial, wall offset
+  /** The piece's axial extent yMax − yMin, model-mm (floored above 0). */
+  height: S;
   rung: S; // per-piece signed ladder rung, model-mm
   /** 0/1 axisymmetry flag (ops/frames.ts `axi`): the piece has no meridian of
    *  its own, so ops that read it fall back to a per-VERTEX law (see
@@ -149,8 +151,9 @@ export type OpItem<S> =
       kind: "orient";
       name: string;
       /** The NEW working direction, absolute — an orient op cannot move
-       *  geometry or turn a normal. NOT scaled by the active weight: a re-aim
-       *  that faded with `w` would drift a chain's anchor off the seam. */
+       *  geometry or turn a normal. The angle itself is not scaled by the
+       *  active weight (a faded re-aim would drift a chain's anchor off the
+       *  seam); `ctx` is the EFFECTIVE one, so only its gate-driven part fades. */
       aim(v: VertexState<S>, f: PieceFrame<S>, ctx: OpCtx<S>): S;
     }
   | {
@@ -161,15 +164,14 @@ export type OpItem<S> =
     }
   | { kind: "group"; items: OpItem<S>[]; progress?: Progress<S> };
 
-/** A sub-window of the recipe's channel, as a clamped ramp then an optional
- *  power: m(c) = clamp((c − from)/(to − from), 0, 1)^ease. Every field is a
- *  per-PIECE constant. Invariants (`validatePipeline` warns on illegal
- *  literals, nothing enforces them at runtime): from ≥ 0, to > from, ease > 0;
- *  to ≤ 1 is advisory. Reversal and ping-pong are not representable. */
+/** A sub-window of the recipe's channel, as a clamped ramp:
+ *  m(c) = clamp((c − from)/(to − from), 0, 1). Every field is a per-PIECE
+ *  constant. Invariants (`validatePipeline` warns on illegal literals, nothing
+ *  enforces them at runtime): from ≥ 0, to > from; to ≤ 1 is advisory.
+ *  Reversal and ping-pong are not representable. */
 export interface Progress<S> {
   from?: Sc<S>; // default 0
   to?: Sc<S>; // default 1
-  ease?: Sc<S>; // default 1 (omitted ⇒ no pow node)
 }
 
 // Scope a sub-pipeline: selectors inside do not affect ops after the group.
@@ -186,20 +188,17 @@ export function during<S>(p: Progress<S>, items: OpItem<S>[]): OpItem<S> {
 }
 
 /** The PHASED ctx a `during` scope runs under: the channel through the clamped
- *  ramp and the optional power, and THIS recipe's gate re-run at it. */
+ *  ramp, and THIS recipe's gate re-run at it. */
 function progressCtx<S>(ctx: OpCtx<S>, p: Progress<S>): OpCtx<S> {
   const A = ctx.A;
-  const ramp = p.from !== undefined || p.to !== undefined;
   // An empty Progress hands back the very ctx it was given, so `during({}, …)`
   // and `group(…)` build the same GRAPH, not merely the same numbers.
-  if (!ramp && p.ease === undefined) return ctx;
-  let q: S = ctx.channel;
-  if (ramp) {
-    const from = p.from ?? 0;
-    const to = p.to ?? 1;
-    q = A.clamp(A.div(A.sub(q, from), A.sub(to, from)), 0, 1);
-  }
-  if (p.ease !== undefined) q = A.pow(q, p.ease);
+  if (p.from === undefined && p.to === undefined) return ctx;
+  const q = A.clamp(
+    A.div(A.sub(ctx.channel, p.from ?? 0), A.sub(p.to ?? 1, p.from ?? 0)),
+    0,
+    1,
+  );
   const g = ctx.gateAt(q);
   return { ...ctx, channel: q, flight: g.flight, stick: g.stick };
 }
@@ -304,7 +303,6 @@ function validateProgress<S>(
 ): void {
   const from = litOf(p.from);
   const to = litOf(p.to);
-  const ease = litOf(p.ease);
   // Defaults only count once the OTHER end is a literal — an all-symbolic
   // window says nothing here.
   const lo = from ?? (to === undefined ? undefined : 0);
@@ -322,13 +320,6 @@ function validateProgress<S>(
         `the ramp divides by (to - from) = ${hi - lo}, and NaN * 0 = NaN pushes ` +
         `straight THROUGH the hard idle gate into the seated render. Use ` +
         `to > from.`,
-    );
-  }
-  if (ease !== undefined && ease <= 0) {
-    warn(
-      `lens ops: during({ ease: ${ease} }) is non-positive — pow(0, 0) is 1 ` +
-        `(and x = 0 with e <= 0 is undefined behaviour in GLSL), so the scope ` +
-        `starts fully played and the model pops off its seat. Use ease > 0.`,
     );
   }
   if (to !== undefined && to > 1) {
@@ -526,19 +517,15 @@ export function rot<S>(rad: Live<S>): OpItem<S> {
 // swirl; translations do not turn a normal, and `tilt` is deliberately outside
 // the carve-out (see its own header).
 
-// APPROACH: axial slide (axialMm) + a per-rank pitch spread (pitchMm·rank01).
-// A pure translation: the normal is untouched, the frame axial takes the same
-// delta.
-export function approach<S>(axialMm: Sc<S>, pitchMm: number = 0): OpItem<S> {
+// APPROACH: axial slide by `axialMm`. A pure translation: the normal is
+// untouched, the frame axial takes the same delta.
+export function approach<S>(axialMm: Sc<S>): OpItem<S> {
   return {
     kind: "transform",
     name: "approach",
     run: (v, f, w, ctx) => {
       const A = ctx.A;
-      const delta = A.mul(
-        A.mul(ctx.flight, w),
-        A.add(axialMm, A.mul(ctx.rank01, pitchMm)),
-      );
+      const delta = A.mul(A.mul(ctx.flight, w), axialMm);
       return {
         v: { ...v, axial: A.add(v.axial, delta) },
         f: { ...f, axial: A.add(f.axial, delta) },
@@ -547,18 +534,12 @@ export function approach<S>(axialMm: Sc<S>, pitchMm: number = 0): OpItem<S> {
   };
 }
 
-// ORBIT: a RIGID REVOLUTION. angle = flight·rad·w, and that one angle turns the
-// piece, its frame, its working direction and its normals together.
-//   about "axis" (default) — about the optical axis: the piece sweeps around
-//     the barrel carrying its facing.
-//   about "frame" — about the PIECE CENTRE: the piece SPINS IN PLACE, its
-//     frame placement fixed but its direction and normals turning with it.
+// ORBIT: a RIGID REVOLUTION about the optical axis. angle = flight·rad·w, and
+// that one angle turns the piece, its frame, its working direction and its
+// normals together, so the piece sweeps around the barrel carrying its facing.
 // The SIGN is the caller's: multiply ctx.wrapDir into `rad` at the call site to
 // get the house peel handedness.
-export function orbit<S>(
-  rad: Live<S>,
-  opts: { about?: "axis" | "frame" } = {},
-): OpItem<S> {
+export function orbit<S>(rad: Live<S>): OpItem<S> {
   return {
     kind: "transform",
     name: "orbit",
@@ -569,18 +550,6 @@ export function orbit<S>(
       const a = A.mul(A.mul(ctx.flight, liveOf(rad, ctx)), w);
       const ca = A.cos(a);
       const sa = A.sin(a);
-      if (opts.about === "frame") {
-        const d = turn(A, { x: A.sub(v.x, f.x), z: A.sub(v.z, f.z) }, ca, sa);
-        return {
-          v: {
-            ...v,
-            x: A.add(f.x, d.x),
-            z: A.add(f.z, d.z),
-            rot: A.add(v.rot, a),
-          },
-          f: { ...f, orient: A.add(f.orient, a) },
-        };
-      }
       return {
         v: { ...v, ...turn(A, v, ca, sa), rot: A.add(v.rot, a) },
         f: { ...f, ...turn(A, f, ca, sa), orient: A.add(f.orient, a) },
@@ -717,17 +686,15 @@ export function tilt<S>(rad: Sc<S>, opts: { pivot?: Sc<S> } = {}): OpItem<S> {
   };
 }
 
-// LADDER: axial displacement by a per-piece signed rung (model-mm) × gain.
-// `rung` is ctx.rung when rungOf === "attr" (the shader supplies it per piece),
-// else the literal passed. A translation, so no rot; the frame rides along.
-export function ladder<S>(rungOf: "attr" | Sc<S>, gain: Sc<S>): OpItem<S> {
+// LADDER: axial displacement by the piece's own signed rung (ctx.rung,
+// model-mm) × gain. A translation, so no rot; the frame rides along.
+export function ladder<S>(gain: Sc<S>): OpItem<S> {
   return {
     kind: "transform",
     name: "ladder",
     run: (v, f, w, ctx) => {
       const A = ctx.A;
-      const rung = rungOf === "attr" ? ctx.rung : rungOf;
-      const delta = A.mul(A.mul(A.mul(rung, gain), ctx.flight), w);
+      const delta = A.mul(A.mul(A.mul(ctx.rung, gain), ctx.flight), w);
       return {
         v: { ...v, axial: A.add(v.axial, delta) },
         f: { ...f, axial: A.add(f.axial, delta) },

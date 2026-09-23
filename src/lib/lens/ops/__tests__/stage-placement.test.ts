@@ -13,9 +13,7 @@ describe("the deform chain's stage placement (host.ts law 5)", () => {
   const fade = src("../../materials/depthfade.ts");
 
   it("the normal's rot crosses on a varying", () => {
-    expect(host).toMatch(
-      /rotateAboutAxis\(\s*normalLocal[^,]*,\s*varying\(f\.rot\)/,
-    );
+    expect(host).toMatch(/rotateAboutAxis\(\s*n,\s*varying\(rot\)/);
   });
 
   it("the wrap's deformed triad crosses on varyings", () => {

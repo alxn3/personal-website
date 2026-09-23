@@ -58,6 +58,7 @@ function makeCtx(over: Partial<OpCtx<number>> = {}): OpCtx<number> {
     L: 1,
     yN: 0,
     off: 0,
+    height: 40,
     rung: 0,
     axi: 0,
     depth: 0, // a thin sheet
@@ -102,24 +103,22 @@ describe("transforms", () => {
     const ctx = makeCtx({ flight: 0, stick: 0.4, rung: 3.7, wrapDir: -1 });
     const w = 0.9;
     const ops: OpItem<number>[] = [
-      approach(3, 4),
+      approach(3),
       orbit(1.2),
-      orbit(1.2, { about: "frame" }),
       swirl(1.2, { exp: 2, rankScale: true }),
       spread(0.4),
-      ladder<number>("attr", 2),
-      ladder(5, 2),
+      ladder<number>(2),
       tilt(1.2),
       tilt(1.2, { pivot: -7 }),
     ];
     for (const op of ops) expectIdentity(runT(op, V0, F0, w, ctx));
   });
 
-  it("(b) approach moves axial by flight·w·(axialMm + rank01·pitchMm), frame too, the point and rot untouched", () => {
+  it("(b) approach moves axial by flight·w·axialMm, frame too, the point and rot untouched", () => {
     const ctx = makeCtx({ flight: 0.8, rank01: 0.5 });
     const w = 1;
-    const out = runT(approach(3, 4), V0, F0, w, ctx);
-    const delta = 0.8 * 1 * (3 + 0.5 * 4); // = 4
+    const out = runT(approach(3), V0, F0, w, ctx);
+    const delta = 0.8 * 1 * 3; // = 2.4
     expect(out.v.axial).toBeCloseTo(V0.axial + delta, 12);
     expect(out.f.axial).toBeCloseTo(F0.axial + delta, 12);
     // Untouched:
@@ -173,49 +172,6 @@ describe("transforms", () => {
     // …and the weight scales the angle linearly, as it does for orbit.
     const half = runT(swirl(1.2), V0, F0, 0.5, ctx);
     expect(polarOf(half.v).theta - V0P.theta).toBeCloseTo(-0.3, 12);
-  });
-
-  it("(c″) orbit about the FRAME is a rigid spin in place", () => {
-    const ctx = makeCtx({ flight: 0.5, wrapDir: 1 });
-    const a = 0.5 * 1.2;
-    const distToCentre = (v: VertexState<number>): number =>
-      Math.hypot(v.x - F0.x, v.z - F0.z);
-
-    // RIGID: every vertex of the piece keeps its distance to the frame centre,
-    // and turns by exactly `a` about it.
-    for (const theta of [0.3, 1.9, -2.2]) {
-      for (const radius of [0.4, 2, 5]) {
-        const v: VertexState<number> = { ...V0, ...atPolar(theta, radius) };
-        const out = runT(orbit(1.2, { about: "frame" }), v, F0, 1, ctx);
-        expect(distToCentre(out.v)).toBeCloseTo(distToCentre(v), 12);
-        const before = Math.atan2(v.z - F0.z, v.x - F0.x);
-        const after = Math.atan2(out.v.z - F0.z, out.v.x - F0.x);
-        expect(Math.atan2(Math.sin(after - before), Math.cos(after - before)))
-          .toBeCloseTo(a, 12); // prettier-ignore
-      }
-    }
-
-    // The centre is the FIXED POINT: frame placement does not move. Direction
-    // and normal still advance — the piece turned, it just did not travel.
-    const out = runT(orbit(1.2, { about: "frame" }), V0, F0, 1, ctx);
-    expect(out.f.x).toBe(F0.x);
-    expect(out.f.z).toBe(F0.z);
-    expect(out.f.axial).toBe(F0.axial);
-    expect(out.f.orient).toBeCloseTo(F0.orient + a, 12);
-    expect(out.v.rot).toBeCloseTo(V0.rot + a, 12);
-    expect(out.v.axial).toBe(V0.axial);
-
-    // Revolution WITHOUT spin is the composition of the two: the frame travels
-    // by `a` while the piece's own facing returns to where it started.
-    const composed = runPipeline(
-      [orbit<number>(1.2), orbit<number>(-1.2, { about: "frame" })],
-      V0,
-      F0,
-      ctx,
-    );
-    expect(polarOf(composed.f).theta).toBeCloseTo(F0P.theta + a, 12);
-    expect(composed.f.orient).toBeCloseTo(F0.orient, 12);
-    expect(composed.v.rot).toBeCloseTo(V0.rot, 12);
   });
 
   it("(d) spread displaces along the WORKING DIRECTION — rot then spread IS the old seam flag", () => {
@@ -299,8 +255,8 @@ describe("transforms", () => {
     const ctx = makeCtx({ flight: 0.8, rank01: 0.5 });
 
     // approach: linear in w.
-    const full = runT(approach(3, 4), V0, F0, 1, ctx);
-    const half = runT(approach(3, 4), V0, F0, 0.5, ctx);
+    const full = runT(approach(3), V0, F0, 1, ctx);
+    const half = runT(approach(3), V0, F0, 0.5, ctx);
     expect(half.v.axial - V0.axial).toBeCloseTo(
       (full.v.axial - V0.axial) / 2,
       12,
@@ -319,17 +275,18 @@ describe("transforms", () => {
     );
 
     // ladder: linear in w.
-    const lFull = runT(ladder(5, 2), V0, F0, 1, ctx);
-    const lHalf = runT(ladder(5, 2), V0, F0, 0.5, ctx);
+    const rung = makeCtx({ flight: 0.8, rung: 5 });
+    const lFull = runT(ladder<number>(2), V0, F0, 1, rung);
+    const lHalf = runT(ladder<number>(2), V0, F0, 0.5, rung);
     expect(lHalf.v.axial - V0.axial).toBeCloseTo(
       (lFull.v.axial - V0.axial) / 2,
       12,
     );
   });
 
-  it('(f) ladder reads the piece\'s own rung when rungOf is "attr"', () => {
+  it("(f) ladder reads the piece's own rung", () => {
     const attr = runT(
-      ladder<number>("attr", 2),
+      ladder<number>(2),
       V0,
       F0,
       1,

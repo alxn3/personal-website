@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync, writeFileSync } from "node:fs";
 import * as THREE from "three/webgpu";
 import { NUM } from "../../ops/algebra";
-import { pieceField, type LiveRecipe, type PieceLanes } from "../../ops/cpu"; // prettier-ignore
+import { IDLE_EPS, lanesAt, pieceField, type LiveRecipe, type PieceLanes } from "../../ops/cpu"; // prettier-ignore
 import { shippedModel } from "./shipped-model";
 import { PART_CLASS, type OpCtx } from "../../ops/ops";
 import { DEPTH_THIN, WRAP_DIR, sheetTerm } from "../../ops/house";
@@ -51,9 +51,9 @@ import {
 } from "../flow";
 
 // ============================================================================
-// THE PIECE-FLOW MAP — src/lib/lens/PIECE-FLOW.md, rendered from story/flow.ts
-// and asserted byte-for-byte, so a wave that retunes a recipe fails here with
-// the new table in the diff.
+// THE PIECE-FLOW MAP — src/lib/lens/PIECE-FLOW.md, rendered from story/flow.ts.
+// An on-demand instrument: the test checks the checked-in map's shape and
+// coverage, not its bytes, so a retune shows in the regenerated diff.
 //
 // TO REGENERATE, after a deliberate change:
 //   LENS_PIECE_FLOW=1 npx vitest run src/lib/lens/story/__tests__/piece-flow.test.ts
@@ -156,13 +156,13 @@ Every piece's pose through the hero story in bore-cylindrical coordinates (the
 op algebra's own space), rendered from \`story/flow.ts\`'s
 \`pieceStateAt(p, key, table)\` — the real op pipeline on the NUM backend
 (\`ops/cpu.ts\` \`pieceField\`) at the channels \`storyStateAt(p)\` reports.
-Regenerate (the test pins the file byte-for-byte):
+Regenerate (an on-demand instrument — the test checks shape, not bytes):
 
     LENS_PIECE_FLOW=1 npx vitest run src/lib/lens/story/__tests__/piece-flow.test.ts
 
 **Roster.** \`lens_web_segmented.glb\` — ${meshes} mesh nodes, ${table.pieces.length} pieces (one per distinct \`_op*\` lane tuple; an adopted feature framed island by island can give a mesh several). By cast: ${roster}. Casts are core/visibility.ts's wink bands.
 
-**Deform set.** The hero pins \`${DEFORM_RECIPES.join(" / ")}\`; knobs rest at \`knobDefaults\` except \`assemble.keepScope\`, \`explode.bloom\` and \`explode.curl\` (story/envelopes.ts). Nothing moves outside p ∈ [${w0.toFixed(4)}, ${w1.toFixed(4)}]; every piece is on its seat there.
+**Deform set.** The hero pins \`${DEFORM_RECIPES.join(" / ")}\`; knobs rest at \`knobDefaults\` except \`assemble.keepScope\` and explode's \`bloom\`, \`curl\`, \`ringPhase\` and \`rebend\` (story/envelopes.ts). Nothing moves outside p ∈ [${w0.toFixed(4)}, ${w1.toFixed(4)}]; every piece is on its seat there.
 
 **Columns.** \`dTheta\`/\`dR\`/\`dX\`: the frame's displacement from its seat (rad, mm, mm). \`roll\`: turn in place about the bore (0 for a rigid revolution). \`bend\`: axial, the relative rotation of the piece's two ends, unsigned, 0 for any rigid motion. \`curl\`: circumferential and signed, extra arc curvature over the seat. \`stretch\` / \`stretch X\`: size round the bore and along the axis (1 = rigid; \`stretch X\` is a ratio of the piece's own axial extent). \`travel\`: distance from the seat. Authored pose only — no mechanism drive, placement or visibility; \`stretch\` reads a flat 1.0000 ("not measured") for the 15 axisymmetric pieces; the iris nodes' \`radius\` is from their own origin.
 
@@ -692,7 +692,7 @@ describe("the state at rest, and the state's own algebra", () => {
 
   /** ops/house.ts `sheetTerm` over a piece's lanes — who the sheet casts see. */
   function sheetLike(l: PieceLanes): boolean {
-    const ctx: OpCtx<number> = { A: NUM, t0: l.t0, R: l.R, rank01: l.rank01, layerPhase: l.layerPhase, halfSpan: l.halfSpan, partClass: l.partClass, phi: 0, d: 0, L: 0, yN: 0, off: 0, rung: l.rung, axi: l.axi, depth: l.depth, adopted: l.adopted, channel: 0, gateAt: () => ({ flight: 0, stick: 0 }), flight: 0, stick: 0, wrapDir: WRAP_DIR }; // prettier-ignore
+    const ctx: OpCtx<number> = { A: NUM, t0: l.t0, R: l.R, rank01: l.rank01, layerPhase: l.layerPhase, halfSpan: l.halfSpan, partClass: l.partClass, phi: 0, d: 0, L: 0, yN: 0, off: 0, height: 1, rung: l.rung, axi: l.axi, depth: l.depth, adopted: l.adopted, channel: 0, gateAt: () => ({ flight: 0, stick: 0 }), flight: 0, stick: 0, wrapDir: WRAP_DIR }; // prettier-ignore
     return sheetTerm(NUM, ctx) === 1;
   }
 
@@ -738,6 +738,9 @@ describe("the state at rest, and the state's own algebra", () => {
     let seatDiff = 0;
     let seated = 0;
     let deepest = 0;
+    /** the curl KNOB's own contribution: the deepest opening the live field
+     *  has beyond the curl-free build's (the rebend opens wedges too) */
+    let knobDeepest = 0;
     for (let i = 0; i <= N; i++) {
       const f = i / N;
       const p = atFrac(capR, f);
@@ -761,11 +764,14 @@ describe("the state at rest, and the state's own algebra", () => {
           if (!same) seatDiff++;
         }
         // the fall's own span only — the bloom past 0.72 is the rose's fold
-        if (f <= 0.6)
-          deepest = Math.min(
-            deepest,
-            pieceStateAt(p, row.key, table, live).curl,
+        if (f <= 0.6) {
+          const curl = pieceStateAt(p, row.key, table, live).curl;
+          deepest = Math.min(deepest, curl);
+          knobDeepest = Math.min(
+            knobDeepest,
+            curl - pieceStateAt(p, row.key, table, bare).curl,
           );
+        }
       }
     }
     expect(parkDiff, "pieces the curl moves at the park").toBe(0);
@@ -776,6 +782,9 @@ describe("the state at rest, and the state's own algebra", () => {
     // …and ALIVE in between: the wedge opens (curl < 0 — less turn than its
     // seated arc), by a good fraction of that arc's own ~0.63 rad
     expect(deepest, "how far open the fall gets").toBeLessThan(-0.1);
+    // …and the knob itself is a real share of that: ENDING_CURL at 0 leaves
+    // the rebend's opening alone and fails here
+    expect(knobDeepest, "the curl knob's own opening").toBeLessThan(-0.05);
   });
 
   it("PARKS EVEN: one ring, one radius, one angle for every piece on it", () => {
@@ -1299,5 +1308,147 @@ describe("the flow module's coverage", () => {
           `${name} @${p}`,
         ).toBe(channels[name] >= 1e-6);
     }
+  });
+});
+
+// ── THE GIRTH LAW, on the shipped vertices ──────────────────────────────────
+// Pairwise vertex distances, deformed over seated, per piece: a rigid motion
+// keeps every pair at exactly 1; a sheet on the sticker roll folds its far
+// pairs but never its NEAR ones (≤ 3 mm apart), which is where a tear or a
+// fold past the roll's centre shows. Measured while the piece is at least half
+// present (its wink opacity), over the cards departure and at the park.
+
+describe("the girth law on the shipped vertices", () => {
+  interface Body {
+    key: string;
+    lanes: PieceLanes;
+    verts: [number, number, number][];
+  }
+  const bodies: Body[] = [];
+  root.traverse((o) => {
+    if (!(o instanceof THREE.Mesh)) return;
+    const pos = o.geometry.getAttribute("position");
+    const byKey = new Map<string, Body>();
+    for (let i = 0; i < pos.count; i++) {
+      const l = lanesAt(o.geometry, i);
+      if (!l) return;
+      const k = `${l.t0},${l.R},${l.rank01},${l.layerPhase},${l.rung},${l.yMin},${l.depth},${l.adopted}`;
+      let b = byKey.get(k);
+      if (!b) {
+        b = { key: byKey.size ? `${o.name}#${byKey.size}` : o.name, lanes: l, verts: [] }; // prettier-ignore
+        byKey.set(k, b);
+      }
+      b.verts.push([pos.getX(i), pos.getY(i), pos.getZ(i)]);
+    }
+    bodies.push(...byKey.values());
+  });
+  const family = (key: string) => key.replace(/(_Seg\d+)?(#\d+)?$/, "");
+  const sheetLike = (l: PieceLanes): boolean =>
+    sheetTerm(NUM, { A: NUM, t0: l.t0, R: l.R, rank01: l.rank01, layerPhase: l.layerPhase, halfSpan: l.halfSpan, partClass: l.partClass, phi: 0, d: 0, L: 0, yN: 0, off: 0, height: 1, rung: l.rung, axi: l.axi, depth: l.depth, adopted: l.adopted, channel: 0, gateAt: () => ({ flight: 0, stick: 0 }), flight: 0, stick: 0, wrapDir: WRAP_DIR }) === 1; // prettier-ignore
+
+  const opacityAt = (l: PieceLanes, p: number): number => {
+    const w = unpackWink(l.wink);
+    if (!w) return 1;
+    return winkOpacity(w.threshold, w.channel === "shell" ? shellFadeAt(p) : interiorFadeAt(p)); // prettier-ignore
+  };
+
+  /** worst pair ratio over all pairs ≥ 0.5 mm apart, and over the NEAR pairs
+   *  (≤ 3 mm), from up to 40 anchor vertices against every vertex */
+  function girth(b: Body, live: LiveRecipe[]): { all: number; near: number } {
+    const f = pieceField(b.lanes, live);
+    const out: [number, number, number] = [0, 0, 0];
+    const moved = b.verts.map((q) => {
+      f(q[0], q[1], q[2], out);
+      return [q[0] + out[0], q[1] + out[1], q[2] + out[2]];
+    });
+    const n = b.verts.length;
+    const stride = Math.max(1, Math.floor(n / 24));
+    let all = 1;
+    let near = 1;
+    for (let i = 0; i < n; i += stride)
+      for (let j = 0; j < n; j++) {
+        if (j === i) continue;
+        const a = b.verts[i];
+        const c = b.verts[j];
+        const s = Math.hypot(a[0] - c[0], a[1] - c[1], a[2] - c[2]);
+        if (s < 0.5) continue;
+        const A = moved[i];
+        const C = moved[j];
+        const d = Math.hypot(A[0] - C[0], A[1] - C[1], A[2] - C[2]);
+        const r = Math.max(d / s, s / d);
+        if (r > all) all = r;
+        if (s <= 3 && r > near) near = r;
+      }
+    return { all, near };
+  }
+
+  it("the cards departure: deep sheets slide RIGID, thin rings do not tear, nothing folds past its roll", () => {
+    // the assemble channel's own window
+    let p0 = 1;
+    let p1 = 0;
+    for (let i = 0; i <= 2000; i++) {
+      const p = i / 2000;
+      if (storyStateAt(p).channels.assemble < IDLE_EPS) continue;
+      p0 = Math.min(p0, p);
+      p1 = Math.max(p1, p);
+    }
+    expect(p1 - p0).toBeGreaterThan(0.1);
+    const N = 14;
+    const worst = new Map<string, { all: number; near: number }>();
+    for (let i = 0; i <= N; i++) {
+      const p = p0 + ((p1 - p0) * i) / N;
+      const live = liveDeformAt(p);
+      for (const b of bodies) {
+        if (opacityAt(b.lanes, p) < 0.5) continue;
+        const g = girth(b, live);
+        const w = worst.get(b.key) ?? { all: 1, near: 1 };
+        worst.set(b.key, { all: Math.max(w.all, g.all), near: Math.max(w.near, g.near) }); // prettier-ignore
+      }
+    }
+    expect(worst.size).toBeGreaterThan(150);
+    let deepSheets = 0;
+    for (const [key, g] of worst) {
+      const b = bodies.find((x) => x.key === key)!;
+      const fam = family(key);
+      // the owner's rigid pair (5a4d50a) and every other deep non-kept sheet
+      if (
+        b.lanes.depth >= DEPTH_THIN &&
+        sheetLike(b.lanes) &&
+        b.lanes.partClass !== PART_CLASS.kept
+      ) {
+        // prettier-ignore
+        expect(g.all, `${key} depth ${b.lanes.depth} rigid`).toBeLessThan(1 + 1e-6); // prettier-ignore
+        deepSheets++;
+      }
+      // the thin rings the per-height front used to tear (20×, 10×, 5×)
+      if (/^(Cell_Flange|Cell_Collar|RearTube)$/.test(fam))
+        expect(g.near, `${key} near-pair tear`).toBeLessThan(2.2);
+      // no piece folds past its roll centre or shears across a 3 mm pair
+      expect(g.near, `${key} near-pair girth`).toBeLessThan(2.5);
+    }
+    for (const fam of ["Baffle_G2", "Barrel_Inner"])
+      expect([...worst.keys()].filter((k) => family(k) === fam).length, fam).toBeGreaterThan(3); // prettier-ignore
+    expect(deepSheets).toBeGreaterThan(8);
+  }, 30_000);
+
+  it("the park: adopted hardware keeps its OWN depth, so the rods and motor slide rigid", () => {
+    const live = liveDeformAt(atFrac(rangeOf("capsOn"), 0));
+    let hardware = 0;
+    let worstThin = 1;
+    for (const b of bodies) {
+      const g = girth(b, live);
+      if (b.lanes.adopted && b.lanes.partClass !== PART_CLASS.decal) {
+        hardware++;
+        expect(b.lanes.depth, `${b.key} depth`).toBeGreaterThan(DEPTH_THIN);
+        expect(g.all, `${b.key} rigid`).toBeLessThan(1 + 1e-6);
+      } else if (b.lanes.depth >= DEPTH_THIN && sheetLike(b.lanes)) {
+        expect(g.all, `${b.key} deep sheet rigid`).toBeLessThan(1 + 1e-6);
+      } else if (b.lanes.axi < 0.5) worstThin = Math.max(worstThin, g.near);
+    }
+    expect(hardware).toBeGreaterThan(10);
+    expect(bodies.some((b) => b.key.startsWith("Focus_GuideRods"))).toBe(true);
+    expect(bodies.some((b) => b.key.startsWith("Focus_Motor"))).toBe(true);
+    // the thin cast's re-bend strains a near pair by at most this
+    expect(worstThin).toBeLessThan(1.25);
   });
 });

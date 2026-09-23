@@ -228,12 +228,12 @@ const heroBand = bandOf("hero");
   #lens-hero {
     background: #f2eee4;
     --ink: #2c2822;
-    --ink-dim: rgba(44, 40, 34, 0.66);
-    --ink-faint: rgba(44, 40, 34, 0.45);
+    --ink-dim: rgba(44, 40, 34, 0.74);
+    --ink-faint: rgba(44, 40, 34, 0.69);
     --ink-ghost: rgba(44, 40, 34, 0.1);
     --ink-border: rgba(44, 40, 34, 0.18);
-    --olive: #66754f;
-    --orange: #b06a3c;
+    --olive: #5b6846;
+    --orange: #b06a3c; /* large type only; small text uses --highlight */
     /* scrim + caption halo pull from the paper. TWO LAYERS: the wide soft one
        carries paper-on-paper, and the tight second hugs the glyph edges for the
        frames where the reassembly fills the light stage with near-black. */
@@ -247,7 +247,7 @@ const heroBand = bandOf("hero");
     background: #1d1a14;
     --ink: #ece7da;
     --ink-dim: rgba(236, 231, 218, 0.6);
-    --ink-faint: rgba(236, 231, 218, 0.4);
+    --ink-faint: rgba(236, 231, 218, 0.55);
     --ink-ghost: rgba(236, 231, 218, 0.11);
     --ink-border: rgba(236, 231, 218, 0.15);
     --olive: #93a37f;
@@ -576,7 +576,7 @@ const heroBand = bandOf("hero");
     content: "○ ";
   }
   #scene-rail span.is-on {
-    color: var(--orange);
+    color: var(--highlight);
   }
   #scene-rail span.is-on::before {
     content: "● ";
@@ -588,7 +588,11 @@ const heroBand = bandOf("hero");
   #scroll-cue::after {
     content: " ↓";
     display: inline-block;
-    animation: scrollBob 1.8s ease-in-out infinite;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    #scroll-cue::after {
+      animation: scrollBob 1.8s ease-in-out infinite;
+    }
   }
   @keyframes scrollBob {
     0%,
@@ -653,11 +657,10 @@ const heroBand = bandOf("hero");
       driver?.onThemeChange(light);
     });
 
-    // Story mode keeps drawing with nothing dirty, so pause it once the pinned
-    // stage has (almost) left the viewport. The margin must be NEGATIVE: the
-    // page ends with part of the stage still geometrically under the viewport
-    // top, so a plain isIntersecting never goes false at max scroll. Wired
-    // BEFORE the reduced-motion return so the parked scene stops too.
+    // Pause the loop once the pinned stage has (almost) left the viewport. The
+    // margin is negative: at max scroll part of the stage is still under the
+    // viewport top. Wired before the reduced-motion return so the parked scene
+    // stops too.
     const stage = document.getElementById("lens-stage")!;
     new IntersectionObserver(
       ([entry]) => scene!.setPaused(!entry.isIntersecting),
@@ -665,12 +668,13 @@ const heroBand = bandOf("hero");
     ).observe(stage);
 
     if (reduce) {
-      // Park the scene at a fixed pose and never start the driver. Captions are
-      // unaffected. Accepted trade: the parked lens is ONE pose, so the
-      // per-scene cam.xs framing does not apply and a caption may pass over it.
-      scene.state.explodeTarget = 0.35;
-      scene.state.zoomTarget = 0.3;
-      scene.state.storyTarget = 0.82;
+      // Park the scene at one fixed pose, values snapped with their targets so
+      // nothing eases in, and never start the driver. A caption may pass over it.
+      const s = scene.state;
+      s.explode = s.explodeTarget = 0.35;
+      s.zoom = s.zoomTarget = 0.3;
+      s.story = s.storyTarget = 0.82;
+      scene.invalidate();
       return;
     }
 

@@ -8,6 +8,8 @@
 // onto the wormhole's fall window (flyStreakAt).
 // Owns aperture and focus (value AND target), the sky/warp uniforms, the
 // realistic↔ink blend, glass swap, room light, glint, dolly, body cover, fov.
+// Every value it writes is a pure function of p that agrees with the driver's
+// tile at both span edges; the enter/exit hysteresis gates MOUNTS only.
 // LAZY: statically imports optics/ node graphs, so reached only through
 // hero-driver's import(); never re-exported from index.ts.
 import type { CameraPose, SceneHandle } from "../core/scene";
@@ -20,6 +22,7 @@ import {
   REVEAL_END,
   SKY_OUT_END,
   DIVE_P0,
+  FLY_EXIT_END,
 } from "./story";
 import {
   FLY,
@@ -48,9 +51,10 @@ export const CAM_IN = flyR.p0;
 // DIVE_P0 — the end of that approach — lives in story/story.ts, since
 // hero-driver needs it and cannot import from this lazy module.
 /** The span's last frame, where the dive hands the scene back. It must sit PAST
- *  the fov hand-back (FOV_BACK): exit() writes a `null` override, which is a
- *  cut, so the two fovs have to already agree by here. */
-export const EXIT_END = atFrac(rwR, 0.58);
+ *  the fov hand-back (FOV_BACK) and the iris hand-back (IRIS_BACK): exit()
+ *  writes a `null` override, which is a cut, so every channel has to already
+ *  agree with the story's own by here. */
+export const EXIT_END = FLY_EXIT_END;
 /** Where the transmissive glass hands back, under the full body cover so the
  *  material cut is unseen. It must precede INK_RETURN[0]: ink over the dive's
  *  clones would stomp them. */
@@ -220,6 +224,25 @@ export const flyApertureAt = (pFly: number) =>
 export const flyFocusAt = (pFly: number) =>
   smoothstep(FLY.pFocus[0], FLY.pFocus[1], pFly);
 
+/** THE IRIS HAND-BACK: both dive channels return to the story's rest (aperture
+ *  shut, focus home — story/envelopes.ts preShutAt is 1 here) under the body
+ *  cover, so the span's edge is a value the driver's tile already holds. */
+export const IRIS_BACK = span("fly.irisBack", [
+  atFrac(tR, 0.5),
+  atFrac(tR, 0.9),
+]);
+
+export const flyIrisBackAt = (p: number) =>
+  smoothstep(IRIS_BACK[0], IRIS_BACK[1], p);
+
+/** The aperture channel across the whole span, in story p. */
+export const flySpanApertureAt = (p: number) =>
+  lerp(flyApertureAt(flyDiveP(p)), FLY.apertureShut, flyIrisBackAt(p));
+
+/** The focus channel across the whole span, in story p. */
+export const flySpanFocusAt = (p: number) =>
+  lerp(flyFocusAt(flyDiveP(p)), 0, flyIrisBackAt(p));
+
 export function createStoryFly(scene: SceneHandle): {
   /** every write the span owns, at the eased story p */
   evaluate(pE: number): void;
@@ -247,6 +270,17 @@ export function createStoryFly(scene: SceneHandle): {
   watchTheme((l) => {
     rewrapBg = l ? rwR.scene.bgLight : rwR.scene.bg;
   });
+  /** The two sky uniforms the throat swell scales. `__lensStars` may retune
+   *  either live, so a value that is not this module's own last write is the
+   *  new base the swell multiplies. */
+  const swellOf = (u: { value: number }) => ({ u, base: u.value, wrote: NaN });
+  const swellSize = swellOf(uStarSize);
+  const swellGain = swellOf(uStreakGain);
+  const writeSwell = (s: ReturnType<typeof swellOf>, factor: number) => {
+    if (s.u.value !== s.wrote) s.base = s.u.value;
+    s.wrote = s.base * factor;
+    s.u.value = s.wrote;
+  };
 
   function enter(p: number) {
     // The spans come off the CPU geometry in its rest pose, so a measurement
@@ -271,8 +305,6 @@ export function createStoryFly(scene: SceneHandle): {
     // the glass only mounts below its own edge: activating from above must not
     // clone meshes wearing ink, which would poison the clone cache
     if (p <= GLASS_OUT) mountGlass();
-    // the always-on dust would float in front of the sky
-    scene.setDust(false);
     // fire-and-forget; a mount that never lands leaves a dive minus the stars
     void scene.enableStarfield(true).then((ok) => {
       if (!ok) console.warn("lens fly: starfield failed to start");
@@ -313,7 +345,6 @@ export function createStoryFly(scene: SceneHandle): {
 
   function exit() {
     releaseGlass();
-    scene.setDust(true);
     scene.setRoomLight(1);
     scene.setGlassGlint(1);
     scene.setBodyFade(1);
@@ -326,8 +357,8 @@ export function createStoryFly(scene: SceneHandle): {
     uWormhole.value = 0;
     uStarStreak.value = 0;
     uStarRing.value = 0;
-    uStreakGain.value = 1;
-    uStarSize.value = 1;
+    writeSwell(swellGain, 1);
+    writeSwell(swellSize, 1);
     // before the unmount: setSkyDim is a no-op on an unmounted starfield, so a
     // dim left on would still be there for the next mount
     scene.setSkyDim(0, rewrapBg);
@@ -338,7 +369,6 @@ export function createStoryFly(scene: SceneHandle): {
   return {
     warm,
     evaluate(p) {
-      const pFly = flyDiveP(p);
       const pose = flyPoseAt(p);
       // leave first, then the look, then arrive: exit() must return the
       // elements' materials before any ink does, and enter() clones them only
@@ -359,11 +389,12 @@ export function createStoryFly(scene: SceneHandle): {
       // a hysteresis below it, so a parked scrub cannot thrash the clones
       if (glassOn && p > GLASS_OUT) releaseGlass();
       else if (!glassOn && p < GLASS_OUT - HYST) mountGlass();
-      // value AND target: the driver's iris writes land before this call
-      const a = flyApertureAt(pFly);
+      // value AND target: the driver's iris writes land before this call, and
+      // both laws equal its tile across the hysteresis bands
+      const a = flySpanApertureAt(p);
       scene.state.aperture = a;
       scene.state.apertureTarget = a;
-      const f = flyFocusAt(pFly);
+      const f = flySpanFocusAt(p);
       scene.state.focus = f;
       scene.state.focusTarget = f;
       // no stars before the dive and one window back out, both folded into
@@ -387,13 +418,14 @@ export function createStoryFly(scene: SceneHandle): {
       uStarStreak.value = streak;
       uStarRing.value = warp;
       const swell = flyThroatSwellAt(p);
-      uStreakGain.value = 1 + THROAT_SWELL.streak * swell;
-      uStarSize.value = 1 + THROAT_SWELL.size * swell;
+      writeSwell(swellGain, 1 + THROAT_SWELL.streak * swell);
+      writeSwell(swellSize, 1 + THROAT_SWELL.size * swell);
       // the dive itself: the lens slides past the parked camera. At DIVE_P0 the
-      // story row's fov IS this pose's (FLY.fovFar), so the way in has no step.
+      // story row's fov IS this pose's (FLY.fovFar), so the way in has no step;
+      // below it the story chain owns the fov, hysteresis band included.
       dollyNow = flyDollyAt(p);
       scene.setLensDolly(dollyNow);
-      scene.setStoryFov(flyFovOf(pose), flyFovMixAt(p));
+      scene.setStoryFov(p < DIVE_P0 ? null : flyFovOf(pose), flyFovMixAt(p));
       scene.setBodyFade(flyBodyFadeAt(p));
       // each element goes down as the camera arrives at it: screen-space
       // transmission blows up from inside, so the camera must never be inside

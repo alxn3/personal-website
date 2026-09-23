@@ -146,7 +146,7 @@ const shadingTransitions = [
                       type="button"
                       data-shading={m.id}
                       aria-pressed={m.id === "ink" ? "true" : "false"}
-                      class="border-border text-text-muted hover:text-text aria-pressed:bg-accent aria-pressed:border-accent cursor-pointer rounded-md border px-2.5 py-1 text-xs font-medium transition-colors aria-pressed:text-white"
+                      class="border-border text-text-muted hover:text-text aria-pressed:bg-accent aria-pressed:border-accent aria-pressed:text-bg cursor-pointer rounded-md border px-2.5 py-1 text-xs font-medium transition-colors"
                     >
                       {m.label}
                     </button>
@@ -207,7 +207,7 @@ const shadingTransitions = [
                   type="button"
                   data-animation="none"
                   aria-pressed="true"
-                  class="border-border text-text-muted hover:text-text aria-pressed:bg-accent aria-pressed:border-accent cursor-pointer rounded-md border px-2.5 py-1 text-xs font-medium transition-colors aria-pressed:text-white"
+                  class="border-border text-text-muted hover:text-text aria-pressed:bg-accent aria-pressed:border-accent aria-pressed:text-bg cursor-pointer rounded-md border px-2.5 py-1 text-xs font-medium transition-colors"
                 >
                   None
                 </button>
@@ -217,7 +217,7 @@ const shadingTransitions = [
                       type="button"
                       data-animation={a.id}
                       aria-pressed="false"
-                      class="border-border text-text-muted hover:text-text aria-pressed:bg-accent aria-pressed:border-accent cursor-pointer rounded-md border px-2.5 py-1 text-xs font-medium transition-colors aria-pressed:text-white"
+                      class="border-border text-text-muted hover:text-text aria-pressed:bg-accent aria-pressed:border-accent aria-pressed:text-bg cursor-pointer rounded-md border px-2.5 py-1 text-xs font-medium transition-colors"
                     >
                       {a.label}
                     </button>
@@ -429,6 +429,7 @@ const shadingTransitions = [
         }
         fallback.classList.replace("hidden", "flex");
       }
+      document.getElementById("controls-panel")?.setAttribute("inert", "");
       return;
     }
 
