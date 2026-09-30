@@ -1,9 +1,12 @@
+// The op deform on the CPU, at any point of a piece: runs the generated JS
+// deform (ops/emit/deform.js.ts, same source as the shader). Allocation-free.
+
 import type * as THREE from "three/webgpu";
 import { NUM } from "./algebra";
 import { makeRecipes, type Recipe } from "./recipes";
 import { LAYOUT } from "./emit/layout";
 import { opsFold } from "./emit/deform.js";
-import { packFlags, unpackFlags } from "./frames";
+import { frameOf, packFlags } from "./frames";
 import {
   IDLE_EPS,
   opsSpinBox,
@@ -13,39 +16,27 @@ import {
   RECIPE_NAMES,
 } from "./host";
 
-// CPU EVALUATION OF THE OP DEFORM at an ARBITRARY POINT of a piece: the
-// emitted chain on its JS dialect (ops/emit/deform.js.ts) — the same source
-// the shader runs — over the packed frame lanes and uniforms. No per-point
-// allocation: every input is a reused object and the fold writes an out-param.
-
 export { IDLE_EPS };
 
-/** The NUM recipe table, built on first use: only `liveRecipes` (dev and
- *  tests) reads it, so the homepage never pays for it. */
+/** The numeric recipes, built on first use. */
 let recipes: Record<Recipe<number>["name"], Recipe<number>> | null = null;
 const recipesOf = () => (recipes ??= makeRecipes<number>(NUM));
 
-/** A summed position delta, xyz. Callers own the array (no allocation). */
+/** A position delta, xyz. */
 export type Delta = [number, number, number];
 
-/** One recipe of a SNAPSHOT: its channel and knob values as plain numbers. A
- *  knob left out rests at the recipe's default. */
+/** A recipe's channel and knob values; missing knobs use their defaults. */
 export interface LiveRecipe {
   recipe: Recipe<number>;
   channel: number;
   knobs: Record<string, number>;
 }
 
-/** The summed, hard-gated delta at an arbitrary point of one piece, in the
- *  mesh's own LOCAL space. Written into `out`, which is returned. */
-export type PieceField = (
-  qx: number,
-  qy: number,
-  qz: number,
-  out: Delta,
-) => Delta;
+/** The summed delta at a point of one piece, in mesh-local space; writes and
+ *  returns `out`. */
+type PieceField = (qx: number, qy: number, qz: number, out: Delta) => Delta;
 
-/** The packed `_op*` lanes of one piece, as ops/frames.ts wrote them. */
+/** One piece's `_op*` frame values, unpacked. */
 export interface PieceLanes {
   t0: number;
   R: number;
@@ -59,8 +50,7 @@ export interface PieceLanes {
   yMax: number;
   depth: number;
   adopted: number;
-  /** the packed wink lane (core/visibility.ts) — the materials' term, not the
-   *  deform's */
+  /** Packed fade lane (core/visibility.ts); not used by the deform. */
   wink: number;
 }
 
@@ -73,7 +63,7 @@ interface V4 {
 const v4 = (x = 0, y = 0, z = 0, w = 0): V4 => ({ x, y, z, w });
 const COMP = ["x", "y", "z", "w"] as const;
 
-/** The `a`/`b`/`y` vec4s of a piece — the attribute lanes the fold reads. */
+/** Pack a piece's values into the three vec4s the deform reads. */
 function packLanes(l: PieceLanes): [V4, V4, V4] {
   return [
     v4(l.t0, l.R, l.halfSpan * 2, l.rank01),
@@ -82,8 +72,7 @@ function packLanes(l: PieceLanes): [V4, V4, V4] {
   ];
 }
 
-/** The channel and knob uniforms a snapshot describes: an absent recipe is
- *  idle, an absent knob rests at its default. */
+/** Pack recipe values into channel and knob uniforms (missing = idle/default). */
 function packLive(live: LiveRecipe[]): { ch: V4; k: V4[] } {
   const ch = v4();
   const k = Array.from({ length: LAYOUT.vec4Count }, () => v4());
@@ -104,7 +93,7 @@ function packLive(live: LiveRecipe[]): { ch: V4; k: V4[] } {
 const scratchP = { x: 0, y: 0, z: 0 };
 const scratchOut = new Float64Array(4);
 
-/** The field over fixed lanes and uniforms; `out` takes the delta's xyz. */
+/** The deform field over fixed lanes and uniforms. */
 function fieldOf(
   [a, b, y]: [V4, V4, V4],
   ch: V4,
@@ -122,71 +111,46 @@ function fieldOf(
   };
 }
 
-/** The field of one piece from its lanes and a SNAPSHOT of live recipes. */
+/** The deform field of one piece for the given recipe values. */
 export function pieceField(lanes: PieceLanes, live: LiveRecipe[]): PieceField {
   const { ch, k } = packLive(live);
   return fieldOf(packLanes(lanes), ch, k);
 }
 
-/** One recipe's knob values as plain numbers, read off the host's boxes. */
-function knobValues(
-  name: (typeof RECIPE_NAMES)[number],
-): Record<string, number> {
-  const boxes = recipeKnobs()[name];
-  const knobs: Record<string, number> = {};
-  for (const k in boxes) knobs[k] = boxes[k].value;
-  return knobs;
-}
-
-/** The recipes currently OFF their seat, as a SNAPSHOT of the host's channel
- *  and knob values. */
+/** Snapshot of the recipes currently active, with their knob values. */
 export function liveRecipes(): LiveRecipe[] {
   const ch = recipeChannels();
   const live: LiveRecipe[] = [];
   for (const name of RECIPE_NAMES) {
     const channel = ch[name].value;
     if (channel < IDLE_EPS) continue;
-    live.push({ recipe: recipesOf()[name], channel, knobs: knobValues(name) });
+    const knobs = Object.fromEntries(
+      Object.entries(recipeKnobs()[name]).map(([k, box]) => [k, box.value]),
+    );
+    live.push({ recipe: recipesOf()[name], channel, knobs });
   }
   return live;
 }
 
-/** The lanes of the piece owning vertex `i`, or null when the geometry carries
- *  no `_op*` attributes. */
+/** Frame values of the piece owning vertex `i`, or null if the geometry has none. */
 export function lanesAt(
   geo: THREE.BufferGeometry,
   i: number,
 ): PieceLanes | null {
-  // Packed frame lanes: A = (t0, R, span, rank), B = (phase, class, rung,
-  // flags), Y = (yMin, yMax, depth, wink).
-  const fa = geo.getAttribute("_opA");
-  const fb = geo.getAttribute("_opB");
-  const fy = geo.getAttribute("_opY");
-  if (!fa || !fb || !fy) return null;
-  const { axi, adopted } = unpackFlags(fb.getW(i));
+  const f = frameOf(geo, i);
+  if (!f) return null;
+  const { span, rank, phase, cls, ...rest } = f;
   return {
-    t0: fa.getX(i),
-    R: fa.getY(i),
-    halfSpan: fa.getZ(i) * 0.5,
-    rank01: fa.getW(i),
-    layerPhase: fb.getX(i),
-    partClass: fb.getY(i),
-    rung: fb.getZ(i),
-    axi,
-    yMin: fy.getX(i),
-    yMax: fy.getY(i),
-    depth: fy.getZ(i),
-    adopted,
-    wink: fy.getW(i),
+    ...rest,
+    halfSpan: span * 0.5,
+    rank01: rank,
+    layerPhase: phase,
+    partClass: cls,
   };
 }
 
-/**
- * Bind `geo`'s frame lanes: hands back the deform field of the piece owning a
- * given VERTEX index, or `null` when the geometry carries no `_op*` attributes.
- * Per vertex, because a mesh can carry several pieces; lanes are constant
- * within one piece, so the field can be sampled at non-vertex points.
- */
+/** For a geometry, a function from vertex index to the deform field of that
+ *  vertex's piece; null if the geometry has no frames. */
 export function pieceFields(
   geo: THREE.BufferGeometry,
   live: LiveRecipe[],
@@ -196,11 +160,8 @@ export function pieceFields(
   return (i) => fieldOf(packLanes(lanesAt(geo, i)!), ch, k);
 }
 
-/**
- * host.ts's `unspinY` on numbers, in place: a mesh under an off-axis spin pivot
- * has its delta added INSIDE the pivot's rotation, so the delta must be un-spun
- * by the pivot's live angle. Identity for untagged meshes.
- */
+/** Undo a spin pivot's rotation on a delta, in place (see host.ts spin pivots).
+ *  No-op for untagged meshes. */
 export function unspinDelta<D extends Delta | Float64Array>(
   mesh: THREE.Object3D | null | undefined,
   d: D,
@@ -216,20 +177,13 @@ export function unspinDelta<D extends Delta | Float64Array>(
   return d;
 }
 
-// ── The frame-loop reader ───────────────────────────────────────────────────
-
-export interface PointDisplacer {
-  /** Displace ONE point of the mesh's SEATED geometry: mesh-LOCAL in, mesh-LOCAL
-   *  out (written in place); callers take it to world via `matrixWorld`. */
+interface PointDisplacer {
+  /** Move a seated mesh-local point by the deform, in place. */
   displace(point: THREE.Vector3): THREE.Vector3;
 }
 
-/**
- * A mesh's point displacer against the host's LIVE channels and knobs, read
- * at each call straight off the packed uniforms. Lanes come from VERTEX 0, so
- * on a multi-piece mesh this is the field of its FIRST piece; a mesh without
- * `_op*` attributes gets the identity.
- */
+/** Displace points by a mesh's live deform, for use in the frame loop. Uses the
+ *  piece of vertex 0; identity for a mesh without frames. */
 export function seatedPointDisplacer(mesh: THREE.Mesh): PointDisplacer {
   const lanes = lanesAt(mesh.geometry, 0);
   if (!lanes) return { displace: (point) => point };
@@ -237,7 +191,6 @@ export function seatedPointDisplacer(mesh: THREE.Mesh): PointDisplacer {
   const { channels: ch, knobs: k } = packedUniforms;
   return {
     displace(point) {
-      // the hard idle gate: nothing moved, so the point is returned untouched
       if (ch.x < IDLE_EPS && ch.y < IDLE_EPS && ch.z < IDLE_EPS && ch.w < IDLE_EPS) return point; // prettier-ignore
       const d = unspinDelta(mesh, opsFold(point, a, b, y, ch, k, scratchOut));
       return point.set(point.x + d[0], point.y + d[1], point.z + d[2]);

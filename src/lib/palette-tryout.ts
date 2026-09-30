@@ -1,8 +1,6 @@
-// PALETTE TRY-OUT picker — temporary exploration UI (2026-08-27), the runtime
-// half of styles/palettes-tryout.css. Activated by `?palette` in the URL or a
-// previously picked variant in localStorage; sets `data-palette` on <html> and
-// persists it so the pick survives navigation. DELETE with the stylesheet once
-// a direction is chosen.
+// Temporary palette picker for styles/palettes-tryout.css. Shown with
+// `?palette` or once a variant is stored; sets `data-palette` on <html>.
+// Delete together with the stylesheet once a palette is chosen.
 
 const KEY = "palette-tryout";
 const VARIANTS = ["current", "sharp", "ember", "field", "poster"] as const;
@@ -24,6 +22,7 @@ export function initPaletteTryout(): void {
     "position:fixed;bottom:12px;left:12px;z-index:9999;display:flex;gap:4px;" +
     "padding:6px;border-radius:8px;background:var(--surface);border:1px solid var(--border);" +
     "font:11px/1 var(--font-mono);";
+  const marks: (() => void)[] = [];
   for (const v of VARIANTS) {
     const b = document.createElement("button");
     b.textContent = v;
@@ -40,9 +39,9 @@ export function initPaletteTryout(): void {
     b.addEventListener("click", () => {
       localStorage.setItem(KEY, v);
       apply(v);
-      for (const el of bar.querySelectorAll("button")) el.dispatchEvent(new Event("mark")); // prettier-ignore
+      for (const m of marks) m();
     });
-    b.addEventListener("mark", mark);
+    marks.push(mark);
     mark();
     bar.appendChild(b);
   }

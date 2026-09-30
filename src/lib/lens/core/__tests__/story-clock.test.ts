@@ -8,9 +8,8 @@ import {
 } from "../scene";
 import { lerp } from "../math";
 
-// THE ONE CLOCK: core/scene's tick eases every channel with `easeStep`, so the
-// laws of the ease — its 60 Hz identity, its frame-rate independence, its exact
-// rest — are pinned on the function the loop calls.
+// easeStep, which tick() uses for every channel: exact at 60 Hz, the same at
+// any frame rate, and exactly at rest once settled.
 
 /** frames until `|target − value|` first drops under `eps`, at `hz` */
 const settleMs = (hz: number, eps = 1e-3) => {
@@ -56,7 +55,7 @@ describe("the channel ease", () => {
     }
     expect(Object.is(v, 0)).toBe(true);
     expect(frames).toBeLessThan(60);
-    // at rest the step is the identity — the idle gate reads "no change"
+    // at rest the step changes nothing
     expect(easeStep(0, 0, EASE_FRAME_MS)).toBe(0);
     expect(easeStep(0.37, 0.37, 7)).toBe(0.37);
   });

@@ -1,35 +1,24 @@
-// The internals scene's AMBIENT CHOREOGRAPHY — the story's only motion that
-// runs on TIME instead of scroll: the focus group racks and the iris breathes
-// while the shell is off, both parked at zero outside the scene.
-//
-// PHASE-CONTINUOUS, NOT WALL-CLOCK: the loops read the tick's ACCUMULATED dt,
-// never performance.now(), since the hero stops rendering when the canvas
-// leaves the viewport.
-//
-// ONE OWNER INSIDE THE SPAN: this module and hero-driver both write from the
-// evaluate step, separated by RANGE, not order. Both channels are written
-// value AND target, so the ease can never chase a stale target.
-//
-// THE HANDOFF: the aperture must reach the fly-through's parked f/22 with no
-// jump, so the breath is dead before the pre-shut ramp starts.
+// The internals scene's ambient motion, which runs on time rather than scroll:
+// the focus group racks back and forth and the iris breathes. It runs on the
+// frame's accumulated dt (not wall-clock), so it pauses when the hero does.
+// Inside its span this module, not hero-driver, writes focus and aperture.
 
 import type { SceneHandle } from "../core/scene";
 import { clamp01, smoothstep } from "../core/math";
 import { rangeOf, atFrac } from "./story";
 import { preShutAt } from "./envelopes";
 
-const inR = rangeOf("internals");
-const caR = rangeOf("cards");
+const internals = rangeOf("internals");
+const cards = rangeOf("cards");
 
-/** Lead-in slack: the ambient starts writing a touch before the scene, where
- *  both laws are 0, so the two writers agree over the overlap. */
+/** Start writing slightly early, while both writers' values are 0. */
 const LEAD_IN = 0.02;
 
-/** one full rack, out and back, in ms */
+/** One focus rack, out and back, ms. */
 const RACK_MS = 7000;
-/** one full breath, open and back down, in ms */
+/** One iris breath, ms. */
 const BREATH_MS = 5000;
-/** how far the iris breathes: f/2.8 to roughly f/8 on the HUD's stop table */
+/** How far the iris breathes (f/2.8 to about f/8). */
 const BREATH_DEPTH = 0.55;
 
 export interface InternalsEnv {
@@ -39,60 +28,50 @@ export interface InternalsEnv {
   rack: number;
 }
 
-/** Both ambient envelopes at story position `p`, zero outside the scene. One
- *  rise, two falls: the breath must be gone before the pre-shut ramp starts,
- *  while the rack may run on into the dive. */
+/** Both amplitudes at p. They start in the cards scene, once the mechanism is
+ *  bare; the breath ends before the aperture's pre-shut ramp starts. */
 export const internalsEnvAt = (p: number): InternalsEnv => {
-  // the ambient wakes in the CARDS scene, where the peel has already bared the
-  // mechanism, not at the internals boundary
-  const wake = smoothstep(atFrac(caR, 0.15), atFrac(caR, 0.35), p);
+  const wake = smoothstep(atFrac(cards, 0.15), atFrac(cards, 0.35), p);
   return {
-    breath: wake * (1 - smoothstep(atFrac(inR, 0.5), atFrac(inR, 0.6), p)),
-    rack: wake * (1 - smoothstep(atFrac(inR, 0.8), atFrac(inR, 0.95), p)),
+    breath:
+      wake *
+      (1 - smoothstep(atFrac(internals, 0.5), atFrac(internals, 0.6), p)),
+    rack:
+      wake *
+      (1 - smoothstep(atFrac(internals, 0.8), atFrac(internals, 0.95), p)),
   };
 };
 
-/** The focus channel inside the span: one full rack every RACK_MS, scaled by
- *  the rack envelope. A raised cosine, so the loop starts and ends at focus 0. */
+/** Focus at loop time t: one rack every RACK_MS, starting and ending at 0. */
 export const internalsFocusAt = (t: number, env: number): number =>
   env * (0.5 - 0.5 * Math.cos((2 * Math.PI * t) / RACK_MS));
 
-/** The breathing part of the aperture channel — what gets ADDED to the pre-shut
- *  ramp. Raised cosine again, so killing the envelope never strands it
- *  half-shut. */
+/** The breath added to the aperture at loop time t, starting and ending at 0. */
 export const internalsBreathAt = (t: number, p: number): number =>
   internalsEnvAt(p).breath *
   BREATH_DEPTH *
   (0.5 - 0.5 * Math.cos((2 * Math.PI * t) / BREATH_MS));
 
-/** The whole aperture channel inside the span: the story's pre-shut ramp plus
- *  the ambient breath. The two must not overlap — the breath envelope is 0
- *  where the ramp starts. */
+/** The aperture inside the span: the shared pre-shut ramp plus the breath. */
 export const internalsApertureAt = (t: number, p: number): number =>
-  // one ramp, not two: `preShutAt` is the same function hero-driver writes
-  // OUTSIDE this span, so the law is continuous across both scene edges
   clamp01(preShutAt(p) + internalsBreathAt(t, p));
 
-/** Start the ambient. Registers a scene.onEvaluate callback for the life of
- *  the page; the hero's scene is never disposed, so there is no teardown. */
+/** Start the ambient motion for the life of the page. */
 export function createInternalsAmbient(scene: SceneHandle): void {
-  /** the PHASE clock: accumulates only while the span is active and RESETS on
-   *  every re-entry, so both loops start from their zero (focus home, iris
-   *  open) rather than mid-stroke */
+  /** loop time, ms; reset on every entry so both loops start from rest */
   let tAcc = 0;
   let inside = false;
   scene.onEvaluate((p, dt) => {
-    if (p < caR.p0 - LEAD_IN || p > inR.p1) {
+    if (p < cards.p0 - LEAD_IN || p > internals.p1) {
       inside = false;
       return false;
     }
     if (!inside) {
       inside = true;
-      tAcc = 0; // re-entry: both loops restart from home
+      tAcc = 0;
     }
     const env = internalsEnvAt(p);
-    // the phase clock runs only while an envelope is open: with both shut the
-    // writes below are constants of p, and the scene may sleep
+    // the clock runs only while a loop is live; otherwise the scene may sleep
     const live = env.rack > 0 || env.breath > 0;
     if (live) tAcc += dt;
     const f = internalsFocusAt(tAcc, env.rack);

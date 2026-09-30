@@ -37,8 +37,8 @@ const demoSrc = url.startsWith("/")
 ---
 
 <ProjectLayout title={project.data.title} description={project.data.summary}>
-  <!-- Mobile scrim: sits under the drawers, above the demo. It starts at
-       the header's bottom edge so the top-bar toggles stay clickable. -->
+  <!-- Mobile scrim under the drawers; starts below the header so its
+       toggles stay clickable. -->
   <div
     class="fixed inset-x-0 top-14 bottom-0 z-30 bg-black/50 lg:hidden"
     x-show="projects || description"
@@ -64,8 +64,8 @@ const demoSrc = url.startsWith("/")
   </main>
 </ProjectLayout>
 
-<!-- pre-paint panel-state applier — MUST stay inline (parse-time) and in sync
-     with `projectPanels` in src/lib/alpine.ts -->
+<!-- Applies saved panel state before paint; must match `projectPanels` in
+     src/lib/alpine.ts. -->
 <script is:inline define:vars={{ DESKTOP_MEDIA }}>
   (() => {
     let s = null;

@@ -1,55 +1,40 @@
 ---
 /**
- * A tracking annotation pinned to a PART of the 3D lens: a dot on the named
- * model node's live screen position, a leader line, and a mono label.
+ * A dot, leader line and label that follow one model node on screen:
  *
- *   <LensPin scene="internals" track="Focus_LeadScrew" label="STM LEAD SCREW" />
+ *   <LensPin scene="internals" track="Focus_LeadScrew" label="STM lead screw" />
  *
- * `scene` ties the pin's fade to a story scene, whose band the driver writes
- * into `--beat-visibility`. The driver positions every `[data-track]` element
- * from SceneHandle.onFrame's projector each frame, so pins must live in a
- * full-stage overlay (NOT the centred caption-band column) for their
- * coordinates to line up with the canvas. Anchor only to SOLID parts —
- * shader-deformed shell wedges keep their object transform, so their anchor
- * would sit at the un-exploded position.
+ * The driver moves every [data-track] element each frame, so pins must sit in
+ * a full-stage overlay. Track solid parts only: shader-deformed shell pieces
+ * report their un-exploded position.
  */
 interface Props {
-  /** StoryScene id — when the pin is visible (fade band). */
+  /** Story scene id whose band fades the pin. */
   scene: string;
   /** Model node name to follow, e.g. "Focus_LeadScrew", "Element_12". */
   track: string;
-  /** Label text (or use the slot for custom markup). */
-  label?: string;
-  /** Which side of the dot the label sits on. Default "right". */
+  label: string;
+  /** Side of the dot the label sits on. */
   side?: "left" | "right";
-  class?: string;
 }
-const { scene, track, label, side = "right", class: className } = Astro.props;
+const { scene, track, label, side = "right" } = Astro.props;
 ---
 
-<div
-  class:list={["lens-pin", className]}
-  data-beat={scene}
-  data-track={track}
-  data-side={side}
->
+<div class="lens-pin" data-beat={scene} data-track={track} data-side={side}>
   <span class="pin-dot" aria-hidden="true"></span>
-  <span class="pin-label"><slot>{label}</slot></span>
+  <span class="pin-label">{label}</span>
 </div>
 
 <style>
-  /* The root is a ZERO-SIZE point placed on the tracked part each frame (the
-     scroll driver sets transform: translate(x, y)); dot/label hang off it. */
+  /* A zero-size point the driver moves onto the part via transform. */
   .lens-pin {
     position: absolute;
     top: 0;
     left: 0;
     width: 0;
     height: 0;
-    /* the driver writes this scene's band into --beat-visibility each frame;
-       with none the pin stays hidden. The extra ramp waits for the camera to
-       ARRIVE — the band lights captions during the transit, but a pin points at
-       a 3D position and would otherwise trail a pile. */
+    /* hidden without a driver; the second factor waits for the camera to
+       arrive (30% into the scene) before showing */
     opacity: calc(
       var(--beat-visibility, 0) * clamp(0, (var(--beat-local, 0) - 0.3) * 6, 1)
     );
@@ -65,7 +50,7 @@ const { scene, track, label, side = "right", class: className } = Astro.props;
     border-radius: 50%;
     background: var(--orange, #d18a5d);
     box-shadow: 0 0 0 3px rgba(209, 138, 93, 0.22);
-    transform: translate(-50%, -50%); /* centred exactly on the anchor */
+    transform: translate(-50%, -50%);
   }
   .pin-label {
     position: absolute;
@@ -101,8 +86,7 @@ const { scene, track, label, side = "right", class: className } = Astro.props;
     right: -24px;
   }
 
-  /* Phones: the outward labels run off a narrow screen, and the caption band
-     already carries the story. Re-enable display via `class` to override. */
+  /* Phones: labels would run off screen. */
   @media (max-width: 760px) {
     .lens-pin {
       display: none;

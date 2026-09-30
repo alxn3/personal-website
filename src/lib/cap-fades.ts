@@ -1,21 +1,6 @@
-// Hero caption fades, fallback path: browsers without `animation-timeline:
-// view()` get an IntersectionObserver that lights `.is-in` on the ONE band the
-// reader is in (bands overlap, so applyCapFades arbitrates). It observes the
-// BANDS, never the captions — a sticky caption rides its band's bottom edge a
-// viewport past the scene's end. Standalone on purpose: imports nothing from
-// lib/lens and ships in its own <script>, so a failed 3D chunk cannot take the
-// captions with it. Additive: CSS hides captions only under `.cap-io`, and
-// `.cap-io-armed` enables the transition one frame later so load never animates.
-
-/** Markup contract: LensSceneContent and LensStory wrap every caption in one of
- *  these — its scene's slice of the scroll track — and the CSS lights the
- *  caption inside whichever band this module marks `.is-in`. */
-export const CAP_BAND_SELECTOR = ".cap-band";
-
-/** Collapses the observer root to a zero-height line along the viewport's
- *  bottom edge. A band for [a, b] spans document [a·S, b·S + 100svh] (story.ts),
- *  so it crosses the line while scrollY ∈ (a·S − 100dvh, b·S). */
-export const CAP_FADE_ROOT_MARGIN = "-100% 0px 0px 0px";
+// Caption fade fallback for browsers without `animation-timeline: view()`: an
+// IntersectionObserver marks the one band the reader is in with `.is-in`.
+// Must not import from lib/lens, so a failed 3D chunk can't break captions.
 
 export interface CapFadeTarget {
   classList: { toggle(token: string, force: boolean): void };
@@ -24,12 +9,11 @@ export interface CapFadeTarget {
 export interface CapFadeEntry {
   target: CapFadeTarget;
   isIntersecting: boolean;
-  /** the band's top edge is above the line (it has started) */
+  /** the band's top edge is above the line */
   above: boolean;
 }
 
-/** The observed bands in DOCUMENT order, which of them cross the line, and
- *  whether the last band has started. */
+/** Bands in document order, which cross the line, and whether the last has started. */
 export interface CapFadeState {
   targets: readonly CapFadeTarget[];
   intersecting: Set<CapFadeTarget>;
@@ -40,11 +24,8 @@ export const capFadeState = (
   targets: readonly CapFadeTarget[],
 ): CapFadeState => ({ targets, intersecting: new Set(), lastStarted: false });
 
-/** The observer body, split out so it is testable without a DOM. Lights ONE
- *  band — the first crossing the line in document order (story order), since a
- *  batch of booleans cannot crossfade two stacked captions. With none crossing,
- *  the last band stays lit only once it has started (at max scroll its bottom
- *  edge sits on the line); a gap mid-track lights nothing, as the CSS path does. */
+/** Lights the first band crossing the line; with none crossing, the last band
+ *  if it has started, otherwise nothing. */
 export const applyCapFades = (
   state: CapFadeState,
   entries: readonly CapFadeEntry[],
@@ -61,18 +42,16 @@ export const applyCapFades = (
   for (const t of state.targets) t.classList.toggle("is-in", t === lit);
 };
 
-/** Wire the fallback. A no-op where the browser drives the fades in CSS — the
- *  same condition the stylesheet's @supports test asks. */
-export function startCapFades(root: ParentNode = document): void {
+/** Starts the fallback; a no-op where CSS scroll timelines are supported. */
+export function startCapFades(): void {
   if (CSS.supports("animation-timeline", "view()")) return;
-  // querySelectorAll returns DOCUMENT order, which the one-at-a-time rule needs
-  const bands = [...root.querySelectorAll<HTMLElement>(CAP_BAND_SELECTOR)];
+  // Bands are observed, never the sticky captions (they outlive their band).
+  const bands = [...document.querySelectorAll<HTMLElement>(".cap-band")];
   const state = capFadeState(bands);
   let started = false;
   const io = new IntersectionObserver(
     (entries) => {
-      // The first batch lands as the initial state; the transition is armed a
-      // frame later so load never animates.
+      // The first batch sets the initial state; arm the transition a frame later.
       if (!started) {
         started = true;
         const hero = document.getElementById("lens-hero");
@@ -89,7 +68,8 @@ export function startCapFades(root: ParentNode = document): void {
         })),
       );
     },
-    { rootMargin: CAP_FADE_ROOT_MARGIN, threshold: 0 },
+    // The root shrinks to a line along the viewport's bottom edge.
+    { rootMargin: "-100% 0px 0px 0px", threshold: 0 },
   );
   for (const el of bands) io.observe(el);
 }

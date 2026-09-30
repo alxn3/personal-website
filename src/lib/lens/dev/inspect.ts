@@ -3,16 +3,11 @@ import { vec4 } from "three/tsl";
 import { displaceInto, opsStateKey } from "./ops-cpu";
 import { isGraphGroup } from "../core/parts";
 
-// Dev only — dynamically imported. The /lens "Inspect" toggle: hover a piece to
-// read its GLB node name, click to copy. Read-only; listeners exist only while
-// on. It does not raycast the model (the deform runs in-shader, CPU geometry
-// stays seated): each mesh gets a picking proxy with the same indices and
-// positions re-evaluated on the CPU (dev/ops-cpu.ts) at live channels, in
-// mesh-local space under the source's matrixWorld. The hover highlight is a
-// separate overlay mesh because the shading caches share one material.
+// Dev only, dynamically imported. The /lens "Inspect" toggle: hover a piece to
+// see its GLB node name, click to copy it. The deform runs in the shader, so
+// raycasts hit CPU-deformed proxy copies of each mesh (ops-cpu.ts) instead.
 
-/** Tooltip chrome, in the same tokens the floating controls card uses, so it
- *  reads correctly in both themes without a colour of its own. */
+/** Tooltip classes, using the site's theme tokens. */
 const TIP_CLASS =
   "border-border bg-surface/90 text-text pointer-events-none absolute z-30 hidden rounded-md border px-2 py-1 text-[0.6875rem] leading-snug backdrop-blur";
 
@@ -21,29 +16,22 @@ const DRAG_PX = 5;
 /** Tooltip offset from the cursor. */
 const CURSOR_GAP = 14;
 const COPIED_MS = 1200;
-/** How long the op state must hold still before the proxies are re-evaluated.
- *  Channels glide toward their target, so rebuilding per frame would burn the
- *  main thread. */
+/** How long the op state must hold still before the proxies are re-evaluated. */
 const SETTLE_MS = 200;
 
-/** The site's `--highlight` terracotta. One value for both themes — it reads on
- *  either backdrop. */
+/** The site's `--highlight` terracotta. */
 const HIGHLIGHT_HEX = 0xd18a5d;
 const HIGHLIGHT_OPACITY = 0.35;
 
 export interface InspectContext {
-  /** Loaded GLB root: candidate meshes live under it and the ancestor walk
-   *  stops at it. */
+  /** Loaded GLB root. */
   model: THREE.Object3D;
   camera: THREE.Camera;
-  /** Pointer target, and (through its offset parent) the tooltip's frame. */
+  /** Pointer target; the tooltip goes in its parent. */
   canvas: HTMLCanvasElement;
-  /** Where the hover-highlight overlay is parented while shown. The scene, not
-   *  the model — every pass that traverses the GLB would otherwise pick the
-   *  overlay up as a piece of the lens. */
+  /** Parent for the highlight (not the model, which other passes traverse). */
   scene: THREE.Object3D;
-  /** The scene renders on demand, so a highlight appearing/moving/clearing
-   *  needs a repaint requested explicitly. */
+  /** Request a repaint. */
   invalidate: () => void;
 }
 
@@ -52,11 +40,8 @@ export interface Inspector {
   dispose(): void;
 }
 
-/** `[hit name, part name]` for a picked node: the nearest named node at or
- *  above the hit, and the topmost named ancestor below the model root — the
- *  same grouping `ops/frames.ts` derives the explode ladder from. Empty when the
- *  hit is the root. `Grp_*` graph empties are skipped: they own no rung and name
- *  no sub-assembly. */
+/** `[hit name, part name]`: the nearest named node at or above the hit, and
+ *  its topmost named ancestor below the root. `Grp_*` empties are skipped. */
 function namesOf(obj: THREE.Object3D, root: THREE.Object3D): [string, string] {
   const chain: string[] = [];
   for (let o: THREE.Object3D | null = obj; o && o !== root; o = o.parent)
@@ -65,8 +50,7 @@ function namesOf(obj: THREE.Object3D, root: THREE.Object3D): [string, string] {
   return [chain[0], chain[chain.length - 1]];
 }
 
-/** Visible all the way up — the isolate/occluder logic hides whole branches by
- *  flipping a parent's flag, which a per-mesh `.visible` test would miss. */
+/** True if the object and all its ancestors are visible. */
 function shown(obj: THREE.Object3D): boolean {
   for (let o: THREE.Object3D | null = obj; o; o = o.parent)
     if (!o.visible) return false;
@@ -92,14 +76,9 @@ export function createInspector(ctx: InspectContext): Inspector {
 
   const raycaster = new THREE.Raycaster();
   const ndc = new THREE.Vector2();
-  // DoubleSide so an exploded piece can be picked from its inner face too. The
-  // proxies are never added to a scene, but Mesh.raycast reads `material.side`.
+  // DoubleSide so a piece can be picked from its inner face too.
   const proxyMat = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });
   let proxies: PickProxy[] = [];
-  let proxyMeshes: THREE.Mesh[] = [];
-  /** proxy mesh → its entry, so a hit yields both the name source and the
-   *  geometry the highlight borrows. */
-  const pickOf = new Map<THREE.Object3D, PickProxy>();
   let builtKey = ""; // op state the proxies were evaluated at
   let seenKey = ""; // op state last observed
   let seenAt = 0;
@@ -110,47 +89,35 @@ export function createInspector(ctx: InspectContext): Inspector {
   let downAt: { x: number; y: number } | null = null;
   let copyTimer = 0;
   let savedCursor = "";
-  let enabled = false;
+  let listening: AbortController | null = null;
 
-  // The hover highlight: one mesh, reused across hovers, with geometry borrowed
-  // from the hovered piece's proxy and matrixWorld copied from the source mesh
-  // — the pair the raycast used, so the wash lands where the hit was.
+  // The hover highlight: one reused mesh drawing the hovered proxy's geometry
+  // at its source mesh's matrixWorld.
   const highlightMat = new THREE.MeshBasicNodeMaterial({
     transparent: true,
-    // DoubleSide for the same reason the proxies use it: a piece looked into
-    // from the inside presents only back faces.
     side: THREE.DoubleSide,
-    // The wash is coincident with the drawn surface: depthTest stays on so a
-    // piece behind another cannot shine through, and the polygon offset absorbs
-    // the last-bit disagreement between the CPU mirror and the shader.
-    // depthWrite off so the overlay never occludes what follows.
+    // Drawn on top of the real surface: offset toward the camera, no depth write.
     depthWrite: false,
     polygonOffset: true,
     polygonOffsetFactor: -4,
     polygonOffsetUnits: -4,
-    toneMapped: false, // a dev marker should be the token colour, not graded
+    toneMapped: false,
   });
-  // A constant fragment, not `color`/`opacity`: those take the lit path, which
-  // folds in a BasicEnvironmentNode and demands a `normal` attribute the picking
-  // proxies don't carry.
+  // A constant fragment: `color`/`opacity` would need a `normal` attribute the
+  // proxies don't have.
   {
     const c = new THREE.Color(HIGHLIGHT_HEX);
     highlightMat.fragmentNode = vec4(c.r, c.g, c.b, HIGHLIGHT_OPACITY);
   }
-  /** Owned placeholder. The highlight only borrows proxy geometry, so it must
-   *  not be holding one when `disposeProxies` frees them. */
+  /** Placeholder so the highlight never holds a disposed proxy geometry. */
   const emptyGeo = new THREE.BufferGeometry();
   const highlight = new THREE.Mesh(emptyGeo, highlightMat);
   highlight.frustumCulled = false;
-  // matrixWorld is written by hand from the source mesh; leaving the auto-update
-  // on would have the scene root overwrite it back to identity every frame.
+  // matrixWorld is copied by hand from the source mesh.
   highlight.matrixAutoUpdate = false;
   highlight.matrixWorldAutoUpdate = false;
   let highlighted: PickProxy | null = null;
 
-  /** Wash the hovered piece. Both inputs are as fresh as the pick that made
-   *  them — geometry re-evaluated only once the op state settles — so a hover
-   *  held still during an animation shows a slightly stale outline. */
   const showHighlight = (p: PickProxy) => {
     highlight.geometry = p.proxy.geometry;
     highlight.matrixWorld.copy(p.src.matrixWorld);
@@ -162,7 +129,7 @@ export function createInspector(ctx: InspectContext): Inspector {
     if (!highlighted) return;
     highlighted = null;
     highlight.removeFromParent();
-    highlight.geometry = emptyGeo; // must not outlive the borrowed proxy
+    highlight.geometry = emptyGeo;
     ctx.invalidate();
   };
 
@@ -176,9 +143,8 @@ export function createInspector(ctx: InspectContext): Inspector {
     clearHighlight();
   };
 
-  /** One proxy per mesh under the model root, keeping the source's index and
-   *  draw range so triangle order is unchanged; only positions differ. Hidden
-   *  meshes are included — visibility is filtered at hit time. */
+  /** One proxy per mesh: same index and draw range, CPU-deformed positions.
+   *  Hidden meshes are included and filtered at hit time. */
   const buildProxies = () => {
     disposeProxies();
     model.traverse((o) => {
@@ -189,43 +155,32 @@ export function createInspector(ctx: InspectContext): Inspector {
       const positions = new Float32Array(seated.count * 3);
       const geo = new THREE.BufferGeometry();
       geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-      // Cloned, not shared: disposing a proxy geometry would otherwise take
-      // the real mesh's index buffer down with it.
+      // Cloned so disposing the proxy leaves the real index buffer alone.
       if (src.index) geo.setIndex(src.index.clone());
       geo.drawRange = { ...src.drawRange };
-      const proxy = new THREE.Mesh(geo, proxyMat);
-      const entry: PickProxy = { src: o, proxy, positions };
-      proxies.push(entry);
-      pickOf.set(proxy, entry);
+      proxies.push({ src: o, proxy: new THREE.Mesh(geo, proxyMat), positions });
     });
-    proxyMeshes = proxies.map((p) => p.proxy);
     refreshProxies();
   };
 
   const refreshProxies = () => {
     for (const p of proxies) {
       displaceInto(p.src.geometry, p.positions, p.src);
-      // Mesh.raycast pre-culls on the bounding sphere: a seated one left in
-      // place would cull away every piece the explode threw outward.
+      // Raycasts pre-cull on the bounding sphere, so it must follow the deform.
       p.proxy.geometry.computeBoundingSphere();
-      // The highlight draws one of these, so a rewritten position array has to
-      // be re-uploaded.
       p.proxy.geometry.attributes.position.needsUpdate = true;
     }
     if (highlighted) ctx.invalidate();
   };
 
   const disposeProxies = () => {
-    clearHighlight(); // it borrows one of these geometries — drop it first
+    clearHighlight(); // it may be drawing one of these geometries
     for (const p of proxies) p.proxy.geometry.dispose();
     proxies = [];
-    proxyMeshes = [];
-    pickOf.clear();
   };
 
-  /** Re-evaluate the proxies once the op state has held still for SETTLE_MS.
-   *  Called from the pointer rAF, so a slider dragged with the pointer parked
-   *  off-canvas rebuilds on the next hover instead of eagerly. */
+  /** Re-deform the proxies once the op state has held still for SETTLE_MS.
+   *  Runs on pointer move only. */
   const maybeRebuild = () => {
     const key = opsStateKey();
     if (key === builtKey) return;
@@ -251,13 +206,14 @@ export function createInspector(ctx: InspectContext): Inspector {
     ndc.set((x / rect.width) * 2 - 1, -(y / rect.height) * 2 + 1);
     raycaster.setFromCamera(ndc, ctx.camera);
     maybeRebuild();
-    // The proxies hold local displaced positions; the source's world matrix
-    // carries the object-level motion on top.
     for (const p of proxies) p.proxy.matrixWorld.copy(p.src.matrixWorld);
     const pick = raycaster
-      .intersectObjects(proxyMeshes, false)
-      .map((h) => pickOf.get(h.object))
-      .find((p): p is PickProxy => p !== undefined && shown(p.src));
+      .intersectObjects(
+        proxies.map((p) => p.proxy),
+        false,
+      )
+      .map((h) => proxies.find((p) => p.proxy === h.object)!)
+      .find((p) => shown(p.src));
     if (!pick) return hide();
     showHighlight(pick);
 
@@ -286,8 +242,7 @@ export function createInspector(ctx: InspectContext): Inspector {
     const down = downAt;
     downAt = null;
     if (!down || !hitName) return;
-    // An orbit drag ends over the model too — only a near-stationary release
-    // counts as a click on the piece.
+    // Ignore the release at the end of an orbit drag.
     if (Math.hypot(e.clientX - down.x, e.clientY - down.y) > DRAG_PX) return;
     const done = (text: string) => {
       setPart(text);
@@ -305,25 +260,23 @@ export function createInspector(ctx: InspectContext): Inspector {
   };
 
   const setEnabled = (on: boolean) => {
-    if (on === enabled) return;
-    enabled = on;
+    if (on === Boolean(listening)) return;
     if (on) {
-      // Rebuilt per enable: the accessories merge into the model after boot, so
-      // a proxy set captured once at construction could miss them.
+      // Rebuilt on each enable, since accessories load in after boot.
       builtKey = opsStateKey();
       seenKey = builtKey;
       buildProxies();
       savedCursor = canvas.style.cursor;
       canvas.style.cursor = "crosshair";
-      canvas.addEventListener("pointermove", onMove);
-      canvas.addEventListener("pointerdown", onDown);
-      canvas.addEventListener("pointerup", onUp);
-      canvas.addEventListener("pointerleave", onLeave);
+      listening = new AbortController();
+      const opts = { signal: listening.signal };
+      canvas.addEventListener("pointermove", onMove, opts);
+      canvas.addEventListener("pointerdown", onDown, opts);
+      canvas.addEventListener("pointerup", onUp, opts);
+      canvas.addEventListener("pointerleave", onLeave, opts);
     } else {
-      canvas.removeEventListener("pointermove", onMove);
-      canvas.removeEventListener("pointerdown", onDown);
-      canvas.removeEventListener("pointerup", onUp);
-      canvas.removeEventListener("pointerleave", onLeave);
+      listening?.abort();
+      listening = null;
       canvas.style.cursor = savedCursor;
       if (raf) cancelAnimationFrame(raf);
       raf = 0;
@@ -335,7 +288,7 @@ export function createInspector(ctx: InspectContext): Inspector {
   return {
     setEnabled,
     dispose() {
-      setEnabled(false); // detaches + clears the highlight, frees the proxies
+      setEnabled(false);
       clearTimeout(copyTimer);
       proxyMat.dispose();
       highlightMat.dispose();

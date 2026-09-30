@@ -3,195 +3,91 @@ import * as THREE from "three/webgpu";
 import { deriveFrames, WRAP_ATTRS } from "../frames";
 import { recipeChannel } from "../host";
 import { displaceInto } from "../../dev/ops-cpu";
+import { TAU, mesh, shell, wedgeGeometry } from "./fixture-mesh";
 
-// THE SHRINK-WRAP BINDING (ops/frames.ts bindDecals + its host.ts variant): a
-// decal rides its host's RENDERED FACET rather than the smooth op field, so the
-// chord error across a coarse facet cancels on both.
-// Driven through `displaceInto`, the NUM mirror of the graph host.ts builds.
-// The host below is deliberately COARSE — on a fine host the field and the
-// facet agree and the law is untestable.
+// A decal follows its host's flat facets, not the smooth deform field
+// (ops/frames.ts bindDecals). The host is deliberately coarse so the two differ.
 
-const TAU = Math.PI * 2;
-
-/** A coarse cylinder-sector wedge: `steps` quads across the sector, so each
- *  facet spans a wide chord of the true arc. */
-function wedge(radius: number, t0: number, span: number, steps: number) {
-  const pos: number[] = [];
-  const idx: number[] = [];
-  for (let i = 0; i <= steps; i++) {
-    const a = t0 - span / 2 + (span * i) / steps;
-    pos.push(radius * Math.cos(a), -6, radius * Math.sin(a));
-    pos.push(radius * Math.cos(a), 6, radius * Math.sin(a));
-  }
-  for (let i = 0; i < steps; i++) {
-    const b = i * 2;
-    idx.push(b, b + 1, b + 2, b + 1, b + 3, b + 2);
-  }
-  const g = new THREE.BufferGeometry();
-  g.setAttribute(
-    "position",
-    new THREE.BufferAttribute(new Float32Array(pos), 3),
-  );
-  g.setIndex(idx);
-  return g;
-}
-
-/** A scene whose decal sits on a 3-facet host — coarse enough that the facet
- *  chord and the true arc differ by ~0.5mm at the same angle. */
+/** A segmented host with 3 facets per wedge and a decal 0.1 mm above wedge 0. */
 function scene() {
   const root = new THREE.Object3D();
-  const host = new THREE.Object3D();
-  host.name = "Ring_Zoom";
-  for (let i = 0; i < 5; i++) {
-    const m = new THREE.Mesh(wedge(30, (TAU * i) / 5, TAU / 5, 3));
-    m.name = `Ring_Zoom_Seg${i}`;
-    host.add(m);
-  }
-  root.add(host);
-  root.add(
-    (() => {
-      const m = new THREE.Mesh(wedge(60, 0, TAU / 5, 3));
-      m.name = "Shell_Outer";
-      return m;
-    })(),
-  );
-  // A dense little decal patch floating 0.1mm proud of sector 0's face.
-  const pos: number[] = [];
-  const idx: number[] = [];
-  for (let i = 0; i <= 6; i++) {
-    const a = -0.25 + (0.5 * i) / 6;
-    for (const y of [-1, 1]) {
-      pos.push(30.1 * Math.cos(a), y, 30.1 * Math.sin(a));
-    }
-  }
-  for (let i = 0; i < 6; i++) {
-    const b = i * 2;
-    idx.push(b, b + 1, b + 2, b + 1, b + 3, b + 2);
-  }
-  const g = new THREE.BufferGeometry();
-  g.setAttribute(
-    "position",
-    new THREE.BufferAttribute(new Float32Array(pos), 3),
-  );
-  g.setIndex(idx);
-  const decal = new THREE.Mesh(g);
-  decal.name = "DecalT_Zoom_18";
+  const host = shell("Ring_Zoom", 30, 5, -6, 6, 3);
+  root.add(host, mesh("Shell_Outer", wedgeGeometry(60, 0, TAU / 5, -6, 6, 3)));
+  const decal = mesh("DecalT_Zoom_18", wedgeGeometry(30.1, 0, 0.5, -1, 1, 6));
   host.add(decal);
-  return { root, decal, wedgeMesh: host.children[0] as THREE.Mesh };
+  deriveFrames(root);
+  return { decal, wedge: host.children[0] as THREE.Mesh };
 }
 
-function displaced(mesh: THREE.Mesh): Float32Array {
-  const out = new Float32Array(
-    mesh.geometry.getAttribute("position").count * 3,
-  );
-  displaceInto(mesh.geometry, out);
-  return out;
+function displaced(m: THREE.Mesh): THREE.Vector3[] {
+  const n = m.geometry.getAttribute("position").count;
+  const out = new Float32Array(n * 3);
+  displaceInto(m.geometry, out);
+  return Array.from({ length: n }, (_, i) => new THREE.Vector3().fromArray(out, i * 3)); // prettier-ignore
+}
+
+/** u·P0 + v·P1 + (1 − u − v)·P2 + h·n̂ over the facet (P0, P1, P2). */
+function rebuild(P: THREE.Vector3[], [u, v, h]: number[]) {
+  const n = new THREE.Vector3()
+    .subVectors(P[1], P[0])
+    .cross(new THREE.Vector3().subVectors(P[2], P[0]))
+    .normalize();
+  return P[0]
+    .clone()
+    .multiplyScalar(u)
+    .addScaledVector(P[1], v)
+    .addScaledVector(P[2], 1 - u - v)
+    .addScaledVector(n, h);
 }
 
 describe("decal shrink-wrap binding", () => {
-  it("recomposes at rest, then rides the host's FACET through the deform", () => {
-    const { root, decal, wedgeMesh } = scene();
-    deriveFrames(root);
+  it("recomposes at rest, then follows the host's facet through the deform", () => {
+    const { decal, wedge } = scene();
     const pos = decal.geometry.getAttribute("position");
+    const w = WRAP_ATTRS.map(({ name }) => decal.geometry.getAttribute(name));
+    expect(w[0], "no binding written").toBeTruthy();
+    const corners = (i: number) =>
+      w.map((a) => new THREE.Vector3(a.getX(i), a.getY(i), a.getZ(i)));
+    const uvh = (i: number) => w.map((a) => a.getW(i));
 
-    // (a) every decal vertex carries a binding that REPRODUCES the authored
-    // position: u·p0 + v·p1 + w·p2 + h·n̂ is a complete basis.
-    const wa = decal.geometry.getAttribute(WRAP_ATTRS[0].name);
-    const wb = decal.geometry.getAttribute(WRAP_ATTRS[1].name);
-    const wc = decal.geometry.getAttribute(WRAP_ATTRS[2].name);
-    expect(wa, "no binding written").toBeTruthy();
-    const p0 = new THREE.Vector3();
-    const p1 = new THREE.Vector3();
-    const p2 = new THREE.Vector3();
+    // (a) Each vertex's binding rebuilds its authored position, and with every
+    // channel at 0 the decal stays put.
+    const rest = displaced(decal);
     for (let i = 0; i < pos.count; i++) {
-      p0.set(wa.getX(i), wa.getY(i), wa.getZ(i));
-      p1.set(wb.getX(i), wb.getY(i), wb.getZ(i));
-      p2.set(wc.getX(i), wc.getY(i), wc.getZ(i));
-      const u = wa.getW(i);
-      const v = wb.getW(i);
-      const h = wc.getW(i);
-      const n = new THREE.Vector3()
-        .subVectors(p1, p0)
-        .cross(new THREE.Vector3().subVectors(p2, p0))
-        .normalize();
-      const back = p0
-        .clone()
-        .multiplyScalar(u)
-        .addScaledVector(p1, v)
-        .addScaledVector(p2, 1 - u - v)
-        .addScaledVector(n, h);
       const want = new THREE.Vector3().fromBufferAttribute(pos, i);
-      expect(back.distanceTo(want), `vertex ${i} recomposition`).toBeLessThan(
-        1e-4,
-      );
+      expect(rebuild(corners(i), uvh(i)).distanceTo(want), `vertex ${i} recomposition`).toBeLessThan(1e-4); // prettier-ignore
+      expect(rest[i].distanceTo(want)).toBeLessThan(5e-7);
     }
 
-    // …and with every channel seated the mirror leaves the decal exactly where
-    // it was authored.
-    const rest = displaced(decal);
-    for (let i = 0; i < pos.count; i++)
-      for (const c of [0, 1, 2])
-        expect(rest[i * 3 + c]).toBeCloseTo(pos.getComponent(i, c), 6);
-
-    // (b) CO-MOVEMENT: the decal must land on the plane through its host's
-    // deformed facet corners, not on the smooth field. 0.9 is deep enough that
-    // this piece's gate has released it and the wrap's bend is live.
+    // (b) Deformed, the decal lands on the plane of its host's deformed facet
+    // corners. At 0.9 the wrap's bend is active for this piece.
     recipeChannel("assemble").value = 0.9;
     try {
       const moved = displaced(decal);
-      const hostMoved = displaced(wedgeMesh);
-      const hp = wedgeMesh.geometry.getAttribute("position");
-      const at = (buf: Float32Array, i: number) =>
-        new THREE.Vector3(buf[i * 3], buf[i * 3 + 1], buf[i * 3 + 2]);
-
+      const hostMoved = displaced(wedge);
+      const hp = wedge.geometry.getAttribute("position");
+      const seated = Array.from({ length: hp.count }, (_, k) => new THREE.Vector3().fromBufferAttribute(hp, k)); // prettier-ignore
+      // the host corners a vertex is bound to, found by position
+      const hostCorner = (q: THREE.Vector3) =>
+        hostMoved[seated.findIndex((s) => s.distanceTo(q) < 1e-5)];
       let checked = 0;
-      let maxOff = 0;
       for (let i = 0; i < pos.count; i++) {
-        // the host corners this vertex is bound to, found by position
-        const corner = (
-          w: THREE.BufferAttribute | THREE.InterleavedBufferAttribute,
-        ) => {
-          const q = new THREE.Vector3(w.getX(i), w.getY(i), w.getZ(i));
-          for (let k = 0; k < hp.count; k++)
-            if (
-              q.distanceTo(new THREE.Vector3().fromBufferAttribute(hp, k)) <
-              1e-5
-            )
-              return at(hostMoved, k);
-          return null;
-        };
-        const P0 = corner(wa);
-        const P1 = corner(wb);
-        const P2 = corner(wc);
-        if (!P0 || !P1 || !P2) continue;
-        const n = new THREE.Vector3()
-          .subVectors(P1, P0)
-          .cross(new THREE.Vector3().subVectors(P2, P0))
-          .normalize();
-        const want = P0.clone()
-          .multiplyScalar(wa.getW(i))
-          .addScaledVector(P1, wb.getW(i))
-          .addScaledVector(P2, 1 - wa.getW(i) - wb.getW(i))
-          .addScaledVector(n, wc.getW(i));
-        const off = at(moved, i).distanceTo(want);
-        maxOff = Math.max(maxOff, off);
+        const P = corners(i).map(hostCorner);
+        if (P.some((c) => !c)) continue;
+        expect(moved[i].distanceTo(rebuild(P, uvh(i))), `decal vertex ${i} left its host's facet`).toBeLessThan(1e-4); // prettier-ignore
         checked++;
       }
       expect(checked, "no vertex resolved to host corners").toBeGreaterThan(4);
-      expect(maxOff, "decal left its host's facet").toBeLessThan(1e-4);
-
-      // …and it really moved, so the agreement above is not a seated tie.
-      expect(at(moved, 0).distanceTo(at(rest, 0))).toBeGreaterThan(1);
+      // It really moved.
+      expect(moved[0].distanceTo(rest[0])).toBeGreaterThan(1);
     } finally {
       recipeChannel("assemble").value = 0;
     }
   });
 
-  it("leaves an unbound (structure) mesh alone", () => {
-    const { root, wedgeMesh } = scene();
-    deriveFrames(root);
-    // (c) the variant is keyed on the binding, and structure never gets one.
+  it("(c) leaves an unbound (structure) mesh alone", () => {
+    const { wedge } = scene();
     for (const { name } of WRAP_ATTRS)
-      expect(wedgeMesh.geometry.getAttribute(name)).toBeUndefined();
+      expect(wedge.geometry.getAttribute(name)).toBeUndefined();
   });
 });

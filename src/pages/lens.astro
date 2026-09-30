@@ -1,14 +1,19 @@
 ---
 import { loadAnimations } from "../lib/lens";
-// Build-time (server) load — the client fetches its own lazy chunk in boot().
-const { ANIMATIONS, fmtParam } = await loadAnimations();
 import Footer from "../components/Footer.astro";
 import Navbar from "../components/Navbar.astro";
 import HtmlShell from "../layouts/HtmlShell.astro";
 import LensPreloads from "../components/LensPreloads.astro";
 
-// The slider `id`s double as SceneState channel names — `slider-zoom` drives
-// `state.zoomTarget` (the script binds them in one loop from this same list).
+// Server-side load for the markup; the client loads its own copy in boot().
+const { ANIMATIONS, fmtParam } = await loadAnimations();
+
+const tabs = [
+  { id: "controls", label: "Controls" },
+  { id: "animations", label: "Animations" },
+];
+
+// Slider ids are SceneState channel names: `slider-zoom` drives `zoomTarget`.
 const sliders = [
   { id: "zoom", label: "Zoom", hint: "18mm — 50mm" },
   { id: "focus", label: "Focus", hint: "∞ — 0.12m" },
@@ -34,14 +39,35 @@ const shadingModes = [
   { id: "bronze", label: "Bronze" },
 ];
 
-// Look-swap choreographies (lib/lens core/transitions.ts) — how the shading
-// buttons carry the cut. Ids match TransitionName; "blink" is the default.
+// Shading-swap transitions; ids match TransitionName.
 const shadingTransitions = [
   { id: "blink", label: "Blink" },
   { id: "twist", label: "Twist" },
   { id: "molt", label: "Molt" },
   { id: "punch", label: "Punch" },
 ];
+
+// Toggles under the animation list; the paths and inspect modules load when
+// first ticked.
+const tools = [
+  { id: "paths", label: "Motion paths", note: "" },
+  {
+    id: "inspect",
+    label: "Inspect",
+    note: "Hover a piece for its node name; click to copy it.",
+  },
+  {
+    id: "storycam",
+    label: "Hero camera",
+    note: "Progress plays the homepage's rewrap → bloom camera move (select an animation first).",
+  },
+];
+
+const PILL =
+  "border-border text-text-muted hover:text-text aria-pressed:bg-accent aria-pressed:border-accent aria-pressed:text-bg cursor-pointer rounded-md border px-2.5 py-1 text-xs font-medium transition-colors";
+const RANGE = "accent-accent h-2 w-full cursor-pointer";
+const CHECKBOX = "accent-accent size-4 cursor-pointer";
+const HEADING = "text-text-muted text-xs font-medium tracking-wide uppercase";
 ---
 
 <HtmlShell
@@ -49,14 +75,11 @@ const shadingTransitions = [
   description="An orbitable 3D model of a Sigma 18-50mm F2.8 lens."
 >
   <Navbar />
-  <!-- pt-16 clears the fixed navbar; ?embed hides the navbar (global.css), so
-       there the padding drops and the viewer takes the full viewport. -->
+  <!-- pt-16 clears the fixed navbar, which ?embed hides. -->
   <main class="w-full flex-1 pt-16 in-data-embedded:pt-0">
     <LensPreloads accessories />
 
-    <!-- Mobile: SPLIT VIEW — canvas on top, controls in their own region below
-         (nothing overlays the render). sm+: the canvas fills the container and
-         the controls float as the absolute card. -->
+    <!-- Mobile: canvas above, controls below. sm+: controls float over the canvas. -->
     <div
       class="relative flex h-[calc(100dvh-4rem)] w-full flex-col overflow-hidden in-data-embedded:h-dvh sm:block"
     >
@@ -64,7 +87,7 @@ const shadingTransitions = [
         <canvas id="scene" class="absolute inset-0 z-10 size-full touch-none"
         ></canvas>
 
-        <!-- Shown in place of the canvas when WebGPU/WebGL2 init fails (see script). -->
+        <!-- Shown instead of the canvas when the scene fails to start. -->
         <p
           id="scene-fallback"
           class="text-text-muted absolute inset-0 hidden items-center justify-center p-6 text-center text-sm"
@@ -79,31 +102,24 @@ const shadingTransitions = [
         class="border-border bg-surface/90 z-20 flex max-h-[45dvh] shrink-0 flex-col border-t backdrop-blur sm:absolute sm:right-4 sm:bottom-4 sm:max-h-[calc(100dvh-6rem)] sm:w-80 sm:rounded-lg sm:border"
       >
         <div role="tablist" class="border-border flex border-b">
-          <button
-            type="button"
-            role="tab"
-            id="tab-controls"
-            aria-controls="tabpanel-controls"
-            aria-selected="true"
-            class="text-text-muted hover:text-text aria-selected:text-text aria-selected:border-accent flex-1 cursor-pointer border-b-2 border-transparent py-2.5 text-sm font-medium transition-colors"
-          >
-            Controls
-          </button>
-          <button
-            type="button"
-            role="tab"
-            id="tab-animations"
-            aria-controls="tabpanel-animations"
-            aria-selected="false"
-            class="text-text-muted hover:text-text aria-selected:text-text aria-selected:border-accent flex-1 cursor-pointer border-b-2 border-transparent py-2.5 text-sm font-medium transition-colors"
-          >
-            Animations
-          </button>
+          {
+            tabs.map((t, i) => (
+              <button
+                type="button"
+                role="tab"
+                id={`tab-${t.id}`}
+                aria-controls={`tabpanel-${t.id}`}
+                aria-selected={i === 0 ? "true" : "false"}
+                class="text-text-muted hover:text-text aria-selected:text-text aria-selected:border-accent flex-1 cursor-pointer border-b-2 border-transparent py-2.5 text-sm font-medium transition-colors"
+              >
+                {t.label}
+              </button>
+            ))
+          }
         </div>
 
-        <!-- Both tabpanels share ONE grid cell: the cell always sizes to the
-             TALLER tab, so switching tabs never resizes the panel. The inactive
-             tab is hidden with visibility (keeps its layout box), not display. -->
+        <!-- Both tabpanels share one grid cell and the inactive one is only
+             made invisible, so switching tabs never resizes the panel. -->
         <div class="grid min-h-0 overflow-y-auto">
           <div
             id="tabpanel-controls"
@@ -127,7 +143,7 @@ const shadingTransitions = [
                       min="0"
                       max="100"
                       value="0"
-                      class="accent-accent h-2 w-full cursor-pointer"
+                      class={RANGE}
                     />
                   </label>
                 ))
@@ -135,10 +151,7 @@ const shadingTransitions = [
             </div>
 
             <div class="border-border flex flex-col gap-2 border-t pt-3">
-              <span
-                class="text-text-muted text-xs font-medium tracking-wide uppercase"
-                >Shading</span
-              >
+              <span class={HEADING}>Shading</span>
               <div class="flex flex-wrap gap-1.5" id="shading-group">
                 {
                   shadingModes.map((m) => (
@@ -146,7 +159,7 @@ const shadingTransitions = [
                       type="button"
                       data-shading={m.id}
                       aria-pressed={m.id === "ink" ? "true" : "false"}
-                      class="border-border text-text-muted hover:text-text aria-pressed:bg-accent aria-pressed:border-accent aria-pressed:text-bg cursor-pointer rounded-md border px-2.5 py-1 text-xs font-medium transition-colors"
+                      class={PILL}
                     >
                       {m.label}
                     </button>
@@ -173,10 +186,7 @@ const shadingTransitions = [
             </div>
 
             <div class="border-border flex flex-col gap-2 border-t pt-3">
-              <span
-                class="text-text-muted text-xs font-medium tracking-wide uppercase"
-                >Accessories</span
-              >
+              <span class={HEADING}>Accessories</span>
               <div class="flex flex-wrap gap-x-4 gap-y-2">
                 {
                   accessories.map((a) => (
@@ -184,7 +194,7 @@ const shadingTransitions = [
                       <input
                         type="checkbox"
                         id={`acc-${a.id}`}
-                        class="accent-accent size-4 cursor-pointer"
+                        class={CHECKBOX}
                       />
                       {a.label}
                     </label>
@@ -203,21 +213,13 @@ const shadingTransitions = [
           >
             <div class="flex flex-col gap-2">
               <div class="flex flex-wrap gap-1.5" id="animation-group">
-                <button
-                  type="button"
-                  data-animation="none"
-                  aria-pressed="true"
-                  class="border-border text-text-muted hover:text-text aria-pressed:bg-accent aria-pressed:border-accent aria-pressed:text-bg cursor-pointer rounded-md border px-2.5 py-1 text-xs font-medium transition-colors"
-                >
-                  None
-                </button>
                 {
-                  ANIMATIONS.map((a) => (
+                  [{ id: "none", label: "None" }, ...ANIMATIONS].map((a) => (
                     <button
                       type="button"
                       data-animation={a.id}
-                      aria-pressed="false"
-                      class="border-border text-text-muted hover:text-text aria-pressed:bg-accent aria-pressed:border-accent aria-pressed:text-bg cursor-pointer rounded-md border px-2.5 py-1 text-xs font-medium transition-colors"
+                      aria-pressed={a.id === "none" ? "true" : "false"}
+                      class={PILL}
                     >
                       {a.label}
                     </button>
@@ -243,88 +245,36 @@ const shadingTransitions = [
                   max="100"
                   value="0"
                   step="any"
-                  class="accent-accent h-2 w-full cursor-pointer"
+                  class={RANGE}
                 />
               </label>
               {
-                /* Motion-path overlay. The checkbox IS the opt-in: the
-                   visualizer module is dynamically imported the first time it
-                   is ticked, so an untouched page never fetches that chunk. */
+                tools.map((t) => (
+                  <div
+                    id={`${t.id}-row`}
+                    class="border-border mt-1 flex flex-col gap-1 border-t pt-3"
+                  >
+                    <label class="text-text flex cursor-pointer items-center gap-2 text-sm font-medium">
+                      <input
+                        type="checkbox"
+                        id={`${t.id}-toggle`}
+                        class={CHECKBOX}
+                      />
+                      {t.label}
+                    </label>
+                    <span
+                      id={`${t.id}-status`}
+                      class="text-text-muted text-[0.6875rem] leading-snug"
+                    >
+                      {t.note}
+                    </span>
+                  </div>
+                ))
               }
-              <div
-                id="paths-row"
-                class="border-border mt-1 flex flex-col gap-1 border-t pt-3"
-              >
-                <label
-                  class="text-text flex cursor-pointer items-center gap-2 text-sm font-medium"
-                >
-                  <input
-                    type="checkbox"
-                    id="paths-toggle"
-                    class="accent-accent size-4 cursor-pointer"
-                  />
-                  Motion paths
-                </label>
-                <span
-                  id="paths-status"
-                  class="text-text-muted text-[0.6875rem] leading-snug"></span>
-              </div>
-              {
-                /* DEV: piece-name inspector. Same opt-in shape as the paths
-                   toggle — the inspector module is only imported once ticked. */
-              }
-              <div
-                id="inspect-row"
-                class="border-border mt-1 flex flex-col gap-1 border-t pt-3"
-              >
-                <label
-                  class="text-text flex cursor-pointer items-center gap-2 text-sm font-medium"
-                >
-                  <input
-                    type="checkbox"
-                    id="inspect-toggle"
-                    class="accent-accent size-4 cursor-pointer"
-                  />
-                  Inspect
-                </label>
-                <span
-                  id="inspect-status"
-                  class="text-text-muted text-[0.6875rem] leading-snug"
-                >
-                  Hover a piece for its node name; click to copy it.
-                </span>
-              </div>
-              {
-                /* DEV: hero-camera preview — while ON (and an animation is
-                   selected) the camera plays the homepage hero's scripted
-                   rewrap → bloom choreography as the progress slider scrubs,
-                   instead of the free orbit. */
-              }
-              <div
-                id="storycam-row"
-                class="border-border mt-1 flex flex-col gap-1 border-t pt-3"
-              >
-                <label
-                  class="text-text flex cursor-pointer items-center gap-2 text-sm font-medium"
-                >
-                  <input
-                    type="checkbox"
-                    id="storycam-toggle"
-                    class="accent-accent size-4 cursor-pointer"
-                  />
-                  Hero camera
-                </label>
-                <span class="text-text-muted text-[0.6875rem] leading-snug">
-                  Progress plays the homepage's rewrap → bloom camera move
-                  (select an animation first).
-                </span>
-              </div>
             </div>
 
             {
-              /* Param containers grid-stack too — the tallest set reserves the
-              height even under None, so selecting an animation never resizes
-              the tab (visibility toggle, same as the tabpanels). */
+              /* Param sets share one grid cell too, so the tab height is stable. */
             }
             <div class="grid">
               {
@@ -346,17 +296,14 @@ const shadingTransitions = [
                         <span class="text-text flex items-center justify-between text-sm font-medium">
                           <span class="flex items-baseline gap-2">
                             {p.label}
-                            {/* the PHYSICAL value (the uniform's own unit, post-clamp) —
-                                the number a knobDefault would be written as. Kept live
-                                by the input handler through the anim's readParam. */}
+                            {/* live value, in the uniform's own units */}
                             <output
                               data-param-out={p.id}
                               class="text-accent font-mono text-xs tabular-nums"
                             >
                               {fmtParam(p.phys)}
                             </output>
-                            {/* the DEFAULT, static — the knob's shipped value, so a
-                                tuning session always sees how far it has drifted */}
+                            {/* default value */}
                             <span class="text-text-muted/70 font-mono text-[10px] tabular-nums">
                               / {fmtParam(p.phys)}
                             </span>
@@ -372,7 +319,7 @@ const shadingTransitions = [
                           min="0"
                           max="100"
                           value={String(p.value)}
-                          class="accent-accent h-2 w-full cursor-pointer"
+                          class={RANGE}
                         />
                       </label>
                     ))}
@@ -401,24 +348,41 @@ const shadingTransitions = [
     type PathViz,
     type ShadingMode,
     type TransitionName,
+    watchTheme,
   } from "../lib/lens";
-  import { watchTheme } from "../lib/lens";
+
+  const byId = <T extends HTMLElement>(id: string) =>
+    document.getElementById(id) as T | null;
+  const all = <T extends HTMLElement>(selector: string) => [
+    ...document.querySelectorAll<T>(selector),
+  ];
+  /** Show a status line, in the highlight colour when `ok` is false. */
+  const setStatus = (el: HTMLElement | null, text: string, ok: boolean) => {
+    if (!el) return;
+    el.textContent = text;
+    el.classList.toggle("text-highlight", !ok);
+    el.classList.toggle("text-text-muted", ok);
+  };
+  /** Show or hide a grid-stacked element without changing its layout. */
+  const setStacked = (el: HTMLElement, on: boolean) => {
+    el.classList.toggle("invisible", !on);
+    el.classList.toggle("pointer-events-none", !on);
+    el.setAttribute("aria-hidden", String(!on));
+  };
 
   async function boot() {
-    const canvas = document.getElementById("scene") as HTMLCanvasElement | null;
+    const canvas = byId<HTMLCanvasElement>("scene");
     if (!canvas) return;
     let scene;
     try {
-      // Pulled back slightly from the story hero's framing so the SEATED lens
-      // fits fully inside the region the floating panel doesn't cover.
+      // Pulled back a little so the lens clears the floating panel.
       scene = await initScene(canvas, { cameraDistance: 1.22 });
     } catch (err) {
-      // Swap the canvas for a static message and skip the controls. Only
-      // blame the browser when it truly lacks WebGPU/WebGL2 — this catch also
-      // sees model fetch failures.
+      // Show the fallback message; blame the browser only if it lacks
+      // WebGPU/WebGL2 (this also catches model load failures).
       console.warn("lens viewer: init failed, showing fallback message", err);
       canvas.remove();
-      const fallback = document.getElementById("scene-fallback");
+      const fallback = byId("scene-fallback");
       if (fallback) {
         const supported =
           "gpu" in navigator ||
@@ -429,18 +393,17 @@ const shadingTransitions = [
         }
         fallback.classList.replace("hidden", "flex");
       }
-      document.getElementById("controls-panel")?.setAttribute("inert", "");
+      byId("controls-panel")?.setAttribute("inert", "");
       return;
     }
 
-    // The canned animations arrive via their own lazy chunk: module-scope
-    // recipeKnob calls make the family layer unshakeable from a static graph,
-    // so the homepage hero must not carry it.
+    // Loaded lazily so the homepage bundle does not include the animations.
     const { ANIMATIONS, fmtParam } = await loadAnimations();
-    // Refresh one slider's physical-value readout off its uniform (the truth
-    // after the knob's range clamp — what a baked default would be).
+    const animById = (id: string | undefined) =>
+      ANIMATIONS.find((a) => a.id === id);
+    /** Update a param slider's readout from its uniform's current value. */
     const syncParamOut = (
-      anim: (typeof ANIMATIONS)[number] | undefined,
+      anim: LensAnimation | undefined,
       input: HTMLInputElement,
     ) => {
       const out = input
@@ -450,47 +413,33 @@ const shadingTransitions = [
       if (out && v !== undefined) out.textContent = fmtParam(v);
     };
 
-    // Slider ids match SceneState channel names 1:1, so adding a slider is one
-    // row in the frontmatter table plus one entry here.
+    // Must match the frontmatter `sliders` ids.
     const sliderChannels = ["zoom", "focus", "aperture", "explode"] as const;
+    const sliderInput = (id: string) => byId<HTMLInputElement>(`slider-${id}`);
     for (const id of sliderChannels) {
-      const input = document.getElementById(
-        `slider-${id}`,
-      ) as HTMLInputElement | null;
+      const input = sliderInput(id);
       input?.addEventListener("input", () => {
         scene.state[`${id}Target`] = Number(input.value) / 100;
       });
     }
 
     for (const group of ["hood", "filter", "caps"] as AccessoryGroup[]) {
-      const box = document.getElementById(
-        `acc-${group}`,
-      ) as HTMLInputElement | null;
+      const box = byId<HTMLInputElement>(`acc-${group}`);
       box?.addEventListener("change", () =>
         scene.setAccessory(group, box.checked),
       );
     }
 
-    // follow the site theme toggle — re-palettes the current shading mode
     watchTheme((light) => scene.setTheme(light));
 
-    // The seven technical looks arrive via their own lazy chunk. Awaited here,
-    // before the buttons are wired, so every swap below stays SYNCHRONOUS — a
-    // transition cuts on its own apex frame and cannot wait for a fetch.
+    // Load the extra shading modes up front so each swap below is synchronous.
     const benchOk = await scene.enableShadingBench();
-    const shadingButtons = [
-      ...document.querySelectorAll<HTMLButtonElement>(
-        "#shading-group button[data-shading]",
-      ),
-    ];
-    // Buttons swap THROUGH the selected transition choreography (blink/twist/
-    // molt/punch) so the bench demonstrates the feel; the select is the knob.
-    const transitionSelect = document.getElementById(
-      "shading-transition",
-    ) as HTMLSelectElement | null;
+    const shadingButtons = all<HTMLButtonElement>(
+      "#shading-group button[data-shading]",
+    );
+    const transitionSelect = byId<HTMLSelectElement>("shading-transition");
     for (const btn of shadingButtons) {
-      // if the bench chunk failed to load (stale deploy, dropped tunnel), a
-      // disabled button beats a transition choreography that lands on nothing
+      // If the extra modes failed to load, only realistic and ink work.
       if (
         !benchOk &&
         btn.dataset.shading !== "realistic" &&
@@ -508,29 +457,15 @@ const shadingTransitions = [
         }
       });
     }
-    // default look — must match the aria-pressed button in the markup
-    scene.setShading("ink");
+    scene.setShading("ink"); // must match the pressed button in the markup
 
-    // --- Control-panel tabs --------------------------------------------------
-    // Panels grid-stack in ONE cell, so the inactive one is hidden with
-    // VISIBILITY — it keeps its layout box and the panel never resizes.
-    const tabs = [
-      ...document.querySelectorAll<HTMLButtonElement>(
-        '[role="tablist"] [role="tab"]',
-      ),
-    ];
-    const setStacked = (el: HTMLElement, on: boolean) => {
-      el.classList.toggle("invisible", !on);
-      el.classList.toggle("pointer-events-none", !on);
-      el.setAttribute("aria-hidden", String(!on));
-    };
+    // --- Tabs ---
+    const tabs = all<HTMLButtonElement>('[role="tablist"] [role="tab"]');
     const selectTab = (tab: HTMLButtonElement) => {
       for (const t of tabs) {
         const on = t === tab;
         t.setAttribute("aria-selected", String(on));
-        const panel = document.getElementById(
-          t.getAttribute("aria-controls") ?? "",
-        );
+        const panel = byId(t.getAttribute("aria-controls") ?? "");
         if (panel) setStacked(panel, on);
       }
     };
@@ -540,129 +475,93 @@ const shadingTransitions = [
         localStorage.setItem("lens-tab", t.id);
       });
 
-    // --- Animations showcase -------------------------------------------------
-    // Selecting an animation drives the channels from ONE progress slider and
-    // disables the manual sliders; None restores manual control by re-applying
-    // the sliders' current values to the state targets.
-    const sliderGroup = document.getElementById("slider-group");
-    const animButtons = [
-      ...document.querySelectorAll<HTMLButtonElement>(
-        "#animation-group button[data-animation]",
-      ),
-    ];
-    const progressRow = document.getElementById("animation-progress-row");
-    const progressInput = document.getElementById(
-      "animation-progress",
-    ) as HTMLInputElement | null;
-    const animHint = document.getElementById("animation-hint");
-    // One base-invisible container of param sliders per animation that has them.
-    const paramContainers = [
-      ...document.querySelectorAll<HTMLElement>("[data-anim-params]"),
-    ];
+    // --- Animations ---
+    // An animation drives the channels from the progress slider and disables
+    // the manual sliders; None hands control back to them.
+    const sliderGroup = byId("slider-group");
+    const animButtons = all<HTMLButtonElement>(
+      "#animation-group button[data-animation]",
+    );
+    const progressRow = byId("animation-progress-row");
+    const progressInput = byId<HTMLInputElement>("animation-progress");
+    const progressOf = () => Number(progressInput?.value ?? 0) / 100;
+    const animHint = byId("animation-hint");
+    // One param-slider set per animation that has params.
+    const paramContainers = all<HTMLElement>("[data-anim-params]");
     let activeAnim: LensAnimation | null = null;
 
-    // --- Motion paths --------------------------------------------------------
-    // The checkbox is the only gate: ticking it dynamically imports the
-    // visualizer, so an untouched page fetches none of it.
-    const pathsToggle = document.getElementById(
-      "paths-toggle",
-    ) as HTMLInputElement | null;
-    const pathsStatus = document.getElementById("paths-status");
+    // --- Motion paths ---
+    const pathsToggle = byId<HTMLInputElement>("paths-toggle");
+    const pathsStatus = byId("paths-status");
     let pathViz: PathViz | null = null;
     let pathsDebounce = 0;
-    const setPathStatus = (text: string, ok: boolean) => {
-      if (!pathsStatus) return;
-      pathsStatus.textContent = text;
-      pathsStatus.classList.toggle("text-highlight", !ok);
-      pathsStatus.classList.toggle("text-text-muted", ok);
-    };
     const refreshPaths = async () => {
-      // BOTH gates: unticking leaves the visualizer instantiated, and its
-      // show() walk must not keep running invisibly on every knob drag.
       if (!pathViz || !pathsToggle?.checked) return;
       await pathViz.show(activeAnim, progressOf);
     };
-    // (Re)apply the toggle. Split out of the listener because the BROWSER
-    // restores `checked` across a reload without firing `change`.
+    // Re-walk the motion path once a param drag settles.
+    const refreshPathsSoon = () => {
+      window.clearTimeout(pathsDebounce);
+      pathsDebounce = window.setTimeout(() => void refreshPaths(), 250);
+    };
     const applyPathsToggle = async () => {
       if (pathsToggle?.checked) {
-        pathViz ??= await scene.enablePathViz(setPathStatus);
+        pathViz ??= await scene.enablePathViz((text, ok) =>
+          setStatus(pathsStatus, text, ok),
+        );
         pathViz?.setVisible(true);
         await refreshPaths();
       } else {
         pathViz?.setVisible(false);
-        // …and cancel any walk already queued by a knob drag, so "off" is off
         window.clearTimeout(pathsDebounce);
       }
     };
     pathsToggle?.addEventListener("change", () => void applyPathsToggle());
 
-    // --- Inspect -------------------------------------------------------------
-    // Same opt-in shape as the paths toggle: the module loads on the first tick
-    // and the scene keeps the single inspector.
-    const inspectToggle = document.getElementById(
-      "inspect-toggle",
-    ) as HTMLInputElement | null;
-    const inspectStatus = document.getElementById("inspect-status");
-    const INSPECT_HINT = "Hover a piece for its node name; click to copy it.";
+    // --- Inspect ---
+    const inspectToggle = byId<HTMLInputElement>("inspect-toggle");
+    const inspectStatus = byId("inspect-status");
+    const inspectHint = inspectStatus?.textContent?.trim() ?? "";
     const applyInspectToggle = async () => {
       if (!inspectToggle) return;
       const ok = await scene.enableInspect(inspectToggle.checked);
-      if (!inspectStatus) return;
-      inspectStatus.textContent = ok
-        ? INSPECT_HINT
-        : "inspector failed to start — see console";
-      inspectStatus.classList.toggle("text-highlight", !ok);
-      inspectStatus.classList.toggle("text-text-muted", ok);
+      setStatus(
+        inspectStatus,
+        ok ? inspectHint : "inspector failed to start — see console",
+        ok,
+      );
     };
     inspectToggle?.addEventListener("change", () => void applyInspectToggle());
 
-    // fromDefaults: while an ANIMATION is active, slider channels sit at their
-    // markup defaults, not the user's positions — a dragged explode slider
-    // would otherwise keep flying the ladder recipe under the animation.
-    const applyManualSliders = (anim?: { manualMech?: boolean } | null) => {
+    // Under an animation the slider channels take their markup defaults and
+    // the sliders lock, except zoom/focus/aperture when it is `manualMech`.
+    const syncSliders = (anim: LensAnimation | null) => {
+      const mechFree = Boolean(anim?.manualMech);
+      const locked = Boolean(anim) && !mechFree;
+      sliderGroup?.classList.toggle("pointer-events-none", locked);
+      sliderGroup?.classList.toggle("opacity-50", locked);
       for (const id of sliderChannels) {
-        const input = document.getElementById(
-          `slider-${id}`,
-        ) as HTMLInputElement | null;
-        // Under an animation the channels snap to slider DEFAULTS — except
-        // the mechanism trio under a manualMech bench (rose/scratch), which
-        // keeps the LIVE slider values: the mechanisms compose with the pose.
-        const fromDefaults =
-          Boolean(anim) && !(anim?.manualMech && id !== "explode");
-        if (input)
-          scene.state[`${id}Target`] =
-            Number(fromDefaults ? input.defaultValue : input.value) / 100;
+        const input = sliderInput(id);
+        if (!input) continue;
+        const off = Boolean(anim) && !(mechFree && id !== "explode");
+        scene.state[`${id}Target`] =
+          Number(off ? input.defaultValue : input.value) / 100;
+        input.disabled = off;
+        input.closest("label")?.classList.toggle("opacity-50", off && mechFree);
       }
     };
 
-    // Channels an animation may drive — reset to registry defaults on
-    // switch/None so no stale pose survives. The list is DERIVED from the
-    // channel registry, so a new animReset channel needs no edit here. Slider
-    // channels are restored by applyManualSliders instead.
-    const resetAnimChannels = () => {
-      for (const c of ANIM_RESET_CHANNELS)
-        scene.state[`${c}Target`] = CHANNEL_DEFAULTS[c];
-    };
-
-    const progressOf = () => Number(progressInput?.value ?? 0) / 100;
-
-    // --- Hero camera preview -------------------------------------------------
-    // Maps animation progress p onto the hero's story progress. Both ends are
-    // DERIVED from scene ranges, so appending a beat after capsOn keeps the
-    // preview on the finale instead of stretching it over the new scene.
+    // --- Hero camera ---
+    // Animation progress maps onto the story from "rewrap" through "capsOn".
     const STORY_CAM_SPAN: readonly [number, number] = [
       rangeOf("rewrap").p0,
       rangeOf("capsOn").p1,
     ];
     const storyPOf = (p: number) =>
       STORY_CAM_SPAN[0] + (STORY_CAM_SPAN[1] - STORY_CAM_SPAN[0]) * p;
-    const storyCamToggle = document.getElementById(
-      "storycam-toggle",
-    ) as HTMLInputElement | null;
+    const storyCamToggle = byId<HTMLInputElement>("storycam-toggle");
     const storyCamActive = () => Boolean(storyCamToggle?.checked && activeAnim);
-    // (Re)apply the toggle. Engaging SNAPS the story channel (value AND
-    // target): easing up from 0 would fly the camera through the whole story.
+    // Engaging snaps the story channel so the camera doesn't sweep the story.
     const syncStoryCam = () => {
       const on = storyCamActive();
       scene.setStoryCamera(on);
@@ -674,66 +573,47 @@ const shadingTransitions = [
       syncStoryCam();
     });
 
-    // Ease the INPUT, not the channels: `shown` chases the slider p with a
-    // scrub cushion and LANDS EXACTLY on it. In p-space, so every transient
-    // frame replays the actual choreography and at rest the frame is a pure
-    // function of the slider — no easing residue, exact endpoints.
-    // Reduced-motion always lands directly.
-    const makeScrubGlide = (applyAt: (p: number) => void) => {
-      const EASE = 0.15;
-      let shown = 0;
-      let target = 0;
-      let raf = 0;
-      let last = 0;
-      const cancel = () => {
-        if (raf) cancelAnimationFrame(raf);
-        raf = 0;
-      };
-      const snap = (p: number) => {
-        cancel();
-        shown = target = p;
-        applyAt(p);
-      };
-      // stop the chase WITHOUT applying — for teardown, where a trailing eased
-      // frame must not reach the outgoing selection.
-      const stop = () => {
-        cancel();
-        target = shown;
-      };
-      const step = (now: number) => {
-        raf = 0;
-        const gap = target - shown;
-        if (Math.abs(gap) < 5e-4) return snap(target);
-        const a = 1 - Math.pow(1 - EASE, (now - last) / 16.7);
-        last = now;
-        shown += gap * Math.min(1, a);
-        applyAt(shown);
-        raf = requestAnimationFrame(step);
-      };
-      const to = (p: number) => {
-        if (window.matchMedia("(prefers-reduced-motion: reduce)").matches)
-          return snap(p);
-        target = p; // a running chase just retargets
-        if (!raf) {
-          last = performance.now();
-          raf = requestAnimationFrame(step);
-        }
-      };
-      return { to, snap, stop };
-    };
-    const animGlide = makeScrubGlide((p) => {
-      const anim = activeAnim;
-      if (!anim) return;
-      anim.apply(p, scene.state);
+    // The shown progress eases toward the slider and lands exactly on it, so
+    // every frame is a real pose of the animation. Reduced motion jumps.
+    const EASE = 0.15;
+    let shownP = 0;
+    let targetP = 0;
+    let glideRaf = 0;
+    let glideLast = 0;
+    const applyAt = (p: number) => {
+      if (!activeAnim) return;
+      activeAnim.apply(p, scene.state);
       scene.invalidate();
-    });
+    };
+    const snapTo = (p: number) => {
+      cancelAnimationFrame(glideRaf);
+      glideRaf = 0;
+      shownP = targetP = p;
+      applyAt(p);
+    };
+    const glideStep = (now: number) => {
+      glideRaf = 0;
+      const gap = targetP - shownP;
+      if (Math.abs(gap) < 5e-4) return snapTo(targetP);
+      const a = 1 - Math.pow(1 - EASE, (now - glideLast) / 16.7);
+      glideLast = now;
+      shownP += gap * Math.min(1, a);
+      applyAt(shownP);
+      glideRaf = requestAnimationFrame(glideStep);
+    };
+    const glideTo = (p: number) => {
+      if (window.matchMedia("(prefers-reduced-motion: reduce)").matches)
+        return snapTo(p);
+      targetP = p;
+      if (!glideRaf) {
+        glideLast = performance.now();
+        glideRaf = requestAnimationFrame(glideStep);
+      }
+    };
 
     const selectAnimation = (anim: LensAnimation | null) => {
-      activeAnim?.exit?.(); // restore anything the outgoing animation turned on
-      // …then put EVERY recipe knob back on its default: exit() only undoes
-      // what an animation hand-listed, and most expose knobs without one.
-      // BETWEEN the two calls on purpose — after exit() so a restore isn't
-      // re-clobbered, before enter() so the incoming preset survives.
+      activeAnim?.exit?.();
+      // Must sit between exit() and enter() so enter()'s presets survive.
       resetRecipeKnobs();
       activeAnim = anim;
       anim?.enter?.();
@@ -741,46 +621,21 @@ const shadingTransitions = [
       for (const btn of animButtons) {
         btn.setAttribute(
           "aria-pressed",
-          String((btn.dataset.animation ?? "none") === (anim?.id ?? "none")),
+          String(btn.dataset.animation === (anim?.id ?? "none")),
         );
       }
-      resetAnimChannels();
-      applyManualSliders(anim);
-      // direct apply (snap): selecting isn't a scrub jump — also cancels any
-      // glide left running by the outgoing animation
-      animGlide.snap(progressOf());
-      scene.invalidate(); // enter/apply may drive bare uniforms
-      const disabled = Boolean(anim);
-      // A manualMech bench keeps zoom/focus/aperture LIVE — only explode is
-      // animation-owned there, so each slider decides for itself.
-      const mechFree = Boolean(anim?.manualMech);
-      sliderGroup?.classList.toggle(
-        "pointer-events-none",
-        disabled && !mechFree,
-      );
-      sliderGroup?.classList.toggle("opacity-50", disabled && !mechFree);
-      for (const id of sliderChannels) {
-        const input = document.getElementById(
-          `slider-${id}`,
-        ) as HTMLInputElement | null;
-        if (input) {
-          const off = disabled && !(mechFree && id !== "explode");
-          input.disabled = off;
-          input
-            .closest("label")
-            ?.classList.toggle("opacity-50", off && mechFree);
-        }
-      }
-      // visibility (not display) so the reserved space never changes — the
-      // Animations tab keeps one stable height across None/reassemble/rose
-      if (progressRow) setStacked(progressRow, disabled);
+      // Reset every channel an animation may drive (slider channels excepted).
+      for (const c of ANIM_RESET_CHANNELS)
+        scene.state[`${c}Target`] = CHANNEL_DEFAULTS[c];
+      syncSliders(anim);
+      snapTo(progressOf());
+      scene.invalidate();
+      if (progressRow) setStacked(progressRow, Boolean(anim));
       if (animHint) animHint.textContent = anim?.hint ?? "";
       for (const c of paramContainers) {
         setStacked(c, c.dataset.animParams === anim?.id);
-        // Every knob behind these sliders was just reset or re-preset by
-        // enter(), and each input's markup `value` reproduces exactly that, so
-        // the thumbs go back to it. The readout re-reads the uniform.
-        const ca = ANIMATIONS.find((a) => a.id === c.dataset.animParams);
+        // Knobs were just reset, so thumbs return to their markup defaults.
+        const ca = animById(c.dataset.animParams);
         for (const input of c.querySelectorAll<HTMLInputElement>(
           "input[data-param]",
         )) {
@@ -788,89 +643,68 @@ const shadingTransitions = [
           syncParamOut(ca, input);
         }
       }
-      syncStoryCam(); // hero camera engages/releases with the selection
+      syncStoryCam();
       void refreshPaths();
     };
 
     for (const btn of animButtons) {
-      btn.addEventListener("click", () => {
-        const id = btn.dataset.animation;
-        selectAnimation(
-          id === "none" ? null : (ANIMATIONS.find((a) => a.id === id) ?? null),
-        );
-      });
+      btn.addEventListener("click", () =>
+        selectAnimation(animById(btn.dataset.animation) ?? null),
+      );
     }
 
-    // Boot into the state you were last in: tab, animation, progress and the
-    // hero-camera choice all restore, so a reload lands where you left off.
-    {
-      const tabId = localStorage.getItem("lens-tab") ?? "tab-animations";
-      const tab = tabs.find((t) => t.id === tabId);
-      if (tab) selectTab(tab);
-      const storedP = localStorage.getItem("lens-progress");
-      if (storedP && progressInput) progressInput.value = storedP;
-      const storedAnim = localStorage.getItem("lens-anim");
-      if (storedAnim && storedAnim !== "none") {
-        const anim = ANIMATIONS.find((a) => a.id === storedAnim);
-        if (anim) selectAnimation(anim);
-      }
-      if (localStorage.getItem("lens-herocam") === "1" && storyCamToggle) {
-        storyCamToggle.checked = true;
-        syncStoryCam();
-      }
-      // The BROWSER reinstates a checkbox's `checked` across a reload, but
-      // silently — no `change` fires, so the listener alone would leave the box
-      // ticked over a dead instrument. Applied HERE, after the animation
-      // restore, because the path walk is of the selected animation.
-      void applyPathsToggle();
-      void applyInspectToggle();
+    // Restore the last tab, animation, progress and hero-camera choice.
+    const tab = tabs.find(
+      (t) => t.id === (localStorage.getItem("lens-tab") ?? "tab-animations"),
+    );
+    if (tab) selectTab(tab);
+    const storedP = localStorage.getItem("lens-progress");
+    if (storedP && progressInput) progressInput.value = storedP;
+    const storedAnim = animById(localStorage.getItem("lens-anim") ?? undefined);
+    if (storedAnim) selectAnimation(storedAnim);
+    if (localStorage.getItem("lens-herocam") === "1" && storyCamToggle) {
+      storyCamToggle.checked = true;
+      syncStoryCam();
     }
+    // Browsers restore checkbox state on reload without a `change` event.
+    // After the animation restore, since the path walk uses it.
+    void applyPathsToggle();
+    void applyInspectToggle();
+
     progressInput?.addEventListener("input", () => {
-      if (activeAnim) animGlide.to(progressOf());
-      scene.invalidate(); // apply may drive bare uniforms
+      if (activeAnim) glideTo(progressOf());
+      scene.invalidate();
       localStorage.setItem("lens-progress", progressInput.value);
-      // Target only (eased): the camera glides after the scrub exactly like
-      // the mechanism channels do.
+      // Target only, so the camera eases after the scrub.
       if (storyCamActive()) scene.state.storyTarget = storyPOf(progressOf());
     });
 
-    // Per-animation param sliders push into their backing shader uniform; the
-    // scene only repaints on dirty/easing, so a bare tweak needs invalidate().
+    // Param sliders write their shader uniforms directly.
     for (const c of paramContainers) {
-      const anim = ANIMATIONS.find((a) => a.id === c.dataset.animParams);
-      // Reset: every thumb back to its markup default, pushed through setParam
-      // so the uniforms follow and the readouts re-sync off them.
-      c.querySelector<HTMLButtonElement>(
-        "button[data-param-reset]",
-      )?.addEventListener("click", () => {
-        for (const input of c.querySelectorAll<HTMLInputElement>(
-          "input[data-param]",
-        )) {
-          input.value = input.defaultValue;
-          anim?.setParam?.(
-            input.dataset.param ?? "",
-            Number(input.defaultValue) / 100,
-          );
-          syncParamOut(anim, input);
-        }
-        scene.invalidate();
-        window.clearTimeout(pathsDebounce);
-        pathsDebounce = window.setTimeout(() => void refreshPaths(), 250);
-      });
-      for (const input of c.querySelectorAll<HTMLInputElement>(
-        "input[data-param]",
-      )) {
-        input.addEventListener("input", () => {
-          anim?.setParam?.(
-            input.dataset.param ?? "",
-            Number(input.value) / 100,
-          );
-          syncParamOut(anim, input);
+      const anim = animById(c.dataset.animParams);
+      const inputs = [
+        ...c.querySelectorAll<HTMLInputElement>("input[data-param]"),
+      ];
+      const setParam = (input: HTMLInputElement, value: string) => {
+        anim?.setParam?.(input.dataset.param ?? "", Number(value) / 100);
+        syncParamOut(anim, input);
+      };
+      c.querySelector("button[data-param-reset]")?.addEventListener(
+        "click",
+        () => {
+          for (const input of inputs) {
+            input.value = input.defaultValue;
+            setParam(input, input.defaultValue);
+          }
           scene.invalidate();
-          // A knob change reshapes the whole path, so re-walk once the drag
-          // settles; the visualizer's live check flags the gap meanwhile.
-          window.clearTimeout(pathsDebounce);
-          pathsDebounce = window.setTimeout(() => void refreshPaths(), 250);
+          refreshPathsSoon();
+        },
+      );
+      for (const input of inputs) {
+        input.addEventListener("input", () => {
+          setParam(input, input.value);
+          scene.invalidate();
+          refreshPathsSoon();
         });
       }
     }

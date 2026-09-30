@@ -1,13 +1,8 @@
 ---
 /**
- * Description panel (inner sidebar of the project page). Mobile: a fixed
- * drawer like the rail. Desktop: width switches 26rem ↔ a 2rem gutter strip
- * that IS the reopen button and takes real layout space (the demo iframe lays
- * out beside it). The inner column is FIXED at 26rem so the content clips
- * instead of rewrapping.
- *
- * The rendered markdown body is passed via the default slot; expects the
- * page's `projectPanels` Alpine scope (`description` open state).
+ * Project-page description sidebar. Mobile: a drawer. Desktop: 26rem, or a
+ * 2rem strip that reopens it; the inner column stays 26rem so content clips
+ * instead of rewrapping. Slot = rendered markdown; needs `projectPanels`.
  */
 import { Icon } from "astro-icon/components";
 import type { CollectionEntry } from "astro:content";
@@ -18,9 +13,7 @@ interface Props {
 }
 const { project, posts } = Astro.props;
 
-// `url` is guaranteed by the page's getStaticPaths filter. It may be an
-// internal path (e.g. "/lens") or an external URL — only external URLs have
-// a host.
+// getStaticPaths only passes projects with a url: an internal path or an external URL.
 const url = project.data.url!;
 const isInternalDemo = url.startsWith("/");
 const siteLabel = isInternalDemo ? url : new URL(url).host;
@@ -40,8 +33,7 @@ const siteLabel = isInternalDemo ? url : new URL(url).host;
     x-on:click="description = true"
     aria-label="Open description"
   >
-    <!-- h-10 top row mirrors the panel headers, so this chevron sits at
-         the same height as the rail's and the expanded panel's -->
+    <!-- h-10 matches the panel headers so the chevrons line up -->
     <span class="flex h-10 w-full shrink-0 items-center justify-center">
       <Icon name="lucide:chevron-right" class="size-4" aria-hidden="true" />
     </span>
@@ -52,10 +44,8 @@ const siteLabel = isInternalDemo ? url : new URL(url).host;
     </span>
   </button>
   <div class="flex size-full flex-col lg:w-104 lg:in-data-[open=false]:hidden">
-    <!-- the whole header row collapses the panel (label included). The
-         chevron sits at the LEFT edge — the same spot the gutter's open
-         chevron occupies when collapsed, beside the rail's chevron, so
-         the controls line up -->
+    <!-- the whole header row collapses the panel; the chevron sits where the
+         collapsed strip's chevron does -->
     <button
       type="button"
       class="border-border text-text-muted hover:text-text flex h-10 w-full shrink-0 items-center gap-2 border-b pr-4 text-left"

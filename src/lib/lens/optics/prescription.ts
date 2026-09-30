@@ -1,15 +1,12 @@
-// The prescription: the 13 optical elements as an authored constant table, in
-// gltf-frame millimetres (optical axis = gltf +Y, front at +Y). Authored, never
-// re-derived at runtime; re-measure with `window.__lensPrescriptionProbe()`.
+// The 13 optical elements, in glTF-frame millimetres (optical axis = +Y, front
+// at +Y). Re-measure with `window.__lensPrescriptionProbe()`.
 //
-// Sign convention: a surface is f(q) = c·|q|² − 2·q_y = 0 for q = p − (0,yMm,0),
-// so its centre of curvature sits at y = yMm + 1/c and positive c puts that
-// centre toward the front (+Y). Written in curvature, never radius, so c = 0 is
-// flat with no branch.
+// A surface is c·|q|² − 2·q_y = 0 for q = p − (0, yMm, 0): its centre of
+// curvature is at y = yMm + 1/c, and c = 0 is flat.
 
 /** One refracting surface. */
 export interface OpticalSurface {
-  /** curvature 1/mm; centre of curvature at yMm + 1/c. 0 encodes flat. */
+  /** curvature, 1/mm (0 = flat) */
   c: number;
   /** axial vertex position, gltf Y mm */
   yMm: number;
@@ -18,35 +15,28 @@ export interface OpticalSurface {
 }
 
 export interface PrescriptionEntry {
-  /** matches the GLB node name exactly — `Element_01` … `Element_13` */
+  /** GLB node name, `Element_01` … `Element_13` */
   id: string;
   front: OpticalSurface;
   rear: OpticalSurface;
-  /** refractive index at the reference wavelength (core/model.ts ships 1.52) */
+  /** refractive index */
   ior: number;
-  /** 1 = this element rides Optics_G4_Focus (L4 / Element_12) */
+  /** 1 = moves with the focus group (Optics_G4_Focus) */
   focusRide: 0 | 1;
 }
 
-/** The focus throw, in mm of axial element travel at focus = 1. A literal, not
- *  an import of MECHANISM.focusMm: optics/ stays three-free. A test keeps the
- *  two equal. */
+/** Focus-group travel at focus = 1, mm; must equal MECHANISM.focusMm (a test checks). */
 export const FOCUS_MM: number = 1.5;
 
-/** The iris stop — a stop plane, not glass, so not a member of the table below.
- *  The clear semi-diameter runs irisMaxMm → irisMinMm as the aperture channel
- *  rises (0 = f/2.8 wide open → 1 = f/22); rays outside it die. irisMaxMm is
- *  capped by the smaller clear aperture straddling the stop (Element_06's
- *  rear). */
+/** The iris stop plane; its clear semi-diameter runs irisMaxMm → irisMinMm as
+ *  the aperture channel goes 0 (f/2.8) → 1 (f/22). */
 export const IRIS = {
   yMm: 37.5,
   irisMinMm: 1.2,
   irisMaxMm: 5.8,
 };
 
-// `ior` and `focusRide` are authored on top of the probe's output. The cemented
-// pairs (E01/E02, E04/E05, E09/E10) have each interface's two yMm clamped to
-// their mean, so the two surfaces share one plane.
+// Cemented pairs (E01/E02, E04/E05, E09/E10) share one yMm at their interface.
 /* prettier-ignore */
 export const PRESCRIPTION: PrescriptionEntry[] = [
   { id: "Element_01", front: { c: -0.037001, yMm: 73.208, apertureMm: 18.210 }, rear: { c: -0.047592, yMm: 71.832, apertureMm: 18.210 }, ior: 1.52, focusRide: 0 }, // cemented

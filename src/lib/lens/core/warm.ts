@@ -1,24 +1,20 @@
 import type * as THREE from "three/webgpu";
 
-// The scene's dry frames: every draw taken to pay a compile or an upload ahead
-// of the frame that first shows it. tick() runs one step per drawn tick, ahead
-// of its own render, and never a second pass draw in one tick — the wormhole
-// pass draws its scene once per tick (three's frame guard on PassNode), so a
-// step that needs the pass on a mounted tick rides the tick's real draw.
+// Warm-up draws: off-screen draws that compile shaders or upload buffers before
+// the frame that first shows something. tick() runs at most one per frame. The
+// post pass renders the scene only once per frame, so a pass step on a frame
+// already drawing through the pass just joins that draw.
 
-/** One dry frame the scene owes. */
+/** One queued warm-up draw. */
 export interface WarmStep {
-  /** Runs only on a tick with the pass down and no dive live. Every canvas
-   *  draw is one: on a live dive a canvas render would compile the dive's
-   *  clones in the canvas context, on a real frame. */
+  /** only run on a frame with no post pass and no fly-through */
   bare: boolean;
-  /** `mounted` is whether the tick draws through the pass. A step that mounts
-   *  objects for that draw returns the hook that takes them off again, called
-   *  after the render. */
+  /** `mounted`: this frame draws through the post pass. May return a cleanup
+   *  to run after the frame's render. */
   run(mounted: boolean): (() => void) | void;
 }
 
-/** What a tick offers a step. */
+/** The current frame's state. */
 export interface WarmTick {
   mounted: boolean;
   bare: boolean;
@@ -27,9 +23,8 @@ export interface WarmTick {
 export interface WarmQueue {
   push(...steps: WarmStep[]): void;
   readonly length: number;
-  /** Run the first step this tick can carry. Steps the tick cannot carry stay
-   *  queued for one that can. Returns the step's after-render hook, or null if
-   *  nothing ran. */
+  /** Run the first step this frame allows. Returns its after-render hook, or
+   *  null if nothing ran. */
   step(tick: WarmTick): { after?: () => void } | null;
 }
 
@@ -52,18 +47,17 @@ export function createWarmQueue(): WarmQueue {
   };
 }
 
-/** The draws a warm step is made of. */
 export interface WarmDrawEnv {
-  /** where a parked object is mounted for its draw */
+  /** where unparented objects are added for the draw */
   scene: THREE.Object3D;
-  /** the canvas-context draw */
+  /** draw to the canvas */
   render(): void;
-  /** the pass-context draw into a dry target — a tick the pass is down */
+  /** draw through the post pass into a throwaway target */
   dryPass(): void;
 }
 
-/** Mount `objects` that have no parent and turn their culling off, so the
- *  draw cannot skip them; returns the exact undo. */
+/** Add unparented `objects` to `scene` and disable culling so the draw can't
+ *  skip them. Returns the undo. */
 function mountForDraw(objects: THREE.Object3D[], scene: THREE.Object3D) {
   const parked = objects.filter((o) => !o.parent);
   const culled: THREE.Object3D[] = [];
@@ -81,9 +75,8 @@ function mountForDraw(objects: THREE.Object3D[], scene: THREE.Object3D) {
   };
 }
 
-/** The steps that pay `objects`' uploads and pipelines: one canvas draw, and
- *  with `viaPass` one pass draw too — dry while the pass is down, folded into
- *  the tick's real pass draw while it is up. */
+/** Steps that draw `objects` once on the canvas and, with `viaPass`, once
+ *  through the post pass. */
 export function warmDrawSteps(
   objects: THREE.Object3D[],
   viaPass: boolean,
@@ -104,7 +97,7 @@ export function warmDrawSteps(
     bare: false,
     run(mounted) {
       const restore = mountForDraw(objects, env.scene);
-      if (mounted) return restore; // the objects ride this tick's real draw
+      if (mounted) return restore; // drawn by this frame's real render
       try {
         env.dryPass();
       } finally {

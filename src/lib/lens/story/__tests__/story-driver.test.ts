@@ -4,17 +4,18 @@ import { uInkFill } from "../../materials/unified";
 import { uStarMix, uStarStreak } from "../../optics/starfield";
 import { uWormhole } from "../../optics/wormhole-post";
 import { STORY_SAMPLE_PS, storyStateAt } from "../state";
-import { atFrac, rangeOf } from "../story";
-import { dustAt, fStopOf, sceneIndexAt } from "../envelopes";
+import { atFrac, rangeOf, sceneIndexAt } from "../story";
+import { STORY_KNOBS, dustAt, fStopOf } from "../envelopes";
+import { recipeKnob } from "../../ops/host";
+import type { RecipeName } from "../../ops/recipes";
 
-// THE DRIVER'S EVALUATE STEP, EXECUTED: hero-driver is booted against a
-// recording SceneHandle and a stub of the hero markup, its evaluate callbacks
-// are run the way core/scene's tick runs them, and every write is compared with
-// storyStateAt(p) — the report and the drawn frame are one function.
+// Boots hero-driver against a recording SceneHandle and stub markup, runs its
+// evaluate callbacks like core/scene's tick, and checks every write against
+// storyStateAt(p).
 
 const TRACK = 11_000;
 const VIEW = 1000;
-/** the deep link the page boots on: inside the dive, so the fly loads at once */
+/** the boot scroll position: inside the dive, so fly.ts loads at once */
 const P0 = 0.5;
 const dom = installHeroDom({
   scrollY: P0 * (TRACK - VIEW),
@@ -24,7 +25,7 @@ const dom = installHeroDom({
 const fake = fakeScene();
 const { startHeroStory } = await import("../hero-driver");
 startHeroStory(fake.scene);
-// the fly's dynamic import, fired by the boot frame() past the peel
+// let fly.ts's dynamic import land
 await new Promise((r) => setTimeout(r, 50));
 
 const PS: number[] = (() => {
@@ -44,6 +45,12 @@ describe("the boot", () => {
   it("SNAPS the eased p onto the scroll, so a deep link opens on its pose", () => {
     expect(fake.state.storyTarget).toBe(P0);
     expect(fake.state.story).toBe(P0);
+  });
+
+  it("sets every recipe knob the story names", () => {
+    for (const [name, knobs] of Object.entries(STORY_KNOBS))
+      for (const [knob, v] of Object.entries(knobs))
+        expect(recipeKnob(name as RecipeName, knob).value, knob).toBe(v);
   });
 
   it("spells the chrome at the raw scroll p on a scroll event", () => {
@@ -71,10 +78,11 @@ describe("the evaluate step", () => {
         "explode",
         "assemble",
         "huddle",
+        "peel",
         "rose",
       ] as const)
         expect(fake.state[c], `${c} ${at}`).toBe(s.channels[c]);
-      // the iris inside the internals span rides a phase clock: no value at p
+      // inside the internals span the iris runs on a clock
       if (s.irisOwner !== "internals") {
         expect(fake.state.aperture, `aperture ${at}`).toBe(s.channels.aperture);
         expect(fake.state.focus, `focus ${at}`).toBe(s.channels.focus);
@@ -100,7 +108,7 @@ describe("the evaluate step", () => {
       expect(uStarStreak.value, `streak ${at}`).toBe(s.look.streak);
       if (s.irisOwner === "fly") flyFrames++;
     }
-    // the fly really was loaded and driven, or the dive's rows proved nothing
+    // fly.ts really was loaded and driven
     expect(flyFrames).toBeGreaterThan(20);
   });
 
@@ -113,8 +121,7 @@ describe("the evaluate step", () => {
   });
 
   it("writes the dust from ONE law, whatever the resume order", () => {
-    // the race the two-owner design lost: a resume tick that carries the eased
-    // p from the bloom back into the dive in one step
+    // a resume that jumps the eased p from the bloom back into the dive
     fake.evaluate(1);
     expect(fake.writes.setDust).toBe(dustAt(1));
     fake.evaluate(0.62);

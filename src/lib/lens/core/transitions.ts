@@ -1,20 +1,16 @@
 import type * as THREE from "three/webgpu";
 import { band, lerp, smoothstep } from "./math";
-// Type-only — erased at build, so no runtime cycle with the orchestrator.
+// Type-only, so there is no runtime import cycle with scene.ts.
 import type { SceneState } from "./scene";
 
-// Look-swap transitions: short rAF choreographies that drive existing
-// objects/channels toward a hidden/peak moment, where scene.swapShading fires
-// the material rebuild, then ease home.
-//
-// Contract per run: snapshot what you drive at creation and restore it in
-// finish(), but only where your write is still the last one (compare against
-// the value you last wrote), so a mid-burst slider is never clobbered.
+// Shading-swap transitions: short animations that peak at the moment the
+// material swap fires, then return. Each run saves what it drives and restores
+// it in finish(), unless something else has written it since.
 
 export type TransitionName = "twist" | "blink" | "molt" | "punch";
 
-/** What a transition may touch. `model` is the gltf root — its local +Y is the
- *  optical axis, and rolling about it is rig-safe. */
+/** What a transition may touch. `model` is the gltf root (local +Y is the
+ *  optical axis). */
 export interface TransitionContext {
   state: SceneState;
   camera: THREE.PerspectiveCamera;
@@ -28,9 +24,8 @@ export interface TransitionOpts {
   turns?: number;
 }
 
-/** One in-flight choreography. The runner calls update(t) every rAF with raw
- *  progress t∈[0,1], fires the material swap when t first crosses swapAt, and
- *  calls finish() exactly once at t=1 (or on teardown). */
+/** One running transition: update(t) each frame with t in 0..1, the swap
+ *  fires when t reaches swapAt, finish() runs once at the end. */
 export interface TransitionRun {
   /** total length, ms */
   duration: number;
@@ -40,36 +35,53 @@ export interface TransitionRun {
   finish(): void;
 }
 
-/** null = unusable right now (e.g. punch under the story camera) — the runner
- *  falls back to an instant swap. */
+/** Returns null when unavailable, and the swap happens instantly instead. */
 export type TransitionFactory = (
   ctx: TransitionContext,
   opts: TransitionOpts,
 ) => TransitionRun | null;
 
-// Quintic smootherstep: zero velocity AND acceleration at both ends, angular
-// velocity peaks exactly at t=0.5 — the swap hides inside the fastest motion.
+// Quintic smootherstep; fastest at t = 0.5, where the swap fires.
 const smoother = (t: number) => t * t * t * (t * (t * 6 - 15) + 10);
 
-// Pulse with a held plateau: rises 0→0.4, holds 0.4→0.6 (the swap beat sits
-// fully inside the hold), falls 0.6→1. Built on math.ts band().
+// Rises over 0..0.4, holds at 1 over 0.4..0.6, falls over 0.6..1.
 const holdPulse = (t: number) => band(t, 0, 1, 0.4);
 
-// Sharp in/out peak at t=0.5 with a zero-slope crest (smoothstepped triangle) —
-// a brief dwell at the extreme that the swap lands in.
+// Smooth peak at t = 0.5.
 const peakPulse = (t: number) => smoothstep(0, 1, 1 - Math.abs(2 * t - 1));
 
-// Write value AND target together so tick()'s per-frame ease is a no-op on the
-// channel and the burst is exactly the curve authored here.
-const drive = (s: SceneState, c: "aperture" | "peel", v: number) => {
-  s[c] = v;
-  s[`${c}Target`] = v;
-};
+/** Pulse channel `c` up to `peak` and back, over `durationMs`. Value and
+ *  target are set together so tick()'s easing leaves the channel alone. */
+function channelPulse(
+  c: "aperture" | "peel",
+  peak: number,
+  durationMs: number,
+): TransitionFactory {
+  return (ctx, opts) => {
+    const s = ctx.state;
+    const prior = s[c];
+    const priorTarget = s[`${c}Target`];
+    let written = prior;
+    return {
+      duration: opts.durationMs ?? durationMs,
+      swapAt: 0.5,
+      update(t) {
+        written = lerp(prior, peak, holdPulse(t));
+        s[c] = written;
+        s[`${c}Target`] = written;
+      },
+      finish() {
+        if (s[`${c}Target`] === written) {
+          s[c] = prior;
+          s[`${c}Target`] = priorTarget;
+        }
+      },
+    };
+  };
+}
 
 export const TRANSITIONS: Record<TransitionName, TransitionFactory> = {
-  // Whip-spin about the optical axis, whole turns only — the markings are not
-  // rotationally symmetric, so finish() restores the saved rotation rather
-  // than trusting float accumulation.
+  // Spin whole turns about the optical axis.
   twist(ctx, opts) {
     const model = ctx.model;
     const base = model.rotation.y;
@@ -88,56 +100,13 @@ export const TRANSITIONS: Record<TransitionName, TransitionFactory> = {
     };
   },
 
-  // The lens-native cut: the real iris geometry snaps closed, the swap fires
-  // at the fully-stopped-down beat, then it reopens — a camera blink.
-  blink(ctx, opts) {
-    const s = ctx.state;
-    const prior = s.aperture;
-    const priorTarget = s.apertureTarget;
-    let written = prior;
-    return {
-      duration: opts.durationMs ?? 300,
-      swapAt: 0.5,
-      update(t) {
-        written = lerp(prior, 1, holdPulse(t));
-        drive(s, "aperture", written);
-      },
-      finish() {
-        if (s.apertureTarget === written) {
-          s.aperture = prior;
-          s.apertureTarget = priorTarget;
-        }
-      },
-    };
-  },
+  // Close the iris, swap while closed, reopen.
+  blink: channelPulse("aperture", 1, 300),
 
-  // The lens sheds its skin into the new look: a pulse into the `peel`
-  // channel's staggered unroll, swap at the apex, then it re-rolls. Must stay
-  // on `peel` — `assemble`'s unscoped ladder would move the framing.
-  molt(ctx, opts) {
-    const s = ctx.state;
-    const prior = s.peel;
-    const priorTarget = s.peelTarget;
-    let written = prior;
-    return {
-      duration: opts.durationMs ?? 450,
-      swapAt: 0.5,
-      update(t) {
-        written = lerp(prior, 0.4, holdPulse(t));
-        drive(s, "peel", written);
-      },
-      finish() {
-        if (s.peelTarget === written) {
-          s.peel = prior;
-          s.peelTarget = priorTarget;
-        }
-      },
-    };
-  },
+  // Partly unroll the shell (`peel`), swap, roll it back.
+  molt: channelPulse("peel", 0.4, 450),
 
-  // FOV zoom-punch: the camera lurches wide with a sharp in/out, swap at the
-  // extreme. Free-orbit only — the story framing writes fov every frame, so
-  // under storyMode this declines and the runner cuts instantly.
+  // Widen the fov briefly. Not in story mode, which sets fov every frame.
   punch(ctx, opts) {
     if (ctx.storyMode) return null;
     const cam = ctx.camera;

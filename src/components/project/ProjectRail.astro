@@ -1,11 +1,8 @@
 ---
 /**
- * Project rail (outer sidebar of the project page). Mobile: a fixed drawer
- * from the left. Desktop: a flex child switching width between 15rem (list)
- * and 3.25rem (icon strip); the inner <nav> keeps a FIXED 15rem width so the
- * strip is a clean clip of the list (overflow-hidden), not a reflow.
- *
- * Expects the page's `projectPanels` Alpine scope (`projects` open state).
+ * Project-page list sidebar. Mobile: a drawer. Desktop: 15rem, or a 3.25rem
+ * icon strip; the inner <nav> stays 15rem so the strip clips instead of
+ * reflowing. Needs the page's `projectPanels` Alpine scope.
  */
 import { Icon } from "astro-icon/components";
 import type { RailGroup } from "../../lib/project-groups";
@@ -24,8 +21,7 @@ const { groups, currentId } = Astro.props;
   x-bind:inert="!projects && !$isDesktop()"
   aria-label="Projects"
 >
-  <!-- the whole header row is the collapse control (label included),
-       not just the chevron; on mobile tapping it closes the drawer -->
+  <!-- the whole header row toggles the rail -->
   <button
     type="button"
     class="border-border text-text-muted hover:text-text flex h-10 w-full shrink-0 items-center justify-between border-b px-2.5 lg:in-data-[open=false]:justify-center"
@@ -68,9 +64,7 @@ const { groups, currentId } = Astro.props;
               <p class="text-text-muted px-2.5 pt-3 pb-0.5 text-[10px] font-semibold tracking-widest whitespace-nowrap uppercase lg:in-data-[open=false]:hidden">
                 {group.label}
               </p>
-              {/* collapsed strip: a short divider stands in for the heading
-                  (centred in the visible 3.25rem band — the inner nav is a
-                  fixed 15rem, so no mx-auto) */}
+              {/* collapsed strip: a short divider replaces the heading */}
               <div
                 class="bg-border my-2 ml-2 hidden h-px w-5 lg:in-data-[open=false]:block"
                 aria-hidden="true"

@@ -9,16 +9,14 @@ import {
   prefixRe,
 } from "../names";
 
-// The vocabulary's own invariants: the table is internally coherent and the
-// regex it hands the predicates is anchored. (That the names are the RIGHT ones
-// is pinned against the shipped GLBs in shell-parts.test.ts.)
+// names.ts is self-consistent and its regex is anchored. (shell-parts.test.ts
+// checks the names against the shipped GLBs.)
 
 const ROSTERS = { PEEL_TUBES, CELL_PARTS, PEEL_BAFFLES, PEEL_SINGLES };
 
 describe("the node-name table", () => {
   it("spells every name in its own key — the greppability contract", () => {
-    // Grepping a name reaches every use site only while the key is the
-    // camelCase mirror of the value.
+    // keys are the camelCase form of their values
     const camel = (name: string) =>
       name
         .split("_")
@@ -53,8 +51,7 @@ describe("the cell family", () => {
 
 describe("the baffle family", () => {
   it("keeps the rear plate OUT of the pair that leaves", () => {
-    // The pair is named rather than matched on `Baffle_` so the rear plate
-    // stays in the keep-set.
+    // listed by name so the rear plate isn't included
     expect(PEEL_BAFFLES).not.toContain(BAFFLE_KEEP);
     expect(prefixRe(PEEL_BAFFLES).test(BAFFLE_KEEP)).toBe(false);
   });
@@ -70,8 +67,7 @@ describe("prefixRe", () => {
   });
 
   it("is ANCHORED — a bare stem may not match mid-name", () => {
-    // Unanchored, a bare stem would claim anything with the stem buried in it
-    // and the peel would take a part the story never meant to remove.
+    // must not match a stem in the middle of another name
     expect(re.test("Mount_OpticsCage")).toBe(false);
     expect(re.test("Optics_Cell_G3")).toBe(false);
     expect(re.test("Sub_Cell_G3")).toBe(false);

@@ -1,92 +1,16 @@
-// THE SHIPPED MODEL, READ AND FRAMED IN NODE — the fixture piece-flow.test.ts
-// and story-ending.test.ts measure against. Slices the BIN chunk's accessors,
-// rebuilds the shipped node graph and runs the real `deriveFrames` over it, so
-// the roster here is the browser's roster on the same bytes.
+// The shipped model loaded in node, with real geometry and `deriveFrames` run
+// over it, and the story camera framed as core/scene frames it: the fixtures
+// the model-measuring story tests share.
 
-import { readFileSync } from "node:fs";
 import * as THREE from "three/webgpu";
 import { deriveFrames } from "../../ops/frames";
 import { isAccessory } from "../../core/parts";
 import { stampWinkLanes } from "../../core/visibility";
+import { frameZoom, parkScaleFor } from "../../core/scene";
+import { applyStoryFraming, sampleStory, type StorySample } from "../camera";
+import { MODEL, accessor, glb } from "../../core/__tests__/glb";
 
-const MODEL = "public/models/lens_web_segmented.glb";
-
-interface Gltf {
-  nodes: {
-    name: string;
-    mesh?: number;
-    children?: number[];
-    translation?: number[];
-    rotation?: number[];
-    scale?: number[];
-  }[];
-  meshes: {
-    primitives: { attributes: Record<string, number>; indices: number }[];
-  }[];
-  accessors: {
-    bufferView: number;
-    byteOffset?: number;
-    componentType: number;
-    count: number;
-    type: string;
-  }[];
-  bufferViews: {
-    byteOffset?: number;
-    byteLength: number;
-    byteStride?: number;
-  }[];
-  scenes: { nodes: number[] }[];
-}
-
-/** The glTF JSON chunk and the BIN chunk of a .glb — ops/__tests__'s idiom,
- *  keeping the binary this time. */
-function glb(path: string): { json: Gltf; bin: Buffer } {
-  const buf = readFileSync(path);
-  let off = 12;
-  let json: Gltf | null = null;
-  let bin: Buffer = Buffer.alloc(0);
-  while (off < buf.length) {
-    const len = buf.readUInt32LE(off);
-    const type = buf.readUInt32LE(off + 4);
-    if (type === 0x4e4f534a)
-      json = JSON.parse(buf.subarray(off + 8, off + 8 + len).toString("utf8"));
-    if (type === 0x004e4942) bin = buf.subarray(off + 8, off + 8 + len);
-    off += 8 + len;
-  }
-  return { json: json!, bin };
-}
-
-/** glTF `componentType` → the typed array that reads it. The shipped files use
- *  5126/5123; the other two keep a widened index buffer readable. */
-const COMPONENT = {
-  5121: Uint8Array,
-  5123: Uint16Array,
-  5125: Uint32Array,
-  5126: Float32Array,
-} as const;
-
-const PER_ELEMENT: Record<string, number> = { SCALAR: 1, VEC3: 3 };
-
-/** One accessor as a typed array over the BIN chunk. The bytes are COPIED, not
- *  viewed: a bufferView offset need not be component-aligned and a misaligned
- *  view throws. Interleaved bufferViews are refused loudly. */
-function accessor(json: Gltf, bin: Buffer, i: number) {
-  const a = json.accessors[i];
-  const bv = json.bufferViews[a.bufferView];
-  const Ctor = COMPONENT[a.componentType as keyof typeof COMPONENT];
-  if (!Ctor) throw new Error(`accessor ${i}: componentType ${a.componentType}`);
-  if (bv.byteStride !== undefined)
-    throw new Error(`accessor ${i}: interleaved bufferView is not supported`);
-  const n = a.count * PER_ELEMENT[a.type];
-  const at = (bv.byteOffset ?? 0) + (a.byteOffset ?? 0);
-  const bytes = new Uint8Array(
-    bin.subarray(at, at + n * Ctor.BYTES_PER_ELEMENT),
-  );
-  return new Ctor(bytes.buffer);
-}
-
-/** The shipped node graph with REAL geometry — the browser's scene, minus the
- *  materials nothing here reads. */
+/** The shipped node graph with real geometry and no materials. */
 export function shippedModel(): THREE.Object3D {
   const { json, bin } = glb(MODEL);
   const geos = json.meshes.map((m) => {
@@ -95,7 +19,7 @@ export function shippedModel(): THREE.Object3D {
     const pos = accessor(json, bin, prim.attributes.POSITION);
     geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
     geo.setIndex(
-      new THREE.BufferAttribute(accessor(json, bin, prim.indices), 1),
+      new THREE.BufferAttribute(accessor(json, bin, prim.indices!), 1),
     );
     return geo;
   });
@@ -121,10 +45,8 @@ export function shippedModel(): THREE.Object3D {
   return root;
 }
 
-/** core/scene.ts's placement of that graph — bore onto +X, mm to world units,
- *  visual centre on the origin — so a mesh's `matrixWorld` maps local
- *  millimetres to the story camera's world. Returns the bounding-sphere radius
- *  the depth-fade band is written in. */
+/** Place the graph as core/scene.ts does (bore on +X, mm to world units,
+ *  centred on the origin). Returns the bounding-sphere radius too. */
 export function placeModel(gltfScene: THREE.Object3D): {
   modelGroup: THREE.Group;
   modelRadius: number;
@@ -148,4 +70,39 @@ export function placeModel(gltfScene: THREE.Object3D): {
     modelGroup,
     modelRadius: bbox.getBoundingSphere(new THREE.Sphere()).radius,
   };
+}
+
+/** The story camera's raw sample at p: the sample, orbit offset, up and target. */
+export function storySampleAt(p: number) {
+  const pos = new THREE.Vector3();
+  const up = new THREE.Vector3();
+  const target = new THREE.Vector3();
+  return { sample: sampleStory(p, pos, up, target), pos, up, target };
+}
+
+/** The camera core/scene frames from a story sample on a w×h canvas. */
+export function framedCamera(
+  sample: StorySample,
+  pos: THREE.Vector3,
+  up: THREE.Vector3,
+  target: THREE.Vector3,
+  [w, h]: [number, number],
+  parkScale = parkScaleFor(w, h),
+): THREE.PerspectiveCamera {
+  const cam = new THREE.PerspectiveCamera(sample.fov, w / h, 0.1, 400);
+  cam.zoom = frameZoom(w, h);
+  applyStoryFraming(cam, sample, pos, up, target, w, h, parkScale);
+  cam.updateMatrixWorld(true);
+  return cam;
+}
+
+/** The camera at story p on a w×h canvas; `over` replaces sample fields. */
+export function storyCamera(
+  p: number,
+  wh: [number, number],
+  parkScale?: number,
+  over: Partial<StorySample> = {},
+): THREE.PerspectiveCamera {
+  const { sample, pos, up, target } = storySampleAt(p);
+  return framedCamera({ ...sample, ...over }, pos, up, target, wh, parkScale);
 }

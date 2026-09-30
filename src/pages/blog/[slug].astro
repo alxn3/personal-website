@@ -16,8 +16,8 @@ export async function getStaticPaths() {
 const { post } = Astro.props;
 const { Content } = await render(post);
 
-// Resolve the post's referenced project/demo entries (reference() validates
-// they exist at build, but getEntry is typed as possibly undefined).
+// Resolve referenced projects (validated at build; getEntry is still typed
+// as possibly undefined).
 const linkedProjects = (
   await Promise.all(post.data.projects.map((ref) => getEntry(ref)))
 ).filter((entry): entry is NonNullable<typeof entry> => entry != null);

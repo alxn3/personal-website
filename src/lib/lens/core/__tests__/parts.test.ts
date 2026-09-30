@@ -2,8 +2,7 @@ import { describe, expect, it } from "vitest";
 import { isIrisMechanism, isOpticalGlass, partClassOf } from "../parts";
 import { PART_CLASS } from "../../ops/ops";
 
-// The name predicates on the names the shipped GLBs carry. Runtime names ARE
-// node names (one primitive per mesh), so these tests feed node names directly.
+// The name predicates, fed node names from the shipped GLBs.
 
 describe("isOpticalGlass", () => {
   it("is the true glass only — never the metal iris blades", () => {
@@ -27,7 +26,6 @@ describe("isIrisMechanism", () => {
   });
 
   it("never claims the iris HOUSING — it is a shell and must wrap", () => {
-    // A wider `/^Iris_/` would park the housing out of the assemble sheet.
     expect(isIrisMechanism("Iris_Housing")).toBe(false);
     expect(isIrisMechanism("Iris_Housing_Seg5")).toBe(false);
   });
@@ -38,10 +36,9 @@ describe("partClassOf", () => {
     expect(partClassOf("Element_01")).toBe(PART_CLASS.glass);
     expect(partClassOf("Iris_Blade_01")).toBe(PART_CLASS.iris);
     expect(partClassOf("DecalT_Brand")).toBe(PART_CLASS.decal);
-    // Acc_Filter_Glass is an ACCESSORY, not glass: it comes off with the filter.
+    // the filter glass is classed as an accessory
     expect(partClassOf("Acc_Filter_Glass")).toBe(PART_CLASS.accessory);
     expect(partClassOf("Acc_Hood")).toBe(PART_CLASS.accessory);
-    // The housing falls through to STRUCTURE so it wraps with every other shell.
     expect(partClassOf("Iris_Housing_Seg0")).toBe(PART_CLASS.structure);
     expect(partClassOf("Barrel_Inner_Seg3")).toBe(PART_CLASS.structure);
   });

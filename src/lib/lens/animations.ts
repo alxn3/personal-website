@@ -1,21 +1,76 @@
-// Canned showcase animations for the /lens viewer: each maps a single progress
-// value (0..1) to SceneState channel targets, so the page's progress slider
-// scrubs a staged sequence. Adding an animation is one entry in ANIMATIONS.
+// The /lens viewer's animations: each maps a progress value (0..1) to channel
+// values, plus sliders for its recipe's knobs.
 import { smoothstep } from "./core/math";
-import {
-  type LensAnimation,
-  type ParamSpec,
-  drive,
-  paramsOf,
-  readParamOf,
-  setParamOf,
-} from "./animation-kit";
-export type { LensAnimation } from "./animation-kit";
-export { fmtParam } from "./animation-kit";
-// Sliders write the live recipe knobs, the uniforms the deform host folds.
-// recipeKnob returns a clamping view, so keep the maps inside the knob limits
-// or the slider gets a dead zone.
+import type { Channel, SceneState } from "./core/scene";
+// recipeKnob clamps, so keep each map inside the knob's limits (else the
+// slider has a dead zone).
 import { recipeKnob } from "./ops/host";
+
+export interface LensAnimation {
+  id: string;
+  label: string;
+  hint?: string;
+  /** Slider knobs: `value` is the slider position (0..100), `phys` the
+   *  uniform's value. */
+  params?: {
+    id: string;
+    label: string;
+    hint?: string;
+    value: number;
+    phys: number;
+  }[];
+  /** Set channels for progress `p` (0..1), via `drive`. */
+  apply(p: number, state: SceneState): void;
+  /** Set a param from its slider position `v` (0..1). */
+  setParam?(id: string, v: number): void;
+  /** A param's current uniform value (after clamping). */
+  readParam?(id: string): number | undefined;
+  /** Leave the zoom/focus/aperture sliders to the user (don't drive them). */
+  manualMech?: boolean;
+  /** Called on select/deselect; exit() must undo whatever enter() did. */
+  enter?(): void;
+  exit?(): void;
+}
+
+/** Set a channel's value and target together (no easing). */
+const drive = (st: SceneState, ch: Channel, v: number) => {
+  st[ch] = v;
+  st[`${ch}Target`] = v;
+};
+
+// Slider (0..1) to uniform: b + v*k, or pow^v.
+type ParamMap = { k: number; b?: number } | { pow: number };
+const applyMap = (m: ParamMap, v: number) =>
+  "pow" in m ? Math.pow(m.pow, v) : (m.b ?? 0) + v * m.k;
+const invertMap = (m: ParamMap, u: number) =>
+  "pow" in m ? Math.log(u) / Math.log(m.pow) : (u - (m.b ?? 0)) / m.k;
+
+interface ParamSpec {
+  id: string;
+  label: string;
+  hint?: string;
+  u: { value: number };
+  map: ParamMap;
+}
+
+/** An animation's slider fields for a list of knobs. */
+const sliders = (specs: ParamSpec[]) => ({
+  params: specs.map(({ id, label, hint, u, map }) => ({
+    id,
+    label,
+    hint,
+    value: Math.round(invertMap(map, u.value) * 100),
+    phys: u.value,
+  })),
+  setParam(id: string, v: number) {
+    const spec = specs.find((s) => s.id === id);
+    if (spec) spec.u.value = applyMap(spec.map, v);
+  },
+  readParam: (id: string) => specs.find((s) => s.id === id)?.u.value,
+});
+
+/** Three significant digits, trailing zeros dropped. */
+export const fmtParam = (v: number): string => String(Number(v.toPrecision(3)));
 
 const TAU = Math.PI * 2;
 
@@ -48,7 +103,7 @@ const ASSEMBLE_PARAMS: ParamSpec[] = [
     u: recipeKnob("assemble", "rewind"),
     map: { k: 1.9 },
   },
-  // exponential: the top of the slider must be genuinely flat
+  // exponential, so the top of the slider is fully flat
   {
     id: "flatten",
     label: "Flatten",
@@ -63,7 +118,7 @@ const ASSEMBLE_PARAMS: ParamSpec[] = [
     u: recipeKnob("assemble", "depth"),
     map: { k: 2 },
   },
-  // capped at 1: past 5/3 the roll radius zeroes and the gate divides by it
+  // capped at 1: the roll radius reaches 0 past 5/3
   {
     id: "curl",
     label: "Curl",
@@ -71,8 +126,7 @@ const ASSEMBLE_PARAMS: ParamSpec[] = [
     u: recipeKnob("assemble", "curl"),
     map: { k: 1 },
   },
-  // the gate's window is 1 − stagger − 0.25 and must stay positive, so the
-  // map's top is clamped by the knob's range
+  // 1 - stagger - 0.25 must stay positive
   {
     id: "stagger",
     label: "Stagger",
@@ -80,7 +134,7 @@ const ASSEMBLE_PARAMS: ParamSpec[] = [
     u: recipeKnob("assemble", "stagger"),
     map: { k: 0.75 },
   },
-  // inverted: more roll-on = lower split (the aH boundary)
+  // inverted: more roll-on = lower split
   {
     id: "wrap",
     label: "Wrap share",
@@ -88,7 +142,7 @@ const ASSEMBLE_PARAMS: ParamSpec[] = [
     u: recipeKnob("assemble", "split"),
     map: { b: 0.95, k: -0.8 },
   },
-  // floored at 0.1 (the stick ramp's width) so the bottom is not a dead zone
+  // floored at 0.1 so the bottom is not a dead zone
   {
     id: "overlap",
     label: "Reel-in",
@@ -103,8 +157,7 @@ const ASSEMBLE_PARAMS: ParamSpec[] = [
     u: recipeKnob("assemble", "snap"),
     map: { k: 1 },
   },
-  // Sector solo — TAU at the top is fully open (bit-exact identity); pull it
-  // down to run the reassembly on one sector only.
+  // TAU = all sectors; lower it to animate one sector only
   {
     id: "maskWidth",
     label: "Sector width",
@@ -121,9 +174,8 @@ const ASSEMBLE_PARAMS: ParamSpec[] = [
   },
 ];
 
-// The rose bloom (ops/recipes.ts `rose`): a slider on every taste knob. Every
-// default must land on an integer slider stop, or that slider pops on first
-// touch. `crease`/`creasePos`/`curl` are the fold pattern.
+// The rose bloom (ops/recipes.ts `rose`). Each knob's default must land on an
+// integer slider stop, or the slider jumps on first touch.
 const ROSE_PARAMS: ParamSpec[] = [
   {
     id: "lift",
@@ -144,12 +196,9 @@ const ROSE_PARAMS: ParamSpec[] = [
     label: "Hinge",
     hint: "rear — front",
     u: recipeKnob("rose", "hinge"),
-    // model-mm, spanning the barrel's axial extent: the range must reach past
-    // the seated station, where the lever-arm sign flips mid-piece.
+    // model mm, spanning the barrel's length
     map: { b: -40, k: 100 },
   },
-  // The fold-pattern pair: how hard each side crease breaks, and where the two
-  // sit across the petal.
   {
     id: "crease",
     label: "Crease",
@@ -157,7 +206,6 @@ const ROSE_PARAMS: ParamSpec[] = [
     u: recipeKnob("rose", "crease"),
     map: { k: 2 },
   },
-  // kept inside the knob's clamp, so no slider stop is dead
   {
     id: "creasePos",
     label: "Panel",
@@ -165,8 +213,7 @@ const ROSE_PARAMS: ParamSpec[] = [
     u: recipeKnob("rose", "creasePos"),
     map: { b: 0.1, k: 0.8 },
   },
-  // mm; the width divides, so it may not reach 0. Widen past a shell's wall
-  // thickness to clear the inner-surface overlap on thick panels.
+  // mm; must stay above 0
   {
     id: "band",
     label: "Crease band",
@@ -212,12 +259,10 @@ const ROSE_PARAMS: ParamSpec[] = [
   {
     id: "rise",
     label: "Tier",
-    // anchored at the heart: deepens the dome both ways from a fixed centre
     hint: "flat nest — deep cup",
     u: recipeKnob("rose", "rise"),
     map: { k: 40 },
   },
-  // bounded by the `during` window the gate derives from it
   {
     id: "stagger",
     label: "Wave",
@@ -227,42 +272,29 @@ const ROSE_PARAMS: ParamSpec[] = [
   },
 ];
 
-const CORE_ANIMS: LensAnimation[] = [
+/** Every /lens animation. */
+export const ANIMATIONS: LensAnimation[] = [
   {
     id: "assemble",
     label: "Reassemble",
     hint: "flies home — sheets wrap on",
-    // One channel: wedges start disassembled (p=0 ⇒ assemble 1) and seat home
-    // by p=1. The assemble recipe owns every per-wedge stagger and roll-on.
-    params: paramsOf(ASSEMBLE_PARAMS),
+    // p = 0 starts fully apart (assemble = 1), p = 1 is seated
+    ...sliders(ASSEMBLE_PARAMS),
     apply(p, state) {
       drive(state, "zoom", 0);
       drive(state, "focus", 0);
       drive(state, "aperture", 0);
-      // 0..0.75 smoothstep — the house bench shape
       drive(state, "assemble", 1 - smoothstep(0, 0.75, p));
     },
-    setParam: setParamOf(ASSEMBLE_PARAMS),
-    readParam: readParamOf(ASSEMBLE_PARAMS),
   },
-];
-
-const ROSE_ANIMS: LensAnimation[] = [
   {
     id: "x-rose",
     label: "Rose bloom",
     hint: "the origami bloom — outer whorls fall open first",
-    params: paramsOf(ROSE_PARAMS),
-    setParam: setParamOf(ROSE_PARAMS),
-    readParam: readParamOf(ROSE_PARAMS),
-    // The mechanisms compose with the bloom, so apply() must not zero them.
+    ...sliders(ROSE_PARAMS),
     manualMech: true,
     apply(p, state) {
-      // straight progress — the recipe owns the whorl wave
       drive(state, "rose", p);
     },
   },
 ];
-
-/** The /lens registry: the core showcase animation plus the rose bench. */
-export const ANIMATIONS: LensAnimation[] = [...CORE_ANIMS, ...ROSE_ANIMS];

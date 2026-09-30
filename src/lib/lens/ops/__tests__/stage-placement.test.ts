@@ -2,13 +2,13 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-// Pins host.ts law 5 to the source text: fragment-facing reads off fold() must
-// cross on varyings, or the whole recipe chain re-emits per pixel.
+// Anything the fragment stage reads from the deform must cross on a varying,
+// or the whole deform re-runs per pixel. Checked against the source text.
 
 const src = (rel: string): string =>
   readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
 
-describe("the deform chain's stage placement (host.ts law 5)", () => {
+describe("fragment reads of the deform cross on varyings", () => {
   const host = src("../host.ts");
   const fade = src("../../materials/depthfade.ts");
 

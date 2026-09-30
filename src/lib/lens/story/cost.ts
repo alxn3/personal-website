@@ -1,10 +1,7 @@
-// storyCostAt(p): the renderer's workload at one scroll position, as plain
-// JSON — the cost twin of state.ts. An upper bound by construction, every
-// number read from its owning module. PURE: no fs, DOM or renderer; geometry
-// arrives as a `PartTable` from the shipped GLB's chunks or a live scene
-// census. Not modelled: per-pixel cost, pipeline counts, unsupplied edge-line
-// vertices (0, never estimated), per-element passage fades, state.ts's residuals.
-// LAZY: reached only by `await import("./cost")`; never added to index.ts.
+// storyCostAt(p): an upper bound on the renderer's workload at one story
+// position, as plain JSON. Pure: the geometry comes in as a PartTable, built
+// from the GLB's JSON or a live scene. Per-pixel cost is not modelled.
+// Lazy: only reached by dynamic import (a dev block or a test).
 
 import { CHANNEL_DEFAULTS } from "../core/scene";
 import { isAccessory, isOpticalGlass } from "../core/parts";
@@ -36,47 +33,38 @@ import {
 } from "./constellations";
 import { STORY_SAMPLE_PS, storyStateAt, type StoryState } from "./state";
 import { SKY } from "../optics/sky";
-import { STARFIELD_LOOK } from "../optics/starfield";
 
-// ── THE GEOMETRY TABLE ──────────────────────────────────────────────────────
+// --- the geometry table --------------------------------------------------------
 
-/** One mesh node, with everything about it that is a property of the MODEL
- *  rather than of `p`. Built once per table; `storyCostAt` is a fold over it. */
+/** One mesh node and its fixed properties. */
 export interface PartRow {
   name: string;
   tris: number;
   verts: number;
-  /** Index into `parts` of the mesh this one RIDES, or −1 when it is top-level.
-   *  A rider is never gated on its own and inherits its host's flag. */
+  /** index in `parts` of the mesh this one rides (shares visibility with), or
+   *  −1 for a top-level mesh */
   host: number;
-  /** core/parts.ts isOpticalGlass — the body fade's hard tail spares it, and it
-   *  is what puts the frame in the transmission pass. */
+  /** optical glass (core/parts.ts isOpticalGlass) */
   glass: boolean;
-  /** Does an ink edge-line object exist for this mesh (materials/unified.ts
-   *  `hasInkEdgeLine`)? */
+  /** has an ink edge-line object */
   edgeLine: boolean;
-  /** Vertices of that edge line's EdgesGeometry — the LINE pass's own copy of
-   *  the deform fold, invisible in `verts`. Supplied by the table's builder,
-   *  and 0 for a mesh with no line or a table built without the counts. */
+  /** vertices of that edge line, which runs the deform too; 0 when unknown */
   lineVerts: number;
-  /** core/visibility.ts's threshold-wink law: which fade level hides it, and
-   *  where in that level. null = neither gate governs it. */
+  /** which fade level hides it and at what threshold (core/visibility.ts);
+   *  null when no fade governs it */
   wink: WinkThreshold | null;
 }
 
 export interface PartTable {
-  /** every mesh node of the model GLB, IN TRAVERSAL ORDER — the order is an
-   *  input, since the wink scatter's band counters advance per member */
+  /** every mesh of the model, in traversal order (the fade scatter depends on
+   *  the order) */
   parts: PartRow[];
-  /** every mesh node of the accessories GLB — none is drawn on the story path.
-   *  The bucket exists so they are counted OUT of the model's census: they
-   *  share the model's scene graph (see buildPartTableFromScene). */
+  /** every accessory mesh; none is drawn by the story, but they share the
+   *  model's scene graph and must be kept out of `parts` */
   accessories: PartRow[];
 }
 
-/** The shape of a parsed glTF JSON chunk this module needs. A `PartTable` can
- *  equally be built from a live three scene (see `buildPartTableFromScene`) —
- *  this is the node-side source. */
+/** The parts of a parsed glTF JSON chunk this module reads. */
 export interface GltfLike {
   nodes: { name: string; mesh?: number; children?: number[] }[];
   meshes: {
@@ -89,7 +77,7 @@ export interface GltfLike {
   scenes: { nodes: number[] }[];
 }
 
-/** Classify one mesh node. Shared by both table sources so they cannot drift. */
+/** One mesh node's row, shared by both table builders. */
 function rowOf(
   name: string,
   tris: number,
@@ -106,23 +94,17 @@ function rowOf(
     host,
     glass: isOpticalGlass(name),
     edgeLine,
-    // a mesh that wears no line carries no line vertices, whatever a caller
-    // measured on it
     lineVerts: edgeLine ? lineVerts : 0,
-    // a mesh that RIDES a host is never handed to the scatter, so it must not
-    // advance a band counter
+    // a rider is not handed to the fade scatter, so it must not advance it
     wink: host < 0 ? wink(name) : null,
   };
 }
 
-/** The edge-line vertex count of one glTF MESH (by index), for a caller that
- *  has the decoded geometry the JSON chunk lacks. Keyed by mesh, since several
- *  nodes may share one geometry. Omitted ⇒ every `lineVerts` is 0. */
+/** The edge-line vertex count of a glTF mesh, by mesh index. */
 export type EdgeVerts = (meshIndex: number) => number;
 
-/** The table, from a parsed glTF JSON chunk; does no I/O. The one number not in
- *  that chunk is the edge lines', which `edgeVerts` supplies for the MODEL
- *  ONLY — mesh indices belong to one file. */
+/** The table from parsed glTF JSON. `edgeVerts` applies to the model only;
+ *  without it every `lineVerts` is 0. */
 export function buildPartTable(
   model: GltfLike,
   accessories?: GltfLike,
@@ -160,8 +142,7 @@ function rowsOf(g: GltfLike, edgeVerts?: EdgeVerts): PartRow[] {
   return rows;
 }
 
-/** The minimum a live three scene must look like — structural rather than an
- *  import, so this module stays renderer-free. */
+/** The parts of a three.js object this module reads. */
 export interface SceneLike {
   name: string;
   children: SceneLike[];
@@ -170,14 +151,8 @@ export interface SceneLike {
   userData?: Record<string, unknown>;
 }
 
-// The same table, censused off a LIVE scene graph. Two things in that graph are
-// not the model: the EXTRAS (edge lines, inverted hulls), which carry
-// `userData.lensExtra` and ride their host; and the ACCESSORIES, which share
-// the model's graph and are split off by ancestry, the rule the sweep uses.
-
-/** The line vertices already IN the graph: the extras riding this mesh, summed.
- *  Zero until the first ink blend cuts the lines (`ensureLines` builds them
- *  lazily). */
+/** Vertices of the extras (edge lines, hulls) under this mesh; 0 until the
+ *  ink first builds its lines. */
 function extraVerts(o: SceneLike): number {
   let n = 0;
   for (const c of o.children)
@@ -186,6 +161,8 @@ function extraVerts(o: SceneLike): number {
   return n;
 }
 
+/** The table from a live scene graph. Extras (`userData.lensExtra`) are
+ *  skipped; accessories are split off by ancestry. */
 export function buildPartTableFromScene(root: SceneLike): PartTable {
   const wink = makeWinkScatter();
   const parts: PartRow[] = [];
@@ -199,18 +176,10 @@ export function buildPartTableFromScene(root: SceneLike): PartTable {
       // a non-indexed geometry draws position.count/3 tris
       const idx = o.geometry.index?.count ?? pos;
       if (acc) {
-        // an accessory is never handed to the scatter and never rides a body
-        // host: its group root is its own visibility owner
-        accessories.push({
-          name: o.name,
-          tris: idx / 3,
-          verts: pos,
-          host: -1,
-          glass: isOpticalGlass(o.name),
-          edgeLine: hasInkEdgeLine(o.name),
-          lineVerts: extraVerts(o),
-          wink: null,
-        });
+        // accessories don't take part in the fade scatter or ride a host
+        accessories.push(
+          rowOf(o.name, idx / 3, pos, -1, () => null, extraVerts(o)),
+        );
       } else {
         self = parts.length;
         parts.push(rowOf(o.name, idx / 3, pos, host, wink, extraVerts(o)));
@@ -222,113 +191,92 @@ export function buildPartTableFromScene(root: SceneLike): PartTable {
   return { parts, accessories };
 }
 
-// ── THE COST RECORD ─────────────────────────────────────────────────────────
+// --- the cost record -------------------------------------------------------------
 
+/** Overlay draw calls. */
 export interface OverlayCost {
-  /** the peel's eight card quads (story/peelcards.ts CARD_COUNT) */
+  /** the peel's card quads */
   cards: number;
-  /** the long-exposure arcs — one instanced draw (optics/star-trails.ts) */
+  /** star trails (one instanced draw) */
   trails: number;
-  /** the self-drawing strokes' ring buffer — one draw, forever
-   *  (optics/constellation-lines.ts) */
+  /** constellation strokes (one draw) */
   constellation: number;
-  /** the star-name sprites plus the quote, one draw each, at their MAXIMUM */
+  /** star-name sprites plus the quote, at most */
   sprites: number;
-  /** the bloom's falling petals — one instanced draw (story/petals.ts) */
+  /** the bloom's petals (one instanced draw) */
   petals: number;
-  /** the ambient dust cloud (1 THREE.Points) + the three refraction lines,
-   *  mounted for the life of the page; dust is off inside the dive and the
-   *  bloom. */
+  /** the three refraction rays, plus the dust while it is on */
   cinematics: number;
 }
 
 export interface StoryCost {
   p: number;
   scene: string;
-  /** model meshes passing every visibility gate */
+  /** visible model meshes */
   meshes: number;
-  /** Σ triangles of visible model meshes */
+  /** triangles of visible model meshes */
   tris: number;
-  /** Σ vertices of visible model meshes — what the deform host pushes through
-   *  the baked op graph every frame. */
+  /** vertices of visible model meshes, all run through the deform each frame */
   verts: number;
-  /** Σ vertices of those meshes' INK EDGE LINES, 0 while the ink is off. They
-   *  run the same fold, so the frame's vertex load is `verts + lineVerts`. */
+  /** vertices of their ink edge lines (0 while the ink is off); these run the
+   *  deform too */
   lineVerts: number;
-  /** one draw per visible mesh, plus one per visible ink edge-line object */
+  /** one draw per visible mesh, plus one per visible edge line */
   drawsModel: number;
-  /** overlay draws, itemised */
   overlay: OverlayCost;
-  /** starfield draws: the star quad-soup, plus the static-stroke soup when
-   *  STARFIELD_LOOK.staticLines is on. 0 while it is unmounted. */
+  /** starfield draws; 0 while it is not mounted */
   drawsSky: number;
   drawsTotal: number;
-  /** visible surfaces in three's TRANSPARENT render list. The starfield is not
-   *  among them: it ships `transparent = false` + CustomBlending, so it rides
-   *  the opaque list inside the transmission copy. */
+  /** visible surfaces in the transparent render list (the starfield draws in
+   *  the opaque list) */
   transparent: number;
-  /** visible glass meshes still wearing a `transmission: 1` material. ANY of
-   *  them ⇒ three copies the whole framebuffer once per frame. */
+  /** visible glass meshes with a transmission material; any at all means a
+   *  full framebuffer copy per frame */
   transmission: number;
-  /** the wormhole post pass mounted (story/fly.ts enter/exit) */
+  /** the wormhole post pass is mounted */
   post: boolean;
-  /** stars in the mounted field, 0 when it is not mounted */
+  /** stars in the mounted starfield */
   stars: number;
-  /** channels away from their registry default at p — which op chains are
-   *  producing NONZERO deltas */
+  /** channels away from their default at p */
   channels: string[];
 }
 
-/** THE BAKED DEFORM SET the hero pins (`components/LensStory.astro`). The host
- *  folds one fused graph at material build, but each recipe's chain sits inside
- *  `If(channel >= 1e-6, …)`, so an idle recipe costs nothing: the per-vertex
- *  cost is `(verts + lineVerts) ×` this set's members that appear in
- *  `channels`. */
+/** The recipes compiled into the hero's deform. Each only costs anything while
+ *  its channel is nonzero. */
 export const DEFORM_RECIPES = ["assemble", "explode", "peel", "rose"] as const;
 
-/** Is p inside a driven mount window? Half-open at neither end: the modules
- *  gate with `>=` / `<=`, and the hysteresis pads are a latch, not a window. */
+/** Inside a mount window, both ends inclusive. */
 const inSpan = (p: number, p0: number, p1: number) => p >= p0 && p <= p1;
 
-/** The three refraction lines story/cinematics.ts builds — the mounted count,
- *  and an upper bound: their `.visible` is further gated on explode depth. */
+/** The refraction rays cinematics.ts builds (always mounted). */
 const RAY_LINES = 3;
 
-/** The dive's own range end — where the camera has flown out past the last
- *  element into open starfield. */
+/** The end of the flythrough scene: the camera is past the last glass element. */
 const DIVE_P1 = rangeOf("flythrough").p1;
 
-/**
- * Is the whole glass stack in `glassGone` at p. The passage fade is monotone in
- * camera X and pinned at 0 once passed, so "all of them have gone" needs only
- * that the dive ends past the last element. Inside the dive it reports the
- * stack ALL PRESENT — the worst case.
- */
-const glassGoneAt = (p: number): boolean =>
-  p > DIVE_P1 && p <= GLASS_OUT && p >= DIVE_P0;
+/** Whether every glass element has faded out behind the dive. Inside the dive
+ *  all glass counts as visible (the worst case). */
+const glassGoneAt = (p: number): boolean => p > DIVE_P1 && p <= GLASS_OUT;
 
-/** THE COST AT p. Pure: same p and same table, same output. */
+/** The cost at p. */
 export function storyCostAt(p: number, table: PartTable): StoryCost {
   const s = storyStateAt(p);
 
-  // ── the visibility gates, exactly as core/visibility.ts composes them ─────
-  // the demo isolate and the fly's hard glass gate are not modelled: nothing on
-  // the story path engages them
+  // --- visibility, as core/visibility.ts composes it
   const bodyOut = s.look.bodyFade <= 0;
   const glassOut = glassGoneAt(p);
   const vis = table.parts.map((r) => {
-    if (r.host >= 0) return false; // resolved from the host below
+    if (r.host >= 0) return false; // copied from the host below
     if (r.wink) {
       const level =
         r.wink.channel === "shell" ? s.look.shellFade : s.look.interiorFade;
       if (winkGone(r.wink.threshold, level)) return false;
     }
     if (r.glass) return !glassOut;
-    // the body fade's hard tail: everything that is NOT glass, once it hits 0
+    // everything else hides once the body fade reaches 0
     return !bodyOut;
   });
-  // a host is always earlier in the traversal than what rides it, so one
-  // forward pass resolves every rider
+  // a host always precedes its riders, so one forward pass resolves them
   table.parts.forEach((r, i) => {
     if (r.host >= 0) vis[i] = vis[r.host];
   });
@@ -351,20 +299,15 @@ export function storyCostAt(p: number, table: PartTable): StoryCost {
     if (r.glass) glassVisible++;
   }
 
-  // ── the looks that decide which render list a surface lands in ────────────
-  // the ink 0-edge is materials/unified.ts setInk's own (`const on = k > 0`)
+  // --- which render list each surface lands in
   const inkOn = s.look.inkMix > 0;
-  // the elements wear their transmissive material below the hand-over and their
-  // flat ink fill above it: the transmission pass reads the OPAQUE backdrop, so
-  // glass may not stay transmissive once the ink puts the body in the
-  // transparent list
+  // glass is transmissive until the ink passes GLASS_HANDOVER
   const transmission = s.look.inkMix < GLASS_HANDOVER ? glassVisible : 0;
   const channels = activeChannels(s);
-  // the body is in the transparent list while any ink shows or a fade runs;
-  // glass is always there, both of its materials being built transparent
+  // the body is transparent while ink shows or a fade runs; glass always is
   const bodyTransp = bodyTransparent(inkOn, s.look.bodyFade < 1);
 
-  // ── the mount windows, each read from its owner ───────────────────────────
+  // --- overlays, each mounted over its owner's window
   const flyOn = inSpan(p, DIVE_P0, EXIT_END);
   const petalsOn = inSpan(p, PETALS_SPAN_P0, PETALS_SPAN_P1);
   const overlay: OverlayCost = {
@@ -373,12 +316,9 @@ export function storyCostAt(p: number, table: PartTable): StoryCost {
     constellation: inSpan(p, SKY_INK_P0, SKY_INK_P1) ? 1 : 0,
     sprites: inSpan(p, SKY_INK_P0, SKY_INK_P1) ? LABELS.length + 1 : 0,
     petals: petalsOn ? 1 : 0,
-    // the dust cloud is the driver's dust law; the three refraction lines are
-    // mounted throughout
     cinematics: s.look.dust ? RAY_LINES + 1 : RAY_LINES,
   };
-  const drawsSky = flyOn ? (STARFIELD_LOOK.staticLines ? 2 : 1) : 0;
-  // no accessory column: the story shows none at any p
+  const drawsSky = flyOn ? 1 : 0;
 
   const drawsModel = meshes + (inkOn ? lines : 0);
   const drawsOverlay = Object.values(overlay).reduce((a, b) => a + b, 0);
@@ -389,7 +329,6 @@ export function storyCostAt(p: number, table: PartTable): StoryCost {
     meshes,
     tris,
     verts,
-    // the lines are drawn only while the ink shows, and cost nothing otherwise
     lineVerts: inkOn ? lineVerts : 0,
     drawsModel,
     overlay,
@@ -398,10 +337,7 @@ export function storyCostAt(p: number, table: PartTable): StoryCost {
     transparent:
       glassVisible +
       (bodyTransp ? meshes - glassVisible : 0) +
-      // every edge-line material is built transparent, and the objects are
-      // shown only while the ink is on
       (inkOn ? lines : 0) +
-      // every mounted overlay above is transparent; the starfield is not
       drawsOverlay,
     transmission,
     post: flyOn,
@@ -410,8 +346,8 @@ export function storyCostAt(p: number, table: PartTable): StoryCost {
   };
 }
 
-/** Channels away from their registry default at p. A `null` reading counts as
- *  ACTIVE: a writer owns the channel on a phase clock rather than on p. */
+/** Channels away from their default at p; a clock-driven (`null`) channel
+ *  counts as active. */
 function activeChannels(s: StoryState): string[] {
   const out: string[] = [];
   for (const [name, value] of Object.entries(s.channels)) {
@@ -421,38 +357,45 @@ function activeChannels(s: StoryState): string[] {
   return out.sort();
 }
 
-// ── THE SAMPLE GRID ─────────────────────────────────────────────────────────
+// --- the sample grid -------------------------------------------------------------
 
-/** Each scene's HOLD CENTRE — the positions a reader rests at, and the
- *  rollup's rows. */
+/** Each scene's hold centre. */
 export const SCENE_HOLD_PS: { id: string; p: number }[] = RANGES.map((r) => ({
   id: r.scene.id,
   p: holdCentreOf(r),
 }));
 
-/** Every p the cost table reports: story/state.ts's edge grid plus each scene's
- *  hold centre. Sorted, deduped, inside the track. */
+/** Every p the cost table reports: state.ts's edge grid plus each scene's hold
+ *  centre. Sorted, deduped, within [0, 1]. */
 export const COST_SAMPLE_PS: number[] = [
   ...new Set([...STORY_SAMPLE_PS, ...SCENE_HOLD_PS.map((h) => h.p)]),
 ]
   .filter((v) => v >= 0 && v <= 1)
   .sort((a, b) => a - b);
 
-/** One scene's rollup: `max` is over every sample inside the scene's range,
- *  `hold` the reading at its hold centre. */
+/** Scene i's samples from COST_SAMPLE_PS: [p0, p1), the last scene keeping p1. */
+export function scenePs(i: number): number[] {
+  const r = RANGES[i];
+  const last = i === RANGES.length - 1;
+  return COST_SAMPLE_PS.filter(
+    (p) => p >= r.p0 && (last ? p <= r.p1 : p < r.p1),
+  );
+}
+
+/** One scene's rollup: `max*` over every sample in the scene, `hold*` at its
+ *  hold centre. */
 export interface SceneRollup {
   id: string;
   holdP: number;
   maxMeshes: number;
   maxTris: number;
-  /** the two halves of the vertex load, each at its own worst sample */
   maxVerts: number;
   maxLineVerts: number;
   maxDraws: number;
   maxTransparent: number;
   holdTris: number;
   holdDraws: number;
-  /** does the scene ever pay the transmission framebuffer copy? */
+  /** whether the scene ever pays the transmission copy */
   transmission: boolean;
   post: boolean;
   /** every channel active anywhere in the scene */
@@ -462,13 +405,8 @@ export interface SceneRollup {
 export function sceneRollups(table: PartTable): SceneRollup[] {
   return RANGES.map((r, i) => {
     const hold = SCENE_HOLD_PS[i];
-    // half-open on the right (last scene keeps its p1): a sample sitting ON a
-    // boundary belongs to the scene whose p0 it is
-    const inScene = COST_SAMPLE_PS.filter(
-      (p) => p >= r.p0 && (i === RANGES.length - 1 ? p <= r.p1 : p < r.p1),
-    );
-    const costs = [...inScene, hold.p].map((p) => storyCostAt(p, table));
-    const holdCost = storyCostAt(hold.p, table);
+    const costs = [...scenePs(i), hold.p].map((p) => storyCostAt(p, table));
+    const holdCost = costs[costs.length - 1];
     const max = (f: (c: StoryCost) => number) =>
       costs.reduce((n, c) => Math.max(n, f(c)), 0);
     return {

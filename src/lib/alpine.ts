@@ -6,8 +6,8 @@ import { initPaletteTryout } from "./palette-tryout";
 
 const PANELS_KEY = "project-panels";
 
-// Theme flip with the ~350ms colour crossfade: `.theme-anim` enables the
-// transition (global.css) and is removed once it completes.
+// Theme flip with a colour crossfade: `.theme-anim` (global.css) is on only
+// until the transition ends.
 let themeAnimT: number | undefined;
 const flipTheme = (mutate: (root: HTMLElement) => void) => {
   const root = document.documentElement;
@@ -22,7 +22,7 @@ const flipTheme = (mutate: (root: HTMLElement) => void) => {
 
 export default (Alpine: Alpine) => {
   initPaletteTryout();
-  // $isDesktop() — templates share the same breakpoint constant as this module
+  // $isDesktop() for templates, same breakpoint as the JS
   Alpine.magic("isDesktop", () => isDesktop);
 
   Alpine.store("theme", {
@@ -34,9 +34,8 @@ export default (Alpine: Alpine) => {
     },
   });
 
-  // An OS theme change always wins: apply it and drop the manual override so a
-  // reload stays consistent. (The INITIAL class is set pre-paint by HtmlShell's
-  // inline bootstrap; only this listener lives here.)
+  // An OS theme change wins and clears the stored choice. The initial class
+  // is set pre-paint by HtmlShell.
   window
     .matchMedia("(prefers-color-scheme: dark)")
     .addEventListener("change", (e) => {
@@ -46,9 +45,8 @@ export default (Alpine: Alpine) => {
       });
     });
 
-  // Project-page sidebars: `projects` (the rail) and `description` (the
-  // panel). Desktop-only persistence — mobile drawers always start closed.
-  // MUST stay in sync with the pre-paint applier in pages/projects/[...slug].
+  // Project-page sidebars, persisted on desktop only (mobile starts closed).
+  // Must match the pre-paint applier in pages/projects/[...slug].astro.
   Alpine.data("projectPanels", () => {
     const desktop = isDesktop();
     let stored: { projects?: boolean; description?: boolean } | null = null;

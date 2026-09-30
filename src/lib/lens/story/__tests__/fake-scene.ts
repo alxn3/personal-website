@@ -1,7 +1,6 @@
-// A recording SceneHandle for the story tests: every setter logs its last
-// value, `state` is a plain object, and the evaluate/frame callbacks are kept
-// so a test can run the tick's evaluate step itself. `installHeroDom` adds the
-// little DOM hero-driver and the card field reach for.
+// A recording SceneHandle for the story tests: setters log their last value and
+// the evaluate/frame callbacks are kept so a test can run them. `installHeroDom`
+// stubs the DOM that hero-driver and the card field use; `lin` samples a range.
 
 import type * as THREE from "three/webgpu";
 import type { SceneHandle } from "../../core/scene";
@@ -17,7 +16,7 @@ export interface FakeScene {
   frameCbs: FrameCb[];
   /** the last value each setter was handed, by setter name */
   writes: Record<string, unknown>;
-  /** every setter call in order, as `name` — for "never calls X" pins */
+  /** every setter call's name, in order */
   calls: string[];
   /** overlays attached at the scene root, on the model, and on the starfield */
   overlays: Set<THREE.Object3D>;
@@ -25,13 +24,14 @@ export interface FakeScene {
   skyChildren: Set<THREE.Object3D>;
   /** whether starfieldAttach succeeds (the starfield is "mounted") */
   starfieldMounted: boolean;
-  /** run every evaluate callback in registration order — the tick's step */
+  /** run every evaluate callback in registration order */
   evaluate(pE: number, dt?: number): boolean;
   /** run every frame callback — after the render */
   frame(dt?: number): void;
 }
 
-export function fakeScene(): FakeScene {
+/** `over` replaces any of the scene's members. */
+export function fakeScene(over: Record<string, unknown> = {}): FakeScene {
   const state: Record<string, number> = {};
   for (const [c, v] of Object.entries(CHANNEL_DEFAULTS)) {
     state[c] = v;
@@ -58,25 +58,30 @@ export function fakeScene(): FakeScene {
     state,
     onEvaluate: (cb: EvaluateCb) => void evaluateCbs.push(cb),
     onFrame: (cb: FrameCb) => void frameCbs.push(cb),
-    invalidate: rec("invalidate"),
-    setInkMix: rec("setInkMix"),
-    setStoryFov: rec("setStoryFov"),
-    setStoryCentre: rec("setStoryCentre"),
-    setDust: rec("setDust"),
-    setGlassTransmissive: rec("setGlassTransmissive"),
-    setGlassFade: rec("setGlassFade"),
-    setGlassElementFade: rec("setGlassElementFade"),
-    setGlassGlint: rec("setGlassGlint"),
-    setBodyFade: rec("setBodyFade"),
-    setShellFade: rec("setShellFade"),
-    setInteriorFade: rec("setInteriorFade"),
-    setRoomLight: rec("setRoomLight"),
+    ...Object.fromEntries(
+      [
+        "invalidate",
+        "setInkMix",
+        "setStoryFov",
+        "setStoryCentre",
+        "setDust",
+        "setGlassTransmissive",
+        "setGlassFade",
+        "setGlassElementFade",
+        "setGlassGlint",
+        "setBodyFade",
+        "setShellFade",
+        "setInteriorFade",
+        "setRoomLight",
+        "setLensDolly",
+        "setSkyDim",
+        "warmDraw",
+      ].map((n) => [n, rec(n)]),
+    ),
     setModelOrientation: (e: { x: number; y: number; z: number } | null) => {
       calls.push("setModelOrientation");
       writes.setModelOrientation = e === null ? null : { ...e };
     },
-    setLensDolly: rec("setLensDolly"),
-    setSkyDim: rec("setSkyDim"),
     worldAxialSpans: () => ({}),
     enableStarfield: (on: boolean) => {
       calls.push("enableStarfield");
@@ -91,7 +96,6 @@ export function fakeScene(): FakeScene {
     },
     buildWormholePost: () => Promise.resolve(true),
     warmFly: () => Promise.resolve(true),
-    warmDraw: rec("warmDraw"),
     addOverlay: (o: THREE.Object3D) => void overlays.add(o),
     removeOverlay: (o: THREE.Object3D) => void overlays.delete(o),
     addModelOverlay: (o: THREE.Object3D) => void modelOverlays.add(o),
@@ -104,6 +108,7 @@ export function fakeScene(): FakeScene {
     starfieldDetach: (o: THREE.Object3D) => void skyChildren.delete(o),
     frameHalf: () => 0.58,
     frameAspect: () => 16 / 9,
+    ...over,
   } as unknown as SceneHandle;
   Object.assign(fake, {
     scene,
@@ -126,6 +131,10 @@ export function fakeScene(): FakeScene {
   });
   return fake;
 }
+
+/** n + 1 evenly spaced samples from a to b, both included. */
+export const lin = (a: number, b: number, n: number): number[] =>
+  Array.from({ length: n + 1 }, (_, i) => a + ((b - a) * i) / n);
 
 /** A 2D context that swallows every call: the card faces and the sky's type
  *  paint into it, and only `measureText` needs a shape back. */

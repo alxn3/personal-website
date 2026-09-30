@@ -1,30 +1,24 @@
-// The two-phase per-piece choreography gate, written against the scalar algebra
-// so it runs on both the CPU (NUM) and, through ops/emit, the GPU.
+// The per-piece timing gate. Each piece gets a staggered window `win` (offset
+// by rank01 × layerStagger + layerPhase × partStagger), split into two phases:
+// flight falls 1 → 0 over [flightStart, split], stick rises 0 → 1 over
+// [split − overlap, rollEnd].
 //
-// A staggered window `win` opens per piece (inner ranks first, by
-// `rank01 × layerStagger`, plus `layerPhase × partStagger`), then splits at
-// `split` into phase 1 (flight = 1 − ease over [flightStart, split]) and
-// phase 2 (stick = ease over [split − overlap, rollEnd]).
-//
-// INVARIANT: while `layerStagger + partStagger + windowFrac ≤ 1`, every piece
-// saturates EXACTLY to win = 1 (flight = 0 AND stick = 1) at channel = 0.
-// ops.ts's `during` relies on those anchors being exact at both ends.
+// With layerStagger + partStagger + windowFrac ≤ 1, every piece is exactly
+// seated (flight 0, stick 1) at channel 0.
 
 import type { Algebra, Sc } from "./algebra";
 
-/** INVARIANT: `split < rollEnd + overlap` — the stick ramp's denominator
- *  `rollEnd − split + min(overlap, split)` must be positive: at zero the ramp
- *  is ±Inf and clamps to a pop, negative it runs backwards. */
+/** Needs split < rollEnd + overlap, or the stick ramp divides by ≤ 0. */
 export interface GateSpec<S> {
   layerStagger: Sc<S>;
   windowFrac: Sc<S>;
   split: Sc<S>;
   snap: Sc<S>;
   snapExp: number;
-  partStagger?: Sc<S>; // 0
-  overlap?: Sc<S>; // 0 — phase 2 starts this far before the split
-  flightStart?: number; // 0 — flight-ramp foot
-  rollEnd?: number; // 1 — phase-2 saturation deadline
+  partStagger?: Sc<S>; // default 0
+  overlap?: Sc<S>; // default 0; stick starts this far before the split
+  flightStart?: number; // default 0
+  rollEnd?: number; // default 1; stick reaches 1 here
 }
 
 export interface GateIn<S> {
@@ -54,7 +48,7 @@ export function gate<S>(
   );
   const win = A.clamp(A.div(A.sub(seatedness, hOffset), windowFrac), 0, 1);
 
-  // phase 1: flight ramps 1 → 0 over win ∈ [flightStart, split].
+  // Phase 1: flight 1 → 0 over win ∈ [flightStart, split].
   const flight = A.sub(
     1,
     ease(
@@ -62,8 +56,8 @@ export function gate<S>(
     ),
   );
 
-  // phase 2: stick ramps 0 → 1 over win ∈ [split − ov, rollEnd]. ov is clamped
-  // to the split so win = 0 still gives stick = 0.
+  // Phase 2: stick 0 → 1 over win ∈ [split − ov, rollEnd]; ov ≤ split so
+  // stick is 0 at win = 0.
   const ov = A.min(overlap, split);
   const stick = ease(
     A.clamp(

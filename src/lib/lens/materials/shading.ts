@@ -2,17 +2,10 @@ import * as THREE from "three/webgpu";
 import type { UnifiedLook } from "./unified";
 import type { ShadingBench, ShadingBenchFactory } from "./shading-bench";
 
-// The look swapper. The story's pair ("realistic"/"ink") is one blended
-// material (materials/unified.ts), so set("ink") is a uniform write, not a
-// swap; the bench looks live in the lazy /lens-only shading-bench chunk.
-//
-// Type-only edge: this file may name materials/shading-bench.ts through
-// `import type` only — a value import would collapse the bench into the
-// homepage's chunk. core/scene.ts's enableShadingBench() dynamically imports it
-// and hands the factory to `installBench`; every bench call is optional.
-//
-// The mesh roster, the site theme and the current mode stay on this side for
-// both halves, so there is only ever one copy of the theme flag.
+// Switches the model's render style. "realistic" and "ink" are one blended
+// material (unified.ts); the other looks live in shading-bench.ts, loaded
+// lazily on /lens only. Only `import type` from shading-bench here, or it
+// lands in the homepage bundle.
 export type ShadingMode =
   | "realistic"
   | "ink"
@@ -24,38 +17,25 @@ export type ShadingMode =
   | "riso"
   | "bronze";
 
-/** The /lens bench's own looks — everything outside the story's pair, and
- *  exactly the set materials/shading-bench.ts knows how to build. */
+/** The looks shading-bench.ts builds. */
 export type BenchMode = Exclude<ShadingMode, "realistic" | "ink">;
 
-/** The story's pair — one blended material, no swap. A type predicate, so
- *  `set`'s early return narrows the rest of the function to a `BenchMode`. */
+/** True for the two looks served by the blended material. */
 const MERGED = (mode: ShadingMode): mode is "realistic" | "ink" =>
   mode === "realistic" || mode === "ink";
 
 export interface ShadingController {
-  /** Wear `mode`. A bench look needs `installBench` first; without one this
-   *  warns and holds the current look rather than half swapping the meshes. */
+  /** Switch look. Bench looks need `installBench` first (else warns, no-op). */
   set(mode: ShadingMode): void;
-  /** Plug in the lazily-imported bench half. Idempotent, so a second call keeps
-   *  the first bench's parked builds. Takes the factory so this controller
-   *  stays the one owner of the theme flag. */
+  /** Install the lazily loaded bench. Only the first call has an effect. */
   installBench(factory: ShadingBenchFactory): void;
-  /** Whether a bench is installed — the modes outside the story's pair are
-   *  wearable iff this is true. */
   hasBench(): boolean;
-  /** Fold meshes that loaded after creation (the background accessories) into
-   *  the swapper and style them in the current mode. Idempotent per mesh; the
-   *  merged pair gets them from unified.integrate instead. */
+  /** Add meshes that loaded later (the accessories). */
   integrate(root: THREE.Object3D): void;
-  /** Re-palette for the site theme (light = no `.dark` on <html>). The merged
-   *  pair re-tints in place; a bench look rebuilds. No-op if unchanged. */
+  /** Re-palette for the site theme (light = no `.dark` on <html>). */
   setTheme(light: boolean): void;
-  /** Wear the realistic look for the duration of `cb`, then restore exactly
-   *  what each mesh was wearing, including riders like the transmissive glass
-   *  clones. Not `set("realistic")` and back, which would leave the ink blend
-   *  at 0 on the way out — `transparent` rides that blend and pipelines are
-   *  keyed on it, so a warm-up under the wrong blend warms nothing. */
+  /** Run `cb` with every mesh in the realistic look, then restore exactly
+   *  what each wore before (ink blend included). */
   withOriginals(cb: () => void): void;
 }
 
@@ -63,28 +43,17 @@ export function createShading(
   root: THREE.Object3D,
   unified: UnifiedLook,
 ): ShadingController {
-  // Site theme, detected here so both pages get the right palette without
-  // wiring; toggles arrive via setTheme (the pages own the observer).
   let light = !document.documentElement.classList.contains("dark");
   let currentMode: ShadingMode = "realistic";
-  const meshes: THREE.Mesh[] = [];
-  const known = new Set<THREE.Mesh>();
-  /** the /lens bench, once core/scene has imported it — null on the hero */
+  const meshes = new Set<THREE.Mesh>();
+  /** null until installBench (always null on the homepage) */
   let bench: ShadingBench | null = null;
-
-  root.traverse((o) => {
-    if (!(o instanceof THREE.Mesh)) return;
-    meshes.push(o);
-    known.add(o);
-  });
 
   function set(mode: ShadingMode) {
     if (MERGED(mode)) {
-      // The story's pair: park whatever bench look held the meshes and clear
-      // the renderOrder a bench look may have assigned, then wear and blend.
+      // undo any bench look, then apply the blend
       bench?.park();
       currentMode = mode;
-      for (const mesh of meshes) mesh.renderOrder = 0;
       unified.wear();
       unified.setInk(mode === "ink" ? 1 : 0);
       return;
@@ -96,31 +65,26 @@ export function createShading(
       return;
     }
     currentMode = mode;
-    // A bench look draws its own line-work, so the merged pair's has to go.
+    // bench looks draw their own lines
     unified.setInk(0);
     bench.wear(mode, meshes);
   }
 
-  // Fold meshes that appear after the initial capture (the accessories GLB)
-  // into the roster, so a later mode switch covers them too.
   function integrate(target: THREE.Object3D) {
     target.traverse((o) => {
-      if (!(o instanceof THREE.Mesh) || known.has(o)) return;
-      meshes.push(o);
-      known.add(o);
+      if (!(o instanceof THREE.Mesh) || meshes.has(o)) return;
+      meshes.add(o);
       bench?.integrate(o);
     });
   }
+  integrate(root);
 
   function setTheme(l: boolean) {
     if (l === light) return;
     light = l;
-    // The merged pair re-tints in place (colour uniforms), no rebuild…
     unified.setTheme(l);
-    // …while every bench build is palette-baked, parked ones included: keeping
-    // them would re-wear the old theme's colours on the next switch.
     bench?.setTheme(l);
-    if (!MERGED(currentMode)) set(currentMode); // rebuild under the other palette
+    if (!MERGED(currentMode)) set(currentMode); // rebuild with the new palette
   }
 
   function withOriginals(cb: () => void) {
@@ -132,8 +96,7 @@ export function createShading(
     try {
       cb();
     } finally {
-      // the blend first: it writes the elements' material itself, so the exact
-      // restore below has to land after it
+      // blend first: it sets the glass materials, which the restore overrides
       unified.setInk(blend);
       for (const [mesh, mat] of worn) mesh.material = mat;
     }

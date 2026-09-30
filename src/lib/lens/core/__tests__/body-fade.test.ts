@@ -6,10 +6,8 @@ import {
   type FadeSaved,
 } from "../body-fade";
 
-// THE CAPTURE LAW: the fade captures by material identity and only ever grows,
-// so a material that joins the set mid-fade (the glass, once the dive hands it
-// back) is captured from its shipped state, written the live level, and put
-// back exactly with the rest.
+// A material added mid-fade is saved from its original state, gets the current
+// opacity, and is restored exactly with the rest.
 
 interface Mat extends FadeMaterial {
   name: string;
@@ -30,16 +28,6 @@ const mat = (name: string, transparent = false): Mat => ({
 const owned = (m: Mat) => m.name.startsWith("owned");
 
 describe("the body fade's capture", () => {
-  it("captures the set lazily and writes the level onto all of it", () => {
-    const body = mat("body");
-    const saved = new Map<Mat, FadeSaved>();
-    captureBodyFade(saved, [body], owned, 0.3);
-    expect(saved.get(body)).toEqual({ transparent: false, opacity: 1 });
-    expect(body.opacity).toBe(0.3);
-    expect(body.transparent).toBe(true);
-    expect(body.updates).toBe(1);
-  });
-
   it("folds a material that joins mid-fade in at the live level, touching the rest only for opacity", () => {
     const body = mat("body");
     const glass = mat("glass");

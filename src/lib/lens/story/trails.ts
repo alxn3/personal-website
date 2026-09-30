@@ -1,17 +1,12 @@
-// THE SKY TURNS — the driver behind the `trails` scene: the star field rotates
-// about the middle of the frame, every star dragging an arc of ink behind it.
+// The `trails` scene: the star field rotates about the frame centre and every
+// star leaves an arc behind it.
 //
-// LAZY MODULE, like story/fly.ts and story/constellations.ts: it statically
-// imports optics/ (three/tsl node graphs), so it is reachable ONLY through
-// hero-driver's dynamic import() and must NEVER be re-exported from index.ts.
+// Lazy module: only hero-driver's dynamic import() may reach it, and index.ts
+// must never re-export it.
 //
-// ONE θ, TWO WRITES — `uSkySpin` (star discs + authored strokes) and `setSweep`
-// (how much arc history to draw) get the SAME number every frame. Nothing else
-// writes `uSkySpin`.
-//
-// The arcs ride the STARFIELD GROUP for its per-frame camera-centring, and the
-// attach is re-asked every active frame because the fly mounts and unmounts the
-// starfield underneath it.
+// The same angle goes to `uSkySpin` (stars and constellation lines) and to
+// `setSweep` (arc length) every frame; nothing else writes `uSkySpin`. The arcs
+// ride the starfield group, which fly.ts mounts and unmounts.
 
 import type { SceneHandle } from "../core/scene";
 import { smoothstep } from "../core/math";
@@ -24,58 +19,42 @@ import { createStarTrails, TRAIL_SWEEP_MAX } from "../optics/star-trails";
 const tR = rangeOf("trails");
 const rwR = rangeOf("rewrap");
 
-/** Where the envelope has finished falling. It must land before SKY_OUT_END —
- *  the field's ink goes out before the star discs do, never arcs on empty sky. */
+/** Story p where the arcs have fully faded; must come before SKY_OUT_END so
+ *  the arcs go before the stars. */
 export const ENV_END = atFrac(rwR, 0.28);
 
-/** Slack past each edge of the driven span before the arcs are detached, so a
- *  scrub on an edge cannot thrash attach/detach; inside it the mesh hangs on
- *  the starfield at envelope 0. */
+/** Story-p span the arcs stay attached over, padded so scrubbing at an edge
+ *  doesn't thrash attach/detach. */
 const SPAN_PAD = 0.02;
 export const SPAN_P0 = tR.p0 - SPAN_PAD;
 export const SPAN_P1 = ENV_END + SPAN_PAD;
 
-/** Where the sky starts turning, and the gate the ambient drift accrues behind.
- *  It must be ONE number for both, or the drift pulls stars off their strokes. */
-const SWEEP_P0 = TURN_P0;
-
-/**
- * THE SWEEP, radians: how far the sky has turned at p — the chapter's own turn
- * (story/reveal.ts `turnAt`) at this field's amplitude. Exactly 0 before
- * SWEEP_P0, so a scrub back into the constellations leaves the sky untilted.
- */
+/** Sky rotation at p, radians. Exactly 0 before TURN_P0, which also gates
+ *  the ambient drift. */
 export const trailSweepAt = (p: number): number => TRAIL_SWEEP_MAX * turnAt(p);
 
-/** The arcs' envelope. Rises after the constellation strokes have started to
- *  go, so the two kinds of sky ink are never both at full, and falls with the
- *  sky across `rewrap`'s first third (ENV_END). */
+/** Arc opacity: in early in `trails` (after the constellation lines start to
+ *  go), out by ENV_END. */
 export const trailEnvAt = (p: number): number =>
   smoothstep(atFrac(tR, 0.02), atFrac(tR, 0.12), p) *
   (1 - smoothstep(atFrac(rwR, 0.02), ENV_END, p));
 
-/** The drift, radians per second, added to the scrolled sweep while p is inside
- *  the turning part of the scene, so a parked field stays alive. */
+/** Slow extra spin while inside the turn, rad/s, so a parked sky still moves. */
 export const AMBIENT_SPIN_RATE = 0.012;
 
-/** …and the ceiling on it, radians, so a parked tab cannot wind the sky up
- *  without limit. An absolute angle, not a share of the sweep. */
+/** Cap on the extra spin, radians. */
 export const AMBIENT_MAX = 0.2;
 
-/** …and how fast that residue is given back once p drops below the turn,
- *  radians per second. `uSkySpin` must reach EXACTLY 0 there: below the turn,
- *  residue is strokes pointing at empty sky and names off their stars. */
+/** Rate the extra spin unwinds below the turn, rad/s; it must reach exactly 0
+ *  there so lines and names stay on their stars. */
 export const AMBIENT_DECAY = AMBIENT_MAX;
 
 export interface StoryTrails {
-  /** Upload the arcs' vertex buffer off the gesture. Idempotent, and a no-op
-   *  once the arcs are mounted for real. */
+  /** Pre-upload the arc buffers. Idempotent. */
   warm(): void;
 }
 
-/**
- * Start the trails. Registers a scene.onEvaluate callback for the life of the
- * page — no teardown, because the hero's scene is never disposed.
- */
+/** Start the trails. Registers a per-frame callback for the life of the page. */
 export function createStoryTrails(scene: SceneHandle): StoryTrails {
   const trails = createStarTrails({ light: isLightTheme() });
 
@@ -84,43 +63,34 @@ export function createStoryTrails(scene: SceneHandle): StoryTrails {
     scene.invalidate();
   });
 
-  /** the drift's accumulated angle, radians — accrues only inside the turn */
+  /** extra drift angle, radians */
   let ambient = 0;
   let lastTheta = NaN;
   let lastEnv = NaN;
 
   scene.onEvaluate((p, dtMs) => {
     const dt = dtMs / 1000;
-    if (p >= SWEEP_P0 && p <= tR.p1)
+    if (p >= TURN_P0 && p <= tR.p1)
       ambient = Math.min(AMBIENT_MAX, ambient + AMBIENT_SPIN_RATE * dt);
-    else if (p < SWEEP_P0) ambient = Math.max(0, ambient - AMBIENT_DECAY * dt);
+    else if (p < TURN_P0) ambient = Math.max(0, ambient - AMBIENT_DECAY * dt);
 
-    // one θ, both writes, unconditionally — before any early return, or the
-    // starfield (which outlives this span) holds its last angle
+    // always write the angle and opacity, before any early return, so nothing
+    // is left stale after a fast scroll
     const theta = trailSweepAt(p) + ambient;
     uSkySpin.value = theta;
     trails.setSweep(theta);
-
-    // written unconditionally too: a fast flick can leave the scene between two
-    // frames, and a held opacity freezes a field of arcs on the sky
     const env = trailEnvAt(p);
     trails.setEnvelope(env);
-    // live while either write moved: the drift keeps the sky turning parked
+    // request frames while either value is changing
     const moved = theta !== lastTheta || env !== lastEnv;
     lastTheta = theta;
     lastEnv = env;
 
-    if (env <= 0) {
-      // past the span's edges the mesh comes off the starfield; inside them it
-      // stays attached at zero, saving the re-attach on a small scrub
-      if (trails.object.parent && (p < SPAN_P0 || p > SPAN_P1))
-        scene.starfieldDetach(trails.object);
-      return moved;
-    }
-
-    // story/fly.ts mounts and unmounts the starfield under us, so the attach is
-    // re-asked every active frame; it is a no-op once attached
-    scene.starfieldAttach(trails.object);
+    // the starfield may be (re)mounted at any time; attaching is a no-op if
+    // already attached
+    if (env > 0) scene.starfieldAttach(trails.object);
+    else if (trails.object.parent && (p < SPAN_P0 || p > SPAN_P1))
+      scene.starfieldDetach(trails.object);
     return moved;
   });
 
@@ -129,8 +99,7 @@ export function createStoryTrails(scene: SceneHandle): StoryTrails {
     warm() {
       if (warmed) return;
       warmed = true;
-      // through the pass as well: the arcs are worn over the dive's span, where
-      // the pass keys its own pipeline
+      // also through the post pass, which is active while the arcs show
       if (!trails.object.parent) scene.warmDraw([trails.object], true);
     },
   };

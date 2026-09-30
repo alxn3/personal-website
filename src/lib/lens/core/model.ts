@@ -3,18 +3,14 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { isOpticalGlass } from "./parts";
 
-// Loading + material setup for the lens GLBs, produced by the lens_work/
-// pipeline: de-branded, uncompressed, each circular part split into
-// `<Part>_SegN` wedges under an empty of the same name.
+// Loads the lens GLBs and gives every mesh its material. Circular parts are
+// split into `<Part>_SegN` segments under an empty of the same name. The host
+// must serve `.glb` with `Content-Encoding: br`.
 export const MODEL_URL = "/models/lens_web_segmented.glb";
-// Removable accessories ship separately (hood / UV filter / caps), merged into
-// the body scene at load so the accessory toggles find them by name.
+/** hood, UV filter and caps; merged into the body scene on load */
 export const ACCESSORIES_URL = "/models/lens_web_accessories.glb";
-// The GLBs carry plain accessors and no glTF extensions, so a bare GLTFLoader
-// reads them. Hosting requirement: `.glb` must be served with
-// `Content-Encoding: br`.
 
-// Front accessories ride the extending zoom barrel; the rear cap sits at root.
+// Front accessories move with the zoom barrel; the rear cap sits at the root.
 const FRONT_ACCESSORIES = new Set([
   "Acc_CapFront",
   "Acc_Filter_Glass",
@@ -22,21 +18,17 @@ const FRONT_ACCESSORIES = new Set([
   "Acc_Hood",
 ]);
 
-// Per-mesh material spec, keyed by name. Every mesh must be shaded here: the
-// GLBs ship bare geometry with zero materials, so anything skipped renders in
-// three's white DefaultMaterial.
+// Material params per mesh name. The GLBs ship no materials of their own.
 type LensMaterialSpec = {
   color: number;
   roughness: number;
   metalness: number;
-  /** Optical glass: build a MeshPhysicalMaterial with transmission, IOR and the
-   *  thin-film multicoating instead of a plain MeshStandardMaterial. */
+  /** build a transmissive, coated MeshPhysicalMaterial */
   glass?: boolean;
 };
 
 function lensMaterialSpec(name: string): LensMaterialSpec {
-  // Glass FIRST, so the accessory filter glass never falls through to the
-  // matte-black `Acc_` rule below.
+  // Glass first, so the filter glass doesn't hit the `Acc_` rule below.
   if (isOpticalGlass(name))
     return { color: 0xfafdfc, roughness: 0, metalness: 0, glass: true };
   // Iris blades: blackened spring steel.
@@ -45,8 +37,7 @@ function lensMaterialSpec(name: string): LensMaterialSpec {
   // Zoom/focus grips: matte black rubber.
   if (name.startsWith("Ring_"))
     return { color: 0x101011, roughness: 0.94, metalness: 0.0 };
-  // Chrome bayonet mount / screws — the flange screws need their own test;
-  // startsWith so `_SegN` wedges match too.
+  // Chrome bayonet mount and screws.
   if (
     name.startsWith("Mount_Bayonet") ||
     name.startsWith("Mount_Screw") ||
@@ -56,7 +47,7 @@ function lensMaterialSpec(name: string): LensMaterialSpec {
   // Brass electronic contacts.
   if (name === "Mount_Contacts")
     return { color: 0xb08d57, roughness: 0.35, metalness: 0.85 };
-  // The badge letter — dark, so it reads against the white disc under it.
+  // Badge letter: dark, over the white badge disc.
   if (name.startsWith("DecalT_BadgeC"))
     return { color: 0x161617, roughness: 0.5, metalness: 0.1 };
   // White printed markings (focal scale, name ring, badge disc).
@@ -78,15 +69,12 @@ function lensMaterialSpec(name: string): LensMaterialSpec {
   return { color: 0x191919, roughness: 0.55, metalness: 0.28 };
 }
 
-/** Scale on the elements' dielectric Fresnel — a multicoating, where three's
- *  1.0 is bare glass. Must stay equal to core/scene.ts's
- *  GLASS_TRANSMISSIVE_SPECULAR, or the dive's clone hand-back pops. */
+/** Glass specular strength (three's 1.0 is uncoated glass). scene.ts's
+ *  transmissive glass reuses it so swapping between them doesn't pop. */
 export const GLASS_SPECULAR = 0.15;
 
-/** Build one material from a spec. Glass is the only kind needing more than
- *  the three PBR params: crown-glass transmission + IOR, and the iridescent
- *  thin-film multicoating over a faint green specular tint. DoubleSide because
- *  light crosses both surfaces of an element. */
+/** Build one material from a spec. Glass gets transmission, IOR and an
+ *  iridescent coating, double-sided. */
 function buildLensMaterial(spec: LensMaterialSpec): THREE.Material {
   const { color, roughness, metalness, glass } = spec;
   if (!glass)
@@ -107,29 +95,20 @@ function buildLensMaterial(spec: LensMaterialSpec): THREE.Material {
 }
 
 export interface LensModel {
-  /** The body scene — ready to render on its own. */
   scene: THREE.Group;
-  /** Resolves once the accessories GLB is merged into `scene`. Loaded in the
-   *  background after the body, so callers must await this before touching
-   *  hood/caps/filter nodes; resolves immediately when `accessories` was
-   *  false. */
+  /** Resolves once the accessories are merged into `scene` (immediately if
+   *  they weren't requested). */
   accessoriesReady: Promise<void>;
 }
 
-/**
- * Load the body GLB and return as soon as it is ready; fetch the accessories
- * GLB in the BACKGROUND and merge it in once decoded (front group parented to
- * the zoom barrel so they ride the extension). Every mesh of each is stylized.
- * `accessories: false` skips the second GLB outright — the hero never draws it.
- */
+/** Load the body GLB and return once it is ready; the accessories GLB (if
+ *  requested) loads in the background and is merged in when it arrives. */
 export async function loadLensModel({
   accessories = true,
 }: { accessories?: boolean } = {}): Promise<LensModel> {
   const loader = new GLTFLoader();
 
-  // Per-load cache keyed by the spec signature: meshes with identical params
-  // share one source material, so the caches in materials/unified.ts yield one
-  // deform material per look rather than one per mesh.
+  // Meshes with identical params share one material.
   const matCache = new Map<string, THREE.Material>();
   const sharedMaterialFor = (name: string): THREE.Material => {
     const s = lensMaterialSpec(name);
@@ -142,8 +121,6 @@ export async function loadLensModel({
     return m;
   };
 
-  // Every mesh, no exceptions: the GLBs carry no materials, so anything
-  // skipped renders in three's white default.
   const stylize = (root: THREE.Object3D) => {
     root.traverse((child) => {
       if (child instanceof THREE.Mesh)
@@ -151,17 +128,14 @@ export async function loadLensModel({
     });
   };
 
-  // Body first, so nothing the first frame needs waits on the accessories.
   const body = await loader.loadAsync(MODEL_URL);
   const scene = body.scene;
   stylize(scene);
 
-  // Accessories off the critical path — not awaited here; the caller awaits
-  // `accessoriesReady`.
   const accessoriesReady = accessories
     ? loader.loadAsync(ACCESSORIES_URL).then((acc) => {
-        // Both GLBs share one rest-pose space and Barrel_Inner is at the
-        // origin at load, so plain .add() keeps each world position.
+        // Same rest space and Barrel_Inner sits at the origin, so .add() keeps
+        // world positions.
         const barrel = scene.getObjectByName("Barrel_Inner");
         for (const child of [...acc.scene.children]) {
           (FRONT_ACCESSORIES.has(child.name) && barrel ? barrel : scene).add(
@@ -175,9 +149,8 @@ export async function loadLensModel({
   return { scene, accessoriesReady };
 }
 
-/** Give the scene a PMREM'd room environment. Transmissive glass only reads
- *  as glass with something to refract. The scene is never torn down — one per
- *  document — so nothing keeps the texture for disposal. */
+/** Give the scene a room environment map (the glass needs something to
+ *  refract). */
 export function setLensEnvironment(
   renderer: THREE.WebGPURenderer,
   scene: THREE.Scene,

@@ -1,10 +1,7 @@
 ---
-// Preload the lens model during HTML parse — these fetches otherwise wait for
-// the module script to boot plus the WebGPU init. crossorigin="anonymous"
-// matches three's own fetch() (mode cors, same-origin credentials); without it
-// the preload would not match and the file downloads twice.
-// The accessories GLB is /lens-only — the hero never shows one, so it neither
-// preloads nor fetches it.
+// Start downloading the lens model during HTML parse. crossorigin="anonymous"
+// must match three's fetch() or the file downloads twice.
+// Only /lens uses the accessories model.
 import { MODEL_URL, ACCESSORIES_URL } from "../lib/lens";
 
 interface Props {

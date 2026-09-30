@@ -1,24 +1,16 @@
-// Scroll driver for the homepage lens hero. Two media, two clocks: the 3D frame
-// is evaluated at the EASED story p (scene.onEvaluate — channels, orientation,
-// fades, ink, the fly) and the DOM chrome (per-block --beat-* vars, HUD /
-// scene-rail / scroll-cue, background tint) is written at the raw scroll p in
-// frame(). The element ids and data-* attributes queried below are the
-// contract with LensStory.astro's hero markup.
-//
-// HOMEPAGE-CHUNK LAW: this file is in the initial chunk, so it may NEVER
-// statically import optics/ or a lazy story module (fly, trails,
-// constellations, state, cost, flow) — those are dynamic-import only.
-//
-// CAPTIONS ARE NOT HERE: their visibility is layout (story.ts CAPTION_BANDS +
-// position: sticky), so they survive a driver that never starts.
-//
-// LensStory.astro keeps everything that must run WITHOUT a driver: initScene +
-// fallback, the theme watcher (forwarded here via onThemeChange), the pause
-// observer and the reduced-motion parked pose.
+// Scroll driver for the homepage lens hero. The 3D frame is evaluated at the
+// eased story p (scene.onEvaluate); the DOM chrome (--beat-* vars, HUD, scene
+// rail, scroll cue, stage tint) is written at the raw scroll p in frame().
+// Element ids and data-* attributes below must match LensStory.astro.
+// This file is in the homepage's first chunk: optics/ and the lazy story
+// modules (fly, trails, constellations, petals, state, cost, flow) may only be
+// reached by dynamic import.
+// Captions are not driven here: their visibility is CSS layout.
 
 import type { SceneHandle } from "../core/scene";
 import { uInkFill } from "../materials/unified";
 import { recipeKnob } from "../ops/host";
+import type { RecipeName } from "../ops/recipes";
 import {
   STORY,
   RANGES,
@@ -26,23 +18,15 @@ import {
   bandOf,
   holdCentreOf,
   DIVE_P0,
+  sceneIndexAt,
 } from "./story";
-import { band, BAND_FEATHER, clamp01, smoothstep } from "../core/math";
+import { band, BAND_FEATHER, clamp01 } from "../core/math";
 import { isLightTheme } from "../core/theme";
 import { createInternalsAmbient } from "./internals";
 import { createPeelCards } from "./peelcards";
 import type { Rgb } from "./envelopes";
-// type-only: these are dynamic-import-only per the chunk law, and an erased
-// import cannot pull them into the homepage's
-import type { StoryConstellations } from "./constellations";
-import type { StoryTrails } from "./trails";
-import type { StoryPetals } from "./petals";
 import {
-  ASSEMBLE_KEEP_SCOPE,
-  ENDING_BLOOM,
-  ENDING_CURL,
-  ENDING_RING_PHASE,
-  ENDING_REBEND,
+  STORY_KNOBS,
   assembleAt,
   bgStopsFor,
   bgTintAt,
@@ -58,26 +42,17 @@ import {
   orientationAt,
   preShutAt,
   roseAt,
-  sceneIndexAt,
   scrollCueAt,
   shellFadeAt,
   zoomAt,
 } from "./envelopes";
 
 export interface HeroDriver {
-  /** Theme flip: swap the bg stop table and re-tint at the current scroll. */
+  /** Theme change: swap the tint table and re-tint at the current scroll. */
   onThemeChange: (light: boolean) => void;
 }
 
-/** the five knobs the story writes, taken once — guarded uniform boxes */
-const keepScope = recipeKnob("assemble", "keepScope");
-const bloom = recipeKnob("explode", "bloom");
-const curl = recipeKnob("explode", "curl");
-const ringPhase = recipeKnob("explode", "ringPhase");
-const rebend = recipeKnob("explode", "rebend");
-
-// per-frame scratch: the orientation handed to the scene, so a frame allocates
-// nothing
+// reused every frame for the model orientation
 const ORIENT = { x: 0, y: 0, z: 0 };
 
 export function startHeroStory(scene: SceneHandle): HeroDriver {
@@ -86,8 +61,8 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
   const hud = document.getElementById("hud")!;
   const sceneRail = document.getElementById("scene-rail")!;
   const scrollCue = document.getElementById("scroll-cue")!;
-  // Per-block progress: any element with data-beat gets its scene's progress
-  // written as custom properties each frame. A typo'd id warns and is skipped.
+  // Every [data-beat] element gets its scene's progress as CSS custom
+  // properties. An unknown scene id warns and is skipped.
   const beats = [...track.querySelectorAll<HTMLElement>("[data-beat]")].flatMap(
     (el) => {
       const id = el.dataset.beat!;
@@ -104,39 +79,31 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
           el,
           p0: r.p0,
           p1: r.p1,
-          // the block's band, off the story table. The FINAL band's far edge is
-          // pushed one feather past the track end, where CSS holds the caption
-          // lit, so --beat-visibility does not dim under it.
+          // the caption band; the final band runs one feather past the track
+          // end so --beat-visibility stays at 1 there
           a: bnd.a,
           b: bnd.final ? bnd.b + BAND_FEATHER : bnd.b,
-          // --beat-progress window in scene-local 0..1, authored via
-          // LensSceneContent's progressFrom/progressTo, parsed once
-          f0: Number(el.dataset.progressFrom ?? 0),
-          f1: Number(el.dataset.progressTo ?? 1),
-          // last values written, so a block resting at its floor writes nothing
+          // last values written, to skip unchanged writes
           wLocal: NaN,
-          wProgress: NaN,
           wVisibility: NaN,
         },
       ];
     },
   );
 
-  // Tracked-part pins: every [data-track] element follows its model node's
-  // projected screen position each frame (LensPin.astro).
+  // Pins: every [data-track] element follows its model node on screen
+  // (LensPin.astro).
   const pins = [...stage.querySelectorAll<HTMLElement>("[data-track]")].map(
     (el) => ({ el, node: el.dataset.track!, wx: NaN, wy: NaN, wVis: "" }),
   );
   if (pins.length) {
-    // the projected point, reused across pins and frames
     const at = { x: 0, y: 0 };
     scene.onFrame((project) => {
       for (const pin of pins) {
-        // hidden: unknown node or behind the camera
+        // hidden when the node is unknown or behind the camera
         const vis = project(pin.node, at) ? "" : "hidden";
         if (vis === "") {
-          // rounded to the tenth the transform is written at, so a pin that
-          // lands on the same tenth writes no string
+          // rounded to 0.1px; unchanged positions write nothing
           const x = Math.round(at.x * 10) / 10;
           const y = Math.round(at.y * 10) / 10;
           if (x !== pin.wx || y !== pin.wy) {
@@ -152,8 +119,7 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
       }
     });
   }
-  // scene-rail dots: one per rail-flagged scene, matched to the markup by scene
-  // id; `i` is the scene's index in RANGES
+  // scene-rail dots, one per rail scene; `i` is the scene's index in RANGES
   const rails = RANGES.flatMap((r, i) =>
     r.scene.rail
       ? [
@@ -165,13 +131,9 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
       : [],
   );
 
-  // the peel's range — the only one still read here, for the fly prefetch below
-  const peR = rangeOf("peel");
-
-  // last HUD readings and lit rail, so an unchanged frame writes no DOM. The
-  // scene, focal length and explode read the raw scroll p in frame(); the
-  // f-stop reads the DRAWN iris after each render, since inside the internals
-  // it is a phase clock and inside the dive the eased channel.
+  // Last HUD readings and lit rail dot, so an unchanged frame writes no DOM.
+  // Scene, focal length and explode come from the scroll p in frame(); the
+  // f-stop reads the drawn aperture after each render.
   let hudScn = -1;
   let hudFstop = "";
   let hudMm = -1;
@@ -189,8 +151,7 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
     spellHud();
   });
 
-  // background tint: the stop table is per THEME, held across frames and
-  // rebuilt on a flip, so the per-frame path only interpolates
+  // stage tint: the stop table is rebuilt only on a theme change
   let BG_STOPS = bgStopsFor(isLightTheme());
   let lastBgP = 0;
   const bgRgb: Rgb = [0, 0, 0];
@@ -199,57 +160,46 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
     lastBgP = p;
     const c = bgTintAt(BG_STOPS, p, bgRgb);
     const css = `rgb(${c[0]},${c[1]},${c[2]})`;
-    if (css === lastBgCss) return; // the tint holds for runs of frames
+    if (css === lastBgCss) return;
     lastBgCss = css;
     stage.style.background = css;
   }
 
-  let lastP = 0; // last p handed to frame() — read by the dev scrub panel
-  /** the eased p the 3D frame was last evaluated at */
-  let lastPE = NaN;
-  /** the dust flag last written, so a parked story writes nothing */
+  let lastP = 0; // last p handed to frame(); read by the dev panel
+  let lastPE = NaN; // eased p of the last 3D evaluation
   let lastDust: boolean | undefined;
-  /** when the story position last moved — the prewarm waits on it */
-  let lastMoveAt = 0;
+  let lastMoveAt = 0; // when the scroll position last changed
 
-  // The fly-through span's driver (story/fly.ts): dynamic-import only, per the
-  // chunk law. Prefetch starts at the PEEL, several scenes before the dive.
+  // The dive (fly.ts), loaded lazily; the scroll prefetch starts at the peel.
   let fly: { evaluate(pE: number): void; warm(): Promise<void> } | undefined;
   let flyLoad: Promise<unknown> | undefined;
-  const flyPrefetchP = peR.p0;
-  /** Import + warm the dive. Fired at BOOT idle so the import, the pass compile
-   *  and the glass clone build land while the reader is still on the hero; the
-   *  scroll trigger in frame() is the fallback for a deep link. */
+  const flyPrefetchP = rangeOf("peel").p0;
+  /** Import the dive. Normally reached by the boot prewarm; frame() triggers it
+   *  on scroll as a fallback. */
   function loadFly() {
-    if (flyLoad) return flyLoad;
-    flyLoad = import("./fly")
+    return (flyLoad ??= import("./fly")
       .then((m) => {
         fly = m.createStoryFly(scene);
-        // a deep link parked inside the span never moves again: re-evaluate
+        // re-evaluate, in case the page is parked inside the dive
         lastPE = NaN;
         scene.invalidate();
       })
-      .catch((err) => console.warn("lens fly: driver failed to load", err));
-    return flyLoad;
+      .catch((err) => console.warn("lens fly: driver failed to load", err)));
   }
   setTimeout(() => void prewarm(), 2500);
-  /** Run `cb` when the page has a moment, and no later than the timeout. */
-  const atIdle = (cb: () => void) => {
-    if (typeof requestIdleCallback === "function")
-      requestIdleCallback(cb, { timeout: 2000 });
-    else setTimeout(cb, 500);
-  };
-  /** …the same window, awaited. */
-  const idle = () => new Promise<void>((resolve) => atIdle(resolve));
+  /** Resolves when the page is idle, or after a timeout. */
+  const idle = () =>
+    new Promise<void>((resolve) => {
+      if (typeof requestIdleCallback === "function")
+        requestIdleCallback(() => resolve(), { timeout: 2000 });
+      else setTimeout(resolve, 500);
+    });
   const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-  /** Stillness a warm waits for: a warm frame landing mid-gesture just moves
-   *  the stutter it spares. */
+  /** How long the scroll must be still before a warm-up step runs, ms. */
   const WARM_QUIET_MS = 350;
-  /** Set once the reader crosses into the peel, after which the warms stop
-   *  waiting for a still moment that may never come. */
+  /** Set once the reader reaches the peel: warm-ups stop waiting for stillness. */
   let warmNow = false;
-  /** An idle window with the story standing still — or none at all, once the
-   *  approach has escalated. */
+  /** Resolves at an idle moment with the scroll still (at once after warmNow). */
   async function whenStill() {
     for (;;) {
       if (warmNow) return;
@@ -260,96 +210,69 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
     }
   }
 
-  // the sky chapter's ink (story/constellations.ts), lazy for the same chunk
-  // reason and self-driving once created, so there is only the load here
-  let constellations: StoryConstellations | undefined;
-  let constLoad: Promise<unknown> | undefined;
-  const constPrefetchP = rangeOf("flythrough").p0;
-  function loadConstellations() {
-    if (constLoad) return constLoad;
-    constLoad = import("./constellations")
-      .then((m) => {
-        constellations = m.createStoryConstellations(scene);
-      })
-      .catch((err) =>
-        console.warn("lens constellations: driver failed to load", err),
-      );
-    return constLoad;
-  }
+  // The later riders (the sky's star names, the turning sky, the bloom's
+  // petals): lazy, self-driving once created, prefetched once p passes `at`.
+  const riders: {
+    name: string;
+    at: number;
+    open: () => Promise<{ warm(): void }>;
+    load?: Promise<{ warm(): void } | undefined>;
+  }[] = [
+    {
+      name: "constellations",
+      at: rangeOf("flythrough").p0,
+      open: async () =>
+        (await import("./constellations")).createStoryConstellations(scene),
+    },
+    {
+      name: "trails",
+      at: rangeOf("constellations").p0,
+      open: async () => (await import("./trails")).createStoryTrails(scene),
+    },
+    {
+      name: "petals",
+      at: rangeOf("rewrap").p0,
+      open: async () => (await import("./petals")).createStoryPetals(scene),
+    },
+  ];
+  const loadRider = (r: (typeof riders)[number]) =>
+    (r.load ??= r.open().catch((err) => {
+      console.warn(`lens ${r.name}: driver failed to load`, err);
+      return undefined;
+    }));
 
-  // the turning sky (story/trails.ts), lazy and self-driving on the same terms;
-  // it needs no re-drive after the import, unlike the fly hook
-  let trails: StoryTrails | undefined;
-  let trailsLoad: Promise<unknown> | undefined;
-  const trailsPrefetchP = rangeOf("constellations").p0;
-  function loadTrails() {
-    if (trailsLoad) return trailsLoad;
-    trailsLoad = import("./trails")
-      .then((m) => {
-        trails = m.createStoryTrails(scene);
-      })
-      .catch((err) => console.warn("lens trails: driver failed to load", err));
-    return trailsLoad;
-  }
-
-  // the bloom's petals (story/petals.ts), lazy and self-driving like the
-  // trails; prefetched a scene early, at the rewrap
-  let petals: StoryPetals | undefined;
-  let petalsLoad: Promise<unknown> | undefined;
-  const petalsPrefetchP = rangeOf("rewrap").p0;
-  function loadPetals() {
-    if (petalsLoad) return petalsLoad;
-    petalsLoad = import("./petals")
-      .then((m) => {
-        petals = m.createStoryPetals(scene);
-      })
-      .catch((err) => console.warn("lens petals: driver failed to load", err));
-    return petalsLoad;
-  }
-
-  /** THE BOOT PREWARM, in the order the reader reaches them and one idle window
-   *  each. Importing is only half of it: each module's first DRAW uploads its
-   *  textures and buffers, which is the boundary's stall. Every step waits for
-   *  the story to stand still, and every step is idempotent against the scroll
-   *  triggers in frame(). */
+  /** Load and warm each later scene in story order, one still idle moment
+   *  each, so its first draw doesn't stall the scroll. Safe to race frame(). */
   async function prewarm() {
     await whenStill();
     peelCards.warm();
     await whenStill();
     await loadFly();
     await whenStill();
-    // the pass's own frame, ahead of the dive's: its render targets are the
-    // dive's biggest allocation
+    // the wormhole post pass first: its render targets are the dive's biggest
+    // allocation
     await scene.buildWormholePost();
     await whenStill();
     await fly?.warm();
-    await whenStill();
-    await loadConstellations();
-    constellations?.warm();
-    await whenStill();
-    await loadTrails();
-    trails?.warm();
-    await whenStill();
-    await loadPetals();
-    petals?.warm();
+    for (const r of riders) {
+      await whenStill();
+      (await loadRider(r))?.warm();
+    }
   }
 
-  // The two statically imported story modules (neither pulls in optics/).
-  // internals.ts gates itself to the internals span, where it — not the
-  // evaluate step below — owns focus and aperture.
+  // The two riders loaded up front. internals.ts owns focus and aperture
+  // inside its own span.
   createInternalsAmbient(scene);
   const peelCards = createPeelCards(scene);
 
-  // THE 3D EVALUATE STEP, at the eased story p: every value the frame draws is
-  // a pure function of pE, written value-and-target so nothing lags it. Skipped
-  // while pE stands still, so a parked story costs nothing.
+  // The 3D frame at the eased story p. Every value is written as value and
+  // target so nothing lags; skipped while pE is unchanged.
   scene.onEvaluate((pE) => {
     if (pE === lastPE) return false;
     lastPE = pE;
     const s = scene.state;
     s.zoom = s.zoomTarget = zoomAt(pE);
-    // outside the cards+internals span the driver owns focus and the aperture's
-    // pre-shut ramp; inside it story/internals.ts does — separated by RANGE
+    // internals.ts writes focus and aperture inside its span
     if (driverOwnsIris(pE)) {
       s.focus = s.focusTarget = 0;
       s.aperture = s.apertureTarget = preShutAt(pE);
@@ -357,56 +280,40 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
     s.explode = s.explodeTarget = explodeAt(pE);
     s.assemble = s.assembleTarget = assembleAt(pE);
     s.rose = s.roseTarget = roseAt(pE);
-    // the cards chapter's compact core (ops/mechanism.ts huddleMm)
     s.huddle = s.huddleTarget = huddleAt(pE);
     scene.setModelOrientation(orientationAt(pE, ORIENT));
-    // the ink ramps; the uniform box is materials/unified.ts's, so this line is
-    // the only coupling
     uInkFill.value = inkFillAt(pE);
-    // the body fade is the dive's alone; this half of the tile is a constant 1,
-    // written to keep the range-tiled writer map GAPLESS
+    // fly.ts owns the body fade from DIVE_P0 on
     if (pE < DIVE_P0) scene.setBodyFade(1);
-    // the shell's and the interior's winks and returns — one law each in
-    // story/envelopes.ts, both riding story/peelcards.ts's WINK_SPAN
     scene.setShellFade(shellFadeAt(pE));
     scene.setInteriorFade(interiorFadeAt(pE));
-    // the dust's one writer (story/envelopes.ts dustAt): the dive and the
-    // petals both want it off, and neither may own the flag
+    // the only writer of the dust flag
     const dust = dustAt(pE);
     if (dust !== lastDust) {
       lastDust = dust;
       scene.setDust(dust);
     }
-    // last: the fly owns the iris inside its span, so its writes land after
-    // the resets above
+    // last, so the dive's own iris writes win inside its span
     fly?.evaluate(pE);
     return false;
   });
 
   let wCue = NaN;
   let wChrome = NaN;
-  /** The DOM chrome at the raw scroll p, and the story target the 3D eases to. */
+  /** Write the DOM chrome at scroll p and set the target the 3D eases toward. */
   function frame(p: number) {
     if (p !== lastP) lastMoveAt = performance.now();
     lastP = p;
     scene.state.storyTarget = p;
 
-    // per-block progress custom properties, so content-specific effects live in
-    // CSS with the content —
-    //   --beat-local      raw scene-local progress, 0..1
-    //   --beat-progress   local eased over the block's authored window
-    //   --beat-visibility the story table's fade band (the pins ride it)
+    //   --beat-local      scene-local progress, 0..1
+    //   --beat-visibility the caption band's fade
     for (const c of beats) {
       const local = clamp01((p - c.p0) / (c.p1 - c.p0));
-      const progress = smoothstep(c.f0, c.f1, local);
       const visibility = band(p, c.a, c.b);
       if (local !== c.wLocal) {
         c.wLocal = local;
         c.el.style.setProperty("--beat-local", String(local));
-      }
-      if (progress !== c.wProgress) {
-        c.wProgress = progress;
-        c.el.style.setProperty("--beat-progress", String(progress));
       }
       if (visibility !== c.wVisibility) {
         c.wVisibility = visibility;
@@ -416,15 +323,14 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
 
     bgTint(p);
 
-    // the lazy scenes' prefetch ladder, off the reader's real position
-    if (p > flyPrefetchP) warmNow = true; // the approach escalation
-    if (!flyLoad && p > flyPrefetchP) loadFly();
-    if (!constLoad && p > constPrefetchP) loadConstellations();
-    if (!trailsLoad && p > trailsPrefetchP) loadTrails();
-    if (!petalsLoad && p > petalsPrefetchP) loadPetals();
+    // scroll-triggered loads of the lazy scenes
+    if (p > flyPrefetchP) {
+      warmNow = true;
+      void loadFly();
+    }
+    for (const r of riders) if (p > r.at) void loadRider(r);
 
-    // HUD + scene rail: the readout reports the story at the reader's p; the
-    // f-stop is filled in after the render (see spellHud)
+    // HUD and scene rail; the f-stop is filled in after the render
     const scn = sceneIndexAt(p);
     hudScn = scn;
     hudMm = focalMmAt(zoomAt(p));
@@ -435,8 +341,7 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
       for (const r of rails) r.el?.classList.toggle("is-on", scn === r.i);
     }
 
-    // scroll cue lives only in the hero; the chrome fades at the very end —
-    // both flat for most of the track, so each is written only when it moves
+    // scroll cue and chrome opacity, written only when they change
     const cue = scrollCueAt(p);
     if (cue !== wCue) {
       wCue = cue;
@@ -450,9 +355,8 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
     }
   }
 
-  // The track's document geometry, re-read only when the layout moves: the
-  // track's own size, the body's (content above it), the viewport's. A scroll
-  // frame then reads scrollY alone, which forces no layout.
+  // The track's position, re-measured only on layout changes, so a scroll
+  // frame reads only scrollY and forces no layout.
   let trackTop = 0;
   let trackTotal = 0;
   const measureTrack = () => {
@@ -461,8 +365,7 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
   };
   const scrollP = () =>
     trackTotal > 0 ? clamp01((window.scrollY - trackTop) / trackTotal) : 0;
-  // Dev scrub override (?story panel): while set, scrolling stops driving
-  // frame() — the panel's scrub owns the story position instead.
+  // Set while the dev ?story panel's slider owns the story position.
   let override = false;
   let ticking = false;
   function onScroll() {
@@ -482,27 +385,21 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
   const ro = new ResizeObserver(onLayout);
   ro.observe(track);
   ro.observe(document.body);
-  // the story's recipe knobs: constants a scroll never moves, written once
-  keepScope.value = ASSEMBLE_KEEP_SCOPE;
-  bloom.value = ENDING_BLOOM;
-  curl.value = ENDING_CURL;
-  ringPhase.value = ENDING_RING_PHASE;
-  rebend.value = ENDING_REBEND;
-  // the first write is SYNCHRONOUS, before the first rendered frame, so nothing
-  // draws a frame the story did not ask for; the boot SNAPS the eased p onto
-  // the scroll, so a deep link opens on its pose rather than the path to it
+  for (const [name, knobs] of Object.entries(STORY_KNOBS))
+    for (const [knob, v] of Object.entries(knobs))
+      recipeKnob(name as RecipeName, knob).value = v;
+  // First frame synchronously, with the eased p snapped to the scroll, so a
+  // deep link opens on its pose instead of animating to it.
   measureTrack();
   const p0 = scrollP();
   scene.state.story = p0;
   frame(p0);
 
-  // DEV: the story as JSON on `window.__lensStory`. Read-only, and lazy by
-  // necessity — story/state.ts drags optics/ in, so it may only be reached
-  // through the dynamic import inside this DEV-gated block.
+  // Dev only: story inspection on `window.__lensStory`. state/cost/flow pull in
+  // optics/, so they must stay dynamic imports inside this block.
   if (import.meta.env.DEV) {
     const load = () => import("./state");
-    /** The live model root, off core/scene.ts's own DEV probe, so no reader
-     *  here has to widen the public SceneHandle. */
+    /** The live model root, from core/scene.ts's dev probe. */
     const modelRoot = (who: string): never => {
       const perf = (window as unknown as Record<string, { model?: unknown }>)
         .__lensPerf;
@@ -511,26 +408,23 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
       return perf.model as never;
     };
     (window as unknown as Record<string, unknown>).__lensStory = {
-      /** the full declarative state at ANY p — no scrolling required */
+      /** the story state at any p */
       async stateAt(p: number, opts?: { light?: boolean }) {
         const { storyStateAt } = await load();
         return storyStateAt(p, { light: isLightTheme(), ...opts });
       },
-      /** …and at the p the driver last ran: the scroll position (or the ?story
-       *  panel's parked override), not the eased channel */
+      /** the story state at the last scroll p (not the eased p) */
       async dump() {
         const { storyStateAt } = await load();
         return storyStateAt(lastP, { light: isLightTheme() });
       },
-      /** The renderer's workload at p — story/cost.ts's law over a census of
-       *  the LIVE scene. Lazily imported for story/state.ts's reason. */
+      /** the renderer's workload at p, over the live scene */
       async costAt(p: number = lastP) {
         const { buildPartTableFromScene, storyCostAt } =
           await import("./cost");
         return storyCostAt(p, buildPartTableFromScene(modelRoot("costAt")));
       },
-      /** Where one piece is at p, in the bore's cylindrical coordinates —
-       *  story/flow.ts's law over the LIVE model's derived frames. */
+      /** where one piece (or every piece) is at p, over the live model */
       async pieceAt(p: number = lastP, key?: string) {
         const { buildPieceTable, pieceStateAt } = await import("./flow");
         const table = buildPieceTable(modelRoot("pieceAt"));
@@ -538,8 +432,7 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
           ? pieceStateAt(p, key, table)
           : table.pieces.map((r) => pieceStateAt(p, r.key, table));
       },
-      /** …and the whole per-scene × per-cast rollup. Slow: every piece through
-       *  the real pipeline at every edge of the story. */
+      /** the per-scene × per-cast motion rollup (slow) */
       async flowTable() {
         const { buildPieceTable, flowRollups } = await import("./flow");
         return flowRollups(buildPieceTable(modelRoot("flowTable")));
@@ -547,13 +440,12 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
     };
   }
 
-  // Dev-only story scrubber, stripped from production with the block above and
-  // built only for `/?story`.
+  // Dev-only story scrubber panel, for `/?story`.
   if (
     import.meta.env.DEV &&
     new URLSearchParams(location.search).has("story")
   ) {
-    // every channel the story drives, read back LIVE (post-ease) each frame
+    // channels shown in the panel, read back after easing
     const CH = [
       ["zoom", "zoom"],
       ["focus", "focus"],
@@ -584,29 +476,16 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
 
     const panel = document.createElement("div");
     panel.className = "lens-scrub";
-    const head = document.createElement("div");
-    head.className = "lens-scrub-head";
-    const pLine = document.createElement("span");
-    const mode = document.createElement("span");
-    mode.className = "lens-scrub-mode";
-    head.append(pLine, mode);
-    const grid = document.createElement("div");
-    grid.className = "lens-scrub-grid";
-    const cells = CH.map(([id, label]) => {
-      const cell = document.createElement("span");
-      grid.append(cell);
-      return { id, label, cell };
-    });
-    const slider = document.createElement("input");
-    slider.type = "range";
-    slider.min = "0";
-    slider.max = "1";
-    slider.step = "0.0005";
-    const follow = document.createElement("button");
-    follow.textContent = "follow scroll";
-    const jumps = document.createElement("div");
-    panel.append(head, grid, slider, follow, jumps);
+    panel.innerHTML = `<div class="lens-scrub-head"><span></span><span class="lens-scrub-mode"></span></div>
+      <div class="lens-scrub-grid">${CH.map(() => "<span></span>").join("")}</div>
+      <input type="range" min="0" max="1" step="0.0005">
+      <button>follow scroll</button><div></div>`;
     document.body.append(panel);
+    const [pLine, mode, ...cellEls] = panel.querySelectorAll("span");
+    const cells = CH.map(([id, label], i) => ({ id, label, cell: cellEls[i] }));
+    const slider = panel.querySelector("input")!;
+    const follow = panel.querySelector("button")!;
+    const jumps = panel.lastElementChild!;
 
     const park = (p: number) => {
       override = true;
@@ -616,9 +495,9 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
     slider.addEventListener("input", () => park(Number(slider.value)));
     follow.addEventListener("click", () => {
       override = false;
-      frame(scrollP()); // re-sync to the real scroll position immediately
+      frame(scrollP());
     });
-    // one jump per scene, parked at the settle region's midpoint
+    // one button per scene, jumping to its hold centre
     for (const r of RANGES) {
       const b = document.createElement("button");
       b.textContent = r.scene.title;
@@ -626,7 +505,7 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
       jumps.append(b);
     }
 
-    // cheap per-frame readout: p, scene + local fraction, live EASED channels
+    // readout: p, scene and local fraction, eased channels
     scene.onFrame(() => {
       const r = RANGES[sceneIndexAt(lastP)];
       const local = (lastP - r.p0) / Math.max(1e-9, r.p1 - r.p0);
@@ -639,7 +518,6 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
   }
 
   return {
-    // theme flip: swap the stop table and re-tint at the current scroll
     onThemeChange(light) {
       BG_STOPS = bgStopsFor(light);
       bgTint(lastBgP);

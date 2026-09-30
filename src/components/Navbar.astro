@@ -3,31 +3,26 @@ import { Icon } from "astro-icon/components";
 import ThemeToggle from "./ThemeToggle.astro";
 
 interface Props {
-  /** Selector for a full-bleed backdrop the page parks UNDER the bar (the
-   *  homepage story stage). While it still covers the bar, the bar drops its
-   *  border and blur so the backdrop runs unbroken to the top of the window;
-   *  once the page has scrolled past it, ordinary content would slide under the
-   *  nav labels, so the chrome comes back. */
+  /** Selector for a full-bleed backdrop under the bar. While it covers the
+   *  bar, the bar drops its border and blur. */
   clearOver?: string;
 }
 
 const { clearOver } = Astro.props;
 
+const path = Astro.url.pathname.replace(/\/$/, "") || "/";
 const navItems = [
   { href: "/", label: "Home" },
   { href: "/projects", label: "Projects" },
   { href: "/blog", label: "Blog" },
   { href: "/about", label: "About" },
-];
-
-const currentPath = Astro.url.pathname.replace(/\/$/, "") || "/";
-const isCurrentPath = (href: string) => {
-  if (href === "/") {
-    return currentPath === "/";
-  }
-
-  return currentPath === href || currentPath.startsWith(`${href}/`);
-};
+].map((item) => ({
+  ...item,
+  current:
+    item.href === "/"
+      ? path === "/"
+      : path === item.href || path.startsWith(`${item.href}/`),
+}));
 ---
 
 <header
@@ -50,28 +45,21 @@ const isCurrentPath = (href: string) => {
     <div class="flex items-center">
       <div class="hidden items-center gap-1.5 sm:flex" aria-label="Main pages">
         {
-          navItems.map((item) => {
-            const isCurrent = isCurrentPath(item.href);
-
-            return (
-              <a
-                href={item.href}
-                aria-current={isCurrent ? "page" : undefined}
-                class:list={[
-                  // the ring rides a --bg ring-offset cushion — the halo device
-                  // extended to focus: readable over the clear bar's arbitrary
-                  // scene content (black barrel, bright cards) in both themes,
-                  // where the UA default or a flat accent ring can vanish
-                  "focus-visible:ring-accent focus-visible:ring-offset-bg rounded-md px-2.5 py-1.5 text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none",
-                  isCurrent
-                    ? "text-highlight"
-                    : "text-text-muted hover:text-text",
-                ]}
-              >
-                {item.label}
-              </a>
-            );
-          })
+          navItems.map((item) => (
+            <a
+              href={item.href}
+              aria-current={item.current ? "page" : undefined}
+              class:list={[
+                // the --bg ring offset keeps focus visible over any backdrop
+                "focus-visible:ring-accent focus-visible:ring-offset-bg rounded-md px-2.5 py-1.5 text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none",
+                item.current
+                  ? "text-highlight"
+                  : "text-text-muted hover:text-text",
+              ]}
+            >
+              {item.label}
+            </a>
+          ))
         }
       </div>
 
@@ -112,43 +100,36 @@ const isCurrentPath = (href: string) => {
   >
     <div class="flex flex-col gap-1 px-4 py-3" aria-label="Main pages">
       {
-        navItems.map((item) => {
-          const isCurrent = isCurrentPath(item.href);
-
-          return (
-            <a
-              href={item.href}
-              aria-current={isCurrent ? "page" : undefined}
-              class:list={[
-                "rounded-md px-3 py-2 text-sm font-medium transition-colors",
-                isCurrent
-                  ? "bg-accent-soft text-accent"
-                  : "text-text-muted hover:bg-accent-soft hover:text-text",
-              ]}
-            >
-              {item.label}
-            </a>
-          );
-        })
+        navItems.map((item) => (
+          <a
+            href={item.href}
+            aria-current={item.current ? "page" : undefined}
+            class:list={[
+              "rounded-md px-3 py-2 text-sm font-medium transition-colors",
+              item.current
+                ? "bg-accent-soft text-accent"
+                : "text-text-muted hover:bg-accent-soft hover:text-text",
+            ]}
+          >
+            {item.label}
+          </a>
+        ))
       }
     </div>
   </div>
 </header>
 
 <script>
-  // `data-clear` is rendered by the server for a page that declares a backdrop,
-  // so the chrome-less bar is the FIRST paint (no flash); this only takes it
-  // away again once that backdrop has scrolled off the bar.
+  // The server renders `data-clear` when a backdrop is declared; this removes
+  // it while the backdrop is not under the bar.
   const header = document.querySelector<HTMLElement>("header[data-clear-over]");
   const backdrop = header?.dataset.clearOver
     ? document.querySelector<HTMLElement>(header.dataset.clearOver)
     : null;
 
   if (header && backdrop) {
-    // "the backdrop still covers the bar" IS the backdrop intersecting a
-    // viewport clipped to the bar's own height, so the observer answers it
-    // without measuring on the scroll. rootMargin is fixed at construction —
-    // re-arm when the bar's height can have changed.
+    // Observe the backdrop against a root clipped to the bar's height. The
+    // margin is fixed at construction, so re-arm on resize.
     let io: IntersectionObserver | null = null;
     const arm = () => {
       io?.disconnect();
@@ -170,24 +151,15 @@ const isCurrentPath = (href: string) => {
 </script>
 
 <style>
-  /* THE CHROME-LESS BAR'S ONLY LEGIBILITY DEVICE. With no fill there is nothing
-     between the bar's type and whatever the page scrolls under it, and the
-     story's stage is not one colour: mid-dive the camera is inside the barrel,
-     so a LIGHT-theme frame goes near-black under the nav for ~1.5 screenfuls,
-     and in dark theme the cards scene sends bright photographs through the same
-     band. The captions already answer this with a halo in the stage's own paper
-     (LensStory's --cap-shadow); the bar takes the same device in the SITE's
-     background — invisible over that background by definition, and only doing
-     work where foreign content passes beneath. A halo, not a scrim: it hugs the
-     letterforms, so the bar still has no edge of its own. */
+  /* The clear bar has no fill, so a --bg halo keeps its text readable over
+     dark or bright backdrop frames. */
   header[data-clear] nav {
     text-shadow:
       0 0 2px var(--bg),
       0 0 4px var(--bg),
       0 1px 14px var(--bg);
   }
-  /* text-shadow does not reach the icons (the theme toggle, the mobile
-     hamburger) — same halo, the one form that draws off a stroke. */
+  /* the same halo for the icons, which text-shadow doesn't reach */
   header[data-clear] nav :global(svg) {
     filter: drop-shadow(0 0 4px var(--bg)) drop-shadow(0 1px 10px var(--bg));
   }

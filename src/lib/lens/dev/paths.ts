@@ -3,91 +3,61 @@ import type { LensAnimation } from "../animations";
 import { IDLE_ZERO_CHANNELS } from "../core/scene";
 import type { SceneState } from "../core/scene";
 import { isSegWedge } from "../core/parts";
-import { frameOf } from "../ops/frames";
+import { frameOf, wrapPi } from "../ops/frames";
 import { createPositionProbe, type ProbeSample } from "./path-probe";
 import {
+  argmax,
   createPathAnalysis,
-  type AnalysisResult,
-  type CompareResult,
-  type CurlCornerResult,
-  type InterferenceResult,
+  dist3,
+  extent,
+  gridPick,
   type PathAnalysis,
 } from "./analysis";
 
-// Dev only — dynamically imported. The visualizer behind the /lens "Motion
-// paths" toggle: for a handful of representative shell wedges it draws the
-// world-space track every sample point takes through the selected animation — a
-// polyline per sample point coloured by edge stretch (green = bending, red =
-// pulled apart, blue = crushed), tick crosses at even time intervals, and the
-// live deformed sheet grid ("now") from the same probe.
+// Dev only, dynamically imported. The /lens "Motion paths" overlay: for three
+// shell wedges it draws the track of a grid of points through the selected
+// animation, coloured by stretch (green = none, red = pulled, blue = crushed),
+// with time ticks and the live deformed grid ("now").
 //
-// Positions are read back from the GPU running the real deformation graph and
-// the object motion comes from the real rig via matrixWorld, so there is no
-// second copy of the op math. Two checks cover the plumbing:
-//   IDLE  — with every deformation channel at 0 the shader is an exact
-//           identity, so the probe must reproduce the seated vertex positions.
-//   LIVE  — the "now" sheet, probed at the live uniforms, versus the cached
-//           path at the current progress.
+// Positions come from the GPU probe running the real deform shader, plus each
+// mesh's matrixWorld. Two self-checks:
+//   idle: with every deform channel at 0 the probe must return the rest pose.
+//   live: the "now" grid must match the drawn path at the current progress.
 
 const STEPS = 96; // timesteps sampled across the animation's 0..1 progress
 const GRID_U = 5; // sample columns across a wedge (its arc)
 const GRID_V = 3; // sample rows up a wedge (its axial extent)
-const SHEET_RANKS = [0, 0.5, 1]; // shell radius ranks to probe (inner/mid/outer)
+const SHEET_RANKS = [0, 0.5, 1]; // inner, middle and outer shell
 const TICK_EVERY = 8; // draw a time tick every N steps
 const TICK_LEN = 0.012; // world units (the lens is ~4 world units long)
-// Tolerances in model millimetres. Idle is a float-rounding budget: the graph
-// rebuilds the seated point through trig.
+// Tolerances in model millimetres.
 const IDLE_TOL_MM = 0.01;
-// Live is a resampling budget — parking mid-segment costs a fraction of a
-// millimetre, while real drift moves pieces by tens of them.
 const LIVE_TOL_MM = 1;
 
 export interface PathVizContext {
   renderer: THREE.WebGPURenderer;
-  /** World scene the overlay is attached to. */
+  /** Scene the overlay is added to. */
   scene: THREE.Scene;
-  /** Loaded GLB root — probe meshes are found under here. */
+  /** Loaded GLB root. */
   model: THREE.Object3D;
   state: SceneState;
-  /** Push `state`'s current channel values into the mechanism + recipe channel
-   *  uniforms. The walk re-drives this per timestep, so paths include the
-   *  object-level mechanism motion, not just the in-shader deform. */
+  /** Push `state`'s channel values into the rig and shader uniforms. */
   driveChannels: () => void;
   invalidate: () => void;
-  /** Registry defaults for every plain channel — the analysis walks start each
-   *  step from this base, so a walk is a pure function of the animation. */
+  /** Default value of every channel. */
   channelDefaults: Readonly<Record<string, number>>;
 }
 
-export interface PathViz {
-  /** Recompute and draw the path for `anim` (null clears the overlay).
-   *  `getProgress` reads the page's current scrub position, used by the live
-   *  agreement check. */
+/** The overlay plus the JSON analysis, on the console as `window.__lensPaths`. */
+export interface PathViz extends PathAnalysis {
+  /** Walk and draw `anim` (null clears). `getProgress` reads the page's
+   *  scrub position for the live check. */
   show(anim: LensAnimation | null, getProgress: () => number): Promise<void>;
   setVisible(on: boolean): void;
-  // Programmatic analysis (dev/analysis.ts) — every-piece sampling, plain-JSON
-  // results. Reachable as `window.__lensPaths` while the toggle is on.
-  /** Walk `animId` and return per-piece/per-rank motion analysis. Pass
-   *  `{ timeline: false }` to drop the bulky per-step arrays. */
-  analyze(
-    animId: string,
-    opts?: { timeline?: boolean },
-  ): Promise<AnalysisResult>;
-  /** Walk both animations over the same sample set: per-piece divergence at
-   *  equal p + per-rank radial envelopes. */
-  compare(idA: string, idB: string): Promise<CompareResult>;
-  /** Adjacent-seat-rank radial band overlaps while both pieces are in flight. */
-  interference(animId: string): Promise<InterferenceResult>;
-  /** Which wedge corner departs the seated surface last (leads the stick), per
-   *  shell, in each of two animations (defaults: assemble vs x-rose). */
-  curlCorners(idA?: string, idB?: string): Promise<CurlCornerResult>;
-  dispose(): void;
 }
 
-/** The plain (non-`*Target`) channel names of SceneState. */
 type Channel = Exclude<keyof SceneState, `${string}Target`>;
 
-const wrapPi = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));
 const clamp01 = (x: number) => Math.min(1, Math.max(0, x));
 
 /** Stretch ratio → colour. 1.0 green, >1 red (pulled), <1 blue (crushed). */
@@ -104,62 +74,20 @@ interface Sheet {
   edges: [number, number][];
 }
 
-/**
- * Choose GRID_U × GRID_V sample points on a wedge — real mesh vertices nearest
- * a parametric grid over the wedge's (arc, axial) extent, never synthesized
- * ones, so the "now" markers land on the rendered surface.
- */
+/** GRID_U × GRID_V real vertices spread over a wedge's arc and length. */
 function pickSheetVertices(mesh: THREE.Mesh): number[] {
   const pos = mesh.geometry.getAttribute("position");
-  // Not negated: the frame's t0 is the sector meridian as measured.
   const t0 = frameOf(mesh.geometry)?.t0 ?? 0;
-  const n = pos.count;
-  const phi: number[] = [];
-  const yy: number[] = [];
-  const rr: number[] = [];
-  for (let i = 0; i < n; i++) {
-    const x = pos.getX(i);
-    const y = pos.getY(i);
-    const z = pos.getZ(i);
-    phi.push(wrapPi(Math.atan2(z, x) - t0));
-    yy.push(y);
-    rr.push(Math.hypot(x, z));
-  }
-  // Keep the outer skin only: a wedge is a walled shell, and mixing inner-wall
-  // vertices into the grid would make "edges" that cross the wall thickness.
-  const rMin = Math.min(...rr);
-  const rMax = Math.max(...rr);
+  const all = [...Array(pos.count).keys()];
+  const phi = all.map((i) => wrapPi(Math.atan2(pos.getZ(i), pos.getX(i)) - t0));
+  const yy = all.map((i) => pos.getY(i));
+  const rr = all.map((i) => Math.hypot(pos.getX(i), pos.getZ(i)));
+  // Outer skin only, so no grid edge crosses the wall thickness.
+  const [rMin, rMax] = extent(all, rr);
   const cut = rMin + (rMax - rMin) * 0.7;
-  let cand = [...Array(n).keys()].filter((i) => rr[i] >= cut);
-  if (cand.length < GRID_U * GRID_V) cand = [...Array(n).keys()];
-
-  const p0 = Math.min(...cand.map((i) => phi[i]));
-  const p1 = Math.max(...cand.map((i) => phi[i]));
-  const y0 = Math.min(...cand.map((i) => yy[i]));
-  const y1 = Math.max(...cand.map((i) => yy[i]));
-  const dp = p1 - p0 || 1;
-  const dy = y1 - y0 || 1;
-
-  const out: number[] = [];
-  for (let j = 0; j < GRID_V; j++) {
-    for (let i = 0; i < GRID_U; i++) {
-      const tp = p0 + (dp * i) / (GRID_U - 1);
-      const ty = y0 + (dy * j) / (GRID_V - 1);
-      let best = cand[0];
-      let bd = Infinity;
-      for (const k of cand) {
-        const a = (phi[k] - tp) / dp;
-        const b = (yy[k] - ty) / dy;
-        const d = a * a + b * b;
-        if (d < bd) {
-          bd = d;
-          best = k;
-        }
-      }
-      out.push(best);
-    }
-  }
-  return out;
+  let cand = all.filter((i) => rr[i] >= cut);
+  if (cand.length < GRID_U * GRID_V) cand = all;
+  return gridPick(cand, phi, yy, GRID_U, GRID_V);
 }
 
 /** Pick one wedge mesh per target shell rank (inner / mid / outer). */
@@ -173,17 +101,9 @@ function pickSheetMeshes(model: THREE.Object3D): THREE.Mesh[] {
   });
   const picked: THREE.Mesh[] = [];
   for (const target of SHEET_RANKS) {
-    let best: THREE.Mesh | null = null;
-    let bd = Infinity;
-    for (const w of wedges) {
-      if (picked.includes(w.mesh)) continue;
-      const d = Math.abs(w.rank - target);
-      if (d < bd) {
-        bd = d;
-        best = w.mesh;
-      }
-    }
-    if (best) picked.push(best);
+    const left = wedges.filter((w) => !picked.includes(w.mesh));
+    if (left.length)
+      picked.push(argmax(left, (w) => -Math.abs(w.rank - target)).mesh);
   }
   return picked;
 }
@@ -210,20 +130,16 @@ export function createPathViz(
   }
 
   const count = samples.length;
-  // rows = one per timestep, plus a final row reserved for the IDLE check
+  // One row per step, plus a final row for the idle check.
   const IDLE_ROW = STEPS;
   const walkProbe = createPositionProbe(ctx.renderer, samples, STEPS + 1);
   const liveProbe = createPositionProbe(ctx.renderer, samples, 1);
   const allEdges = sheets.flatMap((s) => s.edges);
   const restLen = allEdges.map(([a, b]) =>
-    Math.hypot(
-      walkProbe.seated[a * 3] - walkProbe.seated[b * 3],
-      walkProbe.seated[a * 3 + 1] - walkProbe.seated[b * 3 + 1],
-      walkProbe.seated[a * 3 + 2] - walkProbe.seated[b * 3 + 2],
-    ),
+    dist3(walkProbe.seated, a * 3, walkProbe.seated, b * 3),
   );
 
-  // --- overlay objects -------------------------------------------------------
+  // --- overlay ---
   const overlay = new THREE.Group();
   overlay.renderOrder = 999;
   overlay.visible = false;
@@ -263,13 +179,11 @@ export function createPathViz(
   const nowPos = new Float32Array(allEdges.length * 2 * 3);
   nowGeo.setAttribute("position", new THREE.BufferAttribute(nowPos, 3));
 
-  // --- state -----------------------------------------------------------------
-  // The channel names, derived from the live state object rather than
-  // re-listed here — core/scene's CHANNEL_DEFAULTS stays the one registry.
+  // --- state ---
   const channels = Object.keys(ctx.state).filter(
     (k) => !k.endsWith("Target"),
   ) as Channel[];
-  /** the walk, in each sample's own mesh-local space: [step][sample] */
+  /** the walk in each sample's mesh-local space, [step][sample] */
   let localPath: Float32Array | null = null;
   let peakStretch = 1;
   let idleErr = 0;
@@ -279,7 +193,7 @@ export function createPathViz(
   let busy = false;
   let compiled = false;
   let failure: string | null = null;
-  /** what the panel's checkbox asked for — a recompute must not un-hide */
+  /** the checkbox state; a recompute must not un-hide the overlay */
   let wanted = false;
   const syncVisible = () => {
     overlay.visible = wanted && localPath != null;
@@ -309,14 +223,10 @@ export function createPathViz(
   }
 
   /** Max |probe − reference| over every sample, in model mm. */
-  function maxDelta(probed: Float32Array, ref: Float32Array, off = 0): number {
+  function maxDelta(probed: Float32Array, ref: Float32Array): number {
     let m = 0;
-    for (let i = 0; i < count; i++) {
-      const d = Math.hypot(
-        probed[i * 3] - ref[off + i * 3],
-        probed[i * 3 + 1] - ref[off + i * 3 + 1],
-        probed[i * 3 + 2] - ref[off + i * 3 + 2],
-      );
+    for (let i = 0; i < count * 3; i += 3) {
+      const d = dist3(probed, i, ref, i);
       if (d > m) m = d;
     }
     return m;
@@ -352,10 +262,7 @@ export function createPathViz(
         matrices.push(sheets.map((s) => s.mesh.matrixWorld.clone()));
         walkProbe.renderRow(k);
       }
-      // Idle check: every deformation channel at 0 ⇒ the shader is an exact
-      // identity, so this row must come back as the seated geometry. The zero
-      // list is derived from the one channel registry, so no channel can
-      // inherit the live page value and raise a false alarm.
+      // Idle row: every deform channel at 0, so the shader is an identity.
       for (const c of channels) ctx.state[c] = snap[c];
       for (const c of IDLE_ZERO_CHANNELS) ctx.state[c] = 0;
       ctx.driveChannels();
@@ -375,7 +282,7 @@ export function createPathViz(
       buildGeometry(matrices);
       syncVisible();
     } catch (err) {
-      // A path that failed to build must never be left on screen looking real.
+      // Never leave a failed path on screen.
       localPath = null;
       syncVisible();
       failure = "path walk failed — see console";
@@ -390,10 +297,8 @@ export function createPathViz(
 
   /** Turn the read-back walk into the overlay's line geometry. */
   function buildGeometry(matrices: THREE.Matrix4[][]) {
-    // Free the last build first: replacing a geometry's attributes does not
-    // free the old ones on the WebGPU backend, which releases buffers only from
-    // the geometry's dispose event. dispose() purges the backend's records and
-    // the geometry stays usable.
+    // WebGPU frees replaced attribute buffers only on dispose(); the geometry
+    // stays usable afterwards.
     pathGeo.dispose();
     tickGeo.dispose();
     const path = localPath!;
@@ -404,28 +309,20 @@ export function createPathViz(
         const m = matrices[k][si];
         for (let i = s.first; i < s.first + GRID_U * GRID_V; i++) {
           const o = (k * count + i) * 3;
-          tmpV.set(path[o], path[o + 1], path[o + 2]).applyMatrix4(m);
-          world[o] = tmpV.x;
-          world[o + 1] = tmpV.y;
-          world[o + 2] = tmpV.z;
+          tmpV.fromArray(path, o).applyMatrix4(m).toArray(world, o);
         }
       });
     }
 
-    // per-sample stretch = the incident grid edge furthest from rest length
+    // A sample's stretch is that of its most-stretched grid edge.
     const stretch = new Float32Array(STEPS * count).fill(1);
     peakStretch = 1;
     for (let k = 0; k < STEPS; k++) {
       allEdges.forEach(([a, b], e) => {
         if (restLen[e] < 1e-6) return;
-        const oa = (k * count + a) * 3;
-        const ob = (k * count + b) * 3;
         const ratio =
-          Math.hypot(
-            path[oa] - path[ob],
-            path[oa + 1] - path[ob + 1],
-            path[oa + 2] - path[ob + 2],
-          ) / restLen[e];
+          dist3(path, (k * count + a) * 3, path, (k * count + b) * 3) /
+          restLen[e];
         peakStretch = Math.max(peakStretch, ratio);
         for (const s of [a, b]) {
           const idx = k * count + s;
@@ -457,8 +354,7 @@ export function createPathViz(
     pathGeo.setAttribute("position", new THREE.BufferAttribute(pp, 3));
     pathGeo.setAttribute("color", new THREE.BufferAttribute(pc, 3));
 
-    // time ticks: a 3-axis cross every TICK_EVERY steps — bunched ticks read
-    // directly as "slow here", spread-out ticks as "fast here"
+    // Time ticks: a 3-axis cross every TICK_EVERY steps.
     const ticks: number[] = [];
     for (let k = 0; k < STEPS; k += TICK_EVERY) {
       for (let i = 0; i < count; i++) {
@@ -480,11 +376,8 @@ export function createPathViz(
     );
   }
 
-  /**
-   * Live agreement: probe the same graph at the last rendered frame's uniforms
-   * and compare against the cached path at the current progress. A mismatch
-   * means the drawn path is no longer the thing on screen.
-   */
+  /** Probe the live pose, draw it as the "now" grid, and compare it with the
+   *  drawn path at the current progress. */
   async function sampleLive() {
     if (busy || !localPath || !overlay.visible) return;
     busy = true;
@@ -494,30 +387,23 @@ export function createPathViz(
       liveProbe.end();
       const live = await liveProbe.read(1);
 
-      let w = 0;
-      for (const [a, b] of allEdges) {
-        for (const i of [a, b]) {
-          tmpV
-            .set(live[i * 3], live[i * 3 + 1], live[i * 3 + 2])
-            .applyMatrix4(matrixFor(i));
-          nowPos[w] = tmpV.x;
-          nowPos[w + 1] = tmpV.y;
-          nowPos[w + 2] = tmpV.z;
-          w += 3;
-        }
-      }
+      allEdges.flat().forEach((i, w) => {
+        const sheet = sheets[Math.floor(i / (GRID_U * GRID_V))];
+        tmpV
+          .fromArray(live, i * 3)
+          .applyMatrix4(sheet.mesh.matrixWorld)
+          .toArray(nowPos, w * 3);
+      });
       nowGeo.getAttribute("position").needsUpdate = true;
       nowGeo.computeBoundingSphere();
 
-      // Strict: the per-shell assemble windows are narrow enough that a 1e-3
-      // channel residual is worth a visible fraction of a millimetre.
+      // Only compare once every channel has reached its target.
       liveSettled = channels.every(
         (c) => Math.abs(ctx.state[c] - ctx.state[`${c}Target`]) < 1e-5,
       );
       if (liveSettled) {
-        // Reference = the cached walk resampled at the same progress.
-        // Catmull-Rom, not linear: on a fast segment a chord sags millimetres
-        // inside the true curve, which is sampling rate, not drift.
+        // The walk resampled at the current progress (Catmull-Rom, which
+        // follows fast curved segments far better than linear).
         const f = clamp01(getProgress()) * (STEPS - 1);
         const k1 = Math.min(STEPS - 1, Math.floor(f));
         const t = f - k1;
@@ -556,20 +442,12 @@ export function createPathViz(
     }
   }
 
-  /** matrixWorld of the sheet a sample belongs to. */
-  function matrixFor(sample: number): THREE.Matrix4 {
-    const s = sheets[Math.floor(sample / (GRID_U * GRID_V))];
-    return s.mesh.matrixWorld;
-  }
-
-  // ~8Hz is plenty for a health readout and keeps the readbacks off the frame
+  // Live check at ~8Hz.
   const timer = window.setInterval(() => void sampleLive(), 120);
   report();
 
-  // Programmatic analysis (dev/analysis.ts), built lazily on first use and
-  // serialized behind the same busy flag as the walk/live probes: an analysis
-  // walk drives the whole rig, and the live sampler reading mid-walk would
-  // compare a half-driven pose.
+  // The analysis is built on first use and shares the busy flag, since its
+  // walks drive the whole rig.
   let analysis: PathAnalysis | null = null;
   const getAnalysis = () => (analysis ??= createPathAnalysis(ctx));
   let queue: Promise<unknown> = Promise.resolve();
@@ -614,8 +492,6 @@ export function createPathViz(
       analysis?.dispose();
     },
   };
-  // Dev hook: drive the analysis from the console while the Motion-paths toggle
-  // is on.
   (window as unknown as { __lensPaths?: PathViz }).__lensPaths = api;
   return api;
 }

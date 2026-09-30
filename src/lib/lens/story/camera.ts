@@ -1,32 +1,29 @@
+// The story's camera path, from the STORY table: each scene eases from the
+// previous scene's pose to its own over its transit, then holds. The optical
+// axis is world +X.
+
 import * as THREE from "three/webgpu";
-import { RANGES, STORY_R, type Pose } from "./story";
+import { RANGES, STORY_R, sceneIndexAt, type Pose } from "./story";
 import { clamp01, smoothstep, lerp, deg } from "../core/math";
 
-// The scroll-story camera path, derived from the STORY table. In the displayed
-// frame the optical axis is world +X, radial plane Y–Z; each scene keys an
-// orbit position in units of STORY_R, with a "transit → hold" pattern.
-
-// A very narrow fov plus a matching pullback ≈ an orthographic elevation.
-// Residual parallax on a parked lens scales with tan(fov/2), so it has to be
-// this narrow; the pullback grows ~10×, which core/scene's camera.far allows.
+/** The fov used to fake an orthographic view (with a matching pull-back).
+ *  The pull-back is ~10×, which core/scene's camera.far must allow. */
 const ORTHO_FOV = 3;
 
 export interface StorySample {
   fov: number;
   xs: number;
   ys: number;
-  /** the frame half-width the scene needs, in its own half-heights (Pose.wide) */
+  /** Pose.wide, Pose.near and Pose.lift, interpolated */
   wide: number;
-  /** the portrait push-in, applied as lerp(near, 1, parkScale) (Pose.near) */
   near: number;
-  /** the portrait lift, in canvas heights (Pose.lift) */
   lift: number;
 }
 
 const ORIGIN: [number, number, number] = [0, 0, 0];
 
-/** The dive's framing over the story pose: `centre` scales the park toward
- *  zero, `fov` ramps in by `fovMix`, `far` follows the pull-back distance. */
+/** The dive's overrides: `centre` fades the park out, `fov` blends in by
+ *  `fovMix`, `far` sets the far plane from the camera distance. */
 export interface DiveFraming {
   centre: number;
   fov: number | null;
@@ -34,55 +31,47 @@ export interface DiveFraming {
   far: (dist: number) => number;
 }
 
-// Each scene's camera move, RESOLVED ONCE at module load: the poses it leaves
-// from and settles into, and the move's p-window. Never re-derived in the
-// per-frame sampler.
+// Each scene's camera move, resolved once at load.
 interface ScenePlan {
-  first: Pose; // pose the move leaves from — start of the xs/ys/target slide
-  last: Pose; // pose the move settles into
-  pStart: number; // the move's window, in absolute p
+  /** pose the move starts from (the previous scene's) */
+  first: Pose;
+  /** pose it settles into */
+  last: Pose;
+  /** the move's window, absolute p */
+  pStart: number;
   pEnd: number;
 }
 
 const PLANS: readonly ScenePlan[] = RANGES.map((r, i) => ({
   first: i > 0 ? RANGES[i - 1].scene.cam : r.scene.cam,
   last: r.scene.cam,
-  // the scene's own window, in ABSOLUTE p and in `atFrac`'s own arithmetic —
-  // a fraction-of-local form rounds differently at the far edge
+  // same arithmetic as atFrac, so the edges match it exactly
   pStart: r.p0 + (r.p1 - r.p0) * (r.scene.camHold ?? 0),
   pEnd: r.p0 + (r.p1 - r.p0) * r.scene.transit,
 }));
 
-// The camera pose at `p`: each scene eases from the previous scene's settle
-// pose to its own over the scene's first `transit`, then holds.
-//
-// `outPos` is the orbit OFFSET from `outTarget` (the scene's look-at, default
-// the origin): the caller places the camera at target + offset and looks at it.
+/** The camera pose at `p`. `outPos` is the offset from `outTarget` (the
+ *  look-at): the camera sits at target + offset. */
 export function sampleStory(
   p: number,
   outPos: THREE.Vector3,
   outUp: THREE.Vector3,
   outTarget: THREE.Vector3,
 ): StorySample {
-  let i = 0;
-  while (i < RANGES.length - 1 && p >= RANGES[i].p1) i++;
-
+  const i = sceneIndexAt(p);
   const r = RANGES[i];
   const sc = r.scene;
   const plan = PLANS[i];
   const { first: a, last: b } = plan;
   const local = clamp01((p - r.p0) / Math.max(1e-6, r.p1 - r.p0));
 
-  // ONE WINDOW: the move runs [pStart, pEnd] in absolute p. Below pStart moveT
-  // is exactly 0, where the lerp evaluates to its FIRST pose bit-for-bit, so a
-  // hold IS the previous scene's parked pose. A zero-width window is a scene
-  // that never moves: it wears its pose at once.
+  // Before pStart the lerp gives the previous pose exactly; a zero-width
+  // window jumps straight to the scene's pose.
   const moveT =
     plan.pEnd > plan.pStart
       ? clamp01((p - plan.pStart) / (plan.pEnd - plan.pStart))
       : 1;
-  // one eased transit parameter shared by the orbit AND the xs/ys park shifts,
-  // so the lateral slide has the orbit's velocity profile
+  // one eased parameter for the orbit, park shifts and target alike
   const moveS = smoothstep(0, 1, moveT);
 
   outPos.set(
@@ -90,7 +79,7 @@ export function sampleStory(
     lerp(a.pos[1], b.pos[1], moveS),
     lerp(a.pos[2], b.pos[2], moveS),
   );
-  // arc: keep radius = lerp of the endpoints' radii (orbit, don't chord)
+  // orbit rather than cut across: the radius is lerped separately
   const ra = Math.hypot(a.pos[0], a.pos[1], a.pos[2]);
   const rb = Math.hypot(b.pos[0], b.pos[1], b.pos[2]);
   const baseLen = lerp(ra, rb, moveS) * STORY_R;
@@ -102,12 +91,9 @@ export function sampleStory(
   const fovKey = lerp(a.fov, b.fov, moveS);
   const xsKey = lerp(a.xs, b.xs, moveS);
 
-  // "Flatten" to an orthographic elevation. By default only while PARKED: 0
-  // during every transit and eased back to 0 before the scene ends; the LAST
-  // scene keeps its flatten to the end.
-  //
-  // A scene may instead author the flatten's own window (story/story.ts
-  // `orthoIn`/`orthoOut`); an omitted side holds it open at that end.
+  // The flatten to orthographic: by default only while parked (off during the
+  // transit and eased off before the scene ends, except in the last scene),
+  // unless the scene sets its own `orthoIn`/`orthoOut`.
   const oIn = sc.orthoIn;
   const oOut = sc.orthoOut;
   let settled: number;
@@ -132,7 +118,6 @@ export function sampleStory(
   outPos.setLength(baseLen * back);
   outUp.normalize();
 
-  // the orbit centre eases first → last on the park shifts' profile
   const ta = a.target ?? ORIGIN;
   const tb = b.target ?? ORIGIN;
   outTarget.set(
@@ -151,12 +136,9 @@ export function sampleStory(
   };
 }
 
-/**
- * Apply one frame's story-mode framing: place/aim the camera from the pose that
- * sampleStory() just wrote into `storyPos`/`storyUp`/`storyTarget`, then apply
- * the park/lift as a view offset. `parkScale` fades the horizontal park on
- * portrait viewports (computed by core/scene's resize handler).
- */
+/** Place and aim the camera from sampleStory()'s output, then apply the park
+ *  and lift as a view offset. `parkScale` (0..1) fades the park on narrow
+ *  viewports. */
 export function applyStoryFraming(
   camera: THREE.PerspectiveCamera,
   sample: StorySample,
@@ -170,22 +152,18 @@ export function applyStoryFraming(
 ): void {
   const { fov, xs, ys, wide } = sample;
   camera.up.copy(storyUp);
-  // the narrow-viewport reach (story/story.ts `Pose.wide`): it scales the ORBIT
-  // OFFSET, so the flatten's pullback and the park offsets scale with it and
-  // the projection is untouched
+  // Pose.wide: pull back on narrow viewports until the scene fits
   const frameW = camera.aspect / camera.zoom;
   if (wide > frameW) storyPos.multiplyScalar(wide / frameW);
-  // the portrait push-in (Pose.near) scales the same offset, so it is a size
-  // change with no projection or parallax change; landscape sees none of it
+  // Pose.near: push in on portrait viewports
   const near = lerp(sample.near, 1, parkScale);
   if (near < 1) storyPos.multiplyScalar(near);
-  // The camera stays ON-AXIS looking at the scene's orbit target; the park (xs
-  // and ys, in units of STORY_R) is an OFF-CENTRE PROJECTION WINDOW, not a
-  // camera shift, which would add parallax that reads as a tilt when flat.
+  // The camera looks straight at the target; the park is an off-centre
+  // projection window, not a camera shift (which would add parallax).
   camera.position.copy(storyTarget).add(storyPos);
   camera.lookAt(storyTarget);
-  // the dive's fov ramp rides over the story fov; the park below keeps the
-  // story's own, so the offsets do not breathe with the ramp
+  // the dive's fov blends over the story's; the park below keeps the story's
+  // fov so it doesn't shift with the blend
   camera.fov =
     dive && dive.fov !== null && dive.fovMix > 0
       ? lerp(fov, dive.fov, dive.fovMix)
@@ -195,13 +173,11 @@ export function applyStoryFraming(
   const halfH =
     (Math.tan((fov * Math.PI) / 360) * storyPos.length()) / camera.zoom;
   const halfW = halfH * camera.aspect;
-  const sh = xs * STORY_R * parkScale; // + shoves the lens LEFT
+  const sh = xs * STORY_R * parkScale; // + shoves the lens left
   const sv = ys * STORY_R;
-  // portrait lift (Pose.lift): as the horizontal park fades on narrow screens,
-  // the lens shifts up (or down) by a scene's own fraction of the height
+  // Pose.lift: as the park fades on narrow screens, shift the lens vertically
   const lift = parkScale < 1 ? (1 - parkScale) * sample.lift * canvasH : 0;
-  // the dive scales the whole park toward zero, so the two owners cross on a
-  // ramp; setViewOffset builds the projection, once
+  // the dive fades the whole park out
   const keep = dive ? 1 - dive.centre : 1;
   camera.setViewOffset(
     canvasW,

@@ -2,20 +2,18 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parkScaleFor } from "../../core/scene";
 
-// The caption components switch to the one-slot phone layout by a CSS media
-// query, while the canvas fades the horizontal lens park by parkScaleFor.
-// These pins keep the two laws on the same aspect, and keep the landscape
-// half-width guard out of portrait, by reading the component source.
+// Reads the caption components' CSS to check the phone layout's media query
+// switches at the same aspect where parkScaleFor reaches zero.
 
 const read = (rel: string): string =>
   readFileSync(new URL(rel, import.meta.url), "utf8");
 const CONTENT = read("../../../../components/LensSceneContent.astro");
 const STORY = read("../../../../components/LensStory.astro");
 
-/** the one query every phone-layout block shares (kept in sync by hand —
- *  Astro's scoped CSS has no custom media) */
+/** the query every phone-layout block uses (copied by hand; Astro's scoped
+ *  CSS has no custom media) */
 const PHONE_MQ = "(max-width: 760px), (max-aspect-ratio: 4/5)";
-/** narrow window where the park is still live: the caption stays off the lens */
+/** narrow landscape window, where the park is still live */
 const LANDSCAPE_MQ = "(max-width: 760px) and (min-aspect-ratio: 4/5)";
 
 /** every `@media` block as { query, body }, by brace matching */
@@ -44,7 +42,7 @@ const aspectOf = (mq: string): [number, number] => {
 describe("phone caption layout", () => {
   it("switches exactly where parkScaleFor reaches zero", () => {
     const [w, h] = aspectOf(PHONE_MQ);
-    // park off at the boundary, on just above it — the ramp's low end
+    // park off at the boundary, on just above it
     expect(parkScaleFor(w, h)).toBe(0);
     expect(parkScaleFor(w * 1.001, h)).toBeGreaterThan(0);
     expect(PHONE_MQ).toContain("max-aspect-ratio");

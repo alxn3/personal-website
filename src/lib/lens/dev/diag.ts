@@ -1,13 +1,10 @@
 import * as THREE from "three/webgpu";
 
-// Dev only — dynamically imported. `?diag`: a phone-readable status card
-// printing the numbers that decide whether the dive's render path can run.
-// core/scene.ts owns the state object; this module only paints.
+// Dev only, dynamically imported. `?diag`: a small on-screen status card for
+// checking renderer support on a phone.
 
-/** The fields the scene keeps live; everything else is read off the renderer. */
 export interface LensDiag {
-  /** the screen-space wormhole's render path:
-   *  `unmounted` | `mounted` | `FAILED: <message>` */
+  /** wormhole post pass: `unmounted` | `mounted` | `FAILED: <message>` */
   post: string;
 }
 

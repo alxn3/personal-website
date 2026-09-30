@@ -1,11 +1,6 @@
-// WHERE EVERY CHANNEL AND KNOB LIVES in the packed uniform arrays the emitted
-// deform reads. DERIVED from the recipe table's own `knobSpec` key order —
-// not a checked-in table — so the emitter and (from stage 2) the runtime setters
-// cannot disagree about a lane, and adding a knob re-lays the block by itself.
-//
-// Channels are one `vec4` (one lane per recipe, table order). Knobs get a
-// PER-RECIPE BLOCK of whole vec4s, so a recipe's lanes never straddle another's
-// and a knob added to one recipe cannot renumber another's.
+// Where each channel and knob lives in the packed uniforms, derived from the
+// recipes' `knobSpec` key order. Channels are one vec4 (one lane per recipe);
+// each recipe's knobs get their own block of whole vec4s.
 
 import { NUM } from "../algebra";
 import { makeRecipes, type KnobSpec, type RecipeName } from "../recipes";
@@ -22,28 +17,23 @@ export interface Layout {
   names: RecipeName[];
   /** recipe → knob → lane */
   knob: Record<string, Record<string, Lane>>;
-  /** recipe → its block's first vec4 index */
-  base: Record<string, number>;
   /** total vec4s the knob array needs */
   vec4Count: number;
   /** recipe → its knob names, in the order they were laid out */
   knobNames: Record<string, string[]>;
-  /** recipe → knob → its row (default + range). Carried here so ops/host.ts
-   *  needs no recipe table of its own. */
+  /** recipe → knob → default and range */
   spec: Record<string, Record<string, KnobSpec>>;
 }
 
-export function buildLayout(): Layout {
+function buildLayout(): Layout {
   const recipes = makeRecipes(NUM);
   const names = Object.keys(recipes) as RecipeName[];
   const knob: Layout["knob"] = {};
-  const base: Layout["base"] = {};
   const knobNames: Layout["knobNames"] = {};
   const spec: Layout["spec"] = {};
   let vec4 = 0;
   for (const name of names) {
     const ks = Object.keys(recipes[name].knobSpec);
-    base[name] = vec4;
     knobNames[name] = ks;
     spec[name] = recipes[name].knobSpec;
     knob[name] = {};
@@ -52,7 +42,7 @@ export function buildLayout(): Layout {
     });
     vec4 += Math.ceil(ks.length / 4);
   }
-  return { names, knob, base, vec4Count: vec4, knobNames, spec };
+  return { names, knob, vec4Count: vec4, knobNames, spec };
 }
 
 /** The one layout, built once. */

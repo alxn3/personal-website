@@ -11,16 +11,12 @@ import {
   rangeOf,
 } from "../story";
 
-// CAPTION_BANDS is the HTML LAYOUT of the hero captions: the band element each
-// caption is sticky inside (components/LensSceneContent.astro) takes its
-// top/height from here at BUILD time, while the canvas reads the same RANGES at
-// runtime — one table, two readers, so the two cannot drift. These checks pin
-// the DERIVATION, not the numbers: the durations are free to retune.
+// CAPTION_BANDS lays out the hero captions (LensSceneContent.astro) from the
+// same RANGES the canvas reads. These check the derivation, not the numbers.
 
-/** The track's scrollable length. The unit is load-bearing: svh, never dvh, so
- *  an iOS toolbar cannot re-lay-out the story mid-scroll. */
+/** The track's scrollable length (svh, not dvh). */
 const SCROLL = "(100% - 100svh)";
-/** a band box's multiple of that length, back out of the emitted CSS */
+/** a band length's multiple of SCROLL, parsed from the CSS */
 const coeff = (css: string): number => {
   const m = /^calc\((-?[\d.]+) \* \(100% - 100svh\)/.exec(css);
   if (!m) throw new Error(`not a scroll-space band length: ${css}`);
@@ -39,7 +35,7 @@ describe("CAPTION_BANDS", () => {
         Math.max(0, r.p0 - CAPTION_PAD),
         12,
       );
-      // …unless the scene authors an early end for its caption (capEnd)
+      // unless the scene sets capEnd
       const end =
         r.scene.capEnd !== undefined
           ? r.p0 + (r.p1 - r.p0) * r.scene.capEnd
@@ -54,8 +50,7 @@ describe("CAPTION_BANDS", () => {
     const last = CAPTION_BANDS[CAPTION_BANDS.length - 1];
     expect(last.b).toBe(1);
     expect(last.final).toBe(true);
-    // the Astro-safe form: `false` on a data-* attribute would be STRINGIFIED,
-    // marking every band final, so non-final bands must carry undefined
+    // Astro renders `false` as a string, so non-final bands carry undefined
     expect(last.finalAttr).toBe(true);
     expect(CAPTION_BANDS[0].finalAttr).toBeUndefined();
     // top + height = 1·(100% − 100svh) + 100svh = the whole track
@@ -65,15 +60,12 @@ describe("CAPTION_BANDS", () => {
 
   it("lays each band out in SCROLL space, with a viewport of pin room", () => {
     for (const b of CAPTION_BANDS) {
-      // p = scrollY / (track − viewport), so a band's box is measured in that
-      // same scrollable length — NOT in percentages of the track, which would
-      // put every band a·100svh late
+      // measured in the scrollable length, not in percentages of the track
       expect(b.top, `${b.id} top`).toBe(`calc(${b.a.toFixed(6)} * ${SCROLL})`);
       expect(b.height, `${b.id} height`).toBe(
         `calc(${(b.b - b.a).toFixed(6)} * ${SCROLL} + 100svh)`,
       );
-      // the trailing viewport is the sticky caption's pin room: without it a
-      // 100svh caption would have none at all
+      // the extra 100svh is the sticky caption's pin room
       expect(coeff(b.top), `${b.id} top`).toBeGreaterThanOrEqual(0);
       expect(coeff(b.height), `${b.id} height`).toBeGreaterThan(0);
       expect(
@@ -90,8 +82,7 @@ describe("CAPTION_BANDS", () => {
       expect(cur.a, `${cur.id} starts after ${prev.id}`).toBeGreaterThan(
         prev.a,
       );
-      // a scene that authors capEnd leaves early: its caption is gone before
-      // the next band opens, so there is no crossfade to share
+      // a capEnd caption is gone before the next band opens
       if (rangeOf(prev.id).scene.capEnd !== undefined)
         expect(prev.b, `${prev.id} ends before ${cur.id}`).toBeLessThanOrEqual(
           cur.a,
@@ -108,7 +99,7 @@ describe("CAPTION_BANDS", () => {
     for (const r of RANGES) {
       const b = bandOf(r.scene.id);
       expect(b.a, `${r.scene.id} start`).toBeLessThanOrEqual(r.p0);
-      // an authored early end still covers the scene's own camera move
+      // an early end still covers the scene's camera move
       const end =
         r.scene.capEnd !== undefined
           ? r.p0 + (r.p1 - r.p0) * r.scene.transit
@@ -119,32 +110,20 @@ describe("CAPTION_BANDS", () => {
 });
 
 describe("CAPTION_FADE_CSS", () => {
-  it("is the overlap two neighbouring bands share, in the same scroll units", () => {
-    // the handover IS the overlap: LensStory.astro fades a caption in over the
-    // first --cap-fade of its band and out over the last, so a pad change has to
-    // carry into both
-    expect(CAPTION_BANDS[0].b - CAPTION_BANDS[1].a).toBeCloseTo(
-      2 * CAPTION_PAD,
-      12,
-    );
+  it("is the neighbours' overlap, over the track's SCROLLABLE length", () => {
+    // LensStory.astro fades captions in and out over --cap-fade
     expect(CAPTION_FADE_CSS).toBe(
       `calc(${2 * CAPTION_PAD} * ${TRACK_SCROLL_CSS})`,
     );
-  });
-
-  it("measures the track's SCROLLABLE length, not its height", () => {
     expect(TRACK_SCROLL_CSS).toBe(`calc(${TRACK_HEIGHT_CSS} - 100svh)`);
   });
 });
 
 describe("bandOf", () => {
-  it("returns the band a scene id owns", () => {
+  it("returns a scene's band, and throws on a typo — a BUILD error", () => {
     expect(bandOf("internals")).toBe(
       CAPTION_BANDS.find((b) => b.id === "internals"),
     );
-  });
-
-  it("throws on an id no scene owns — a caption typo is a BUILD error", () => {
     expect(() => bandOf("zomm")).toThrow(/zomm/);
   });
 });

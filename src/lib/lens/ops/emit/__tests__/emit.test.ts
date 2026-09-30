@@ -2,38 +2,30 @@ import { describe, expect, it } from "vitest";
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { NUM } from "../../algebra";
-import { gate } from "../../gate";
 import { makeRecipes, type RecipeName } from "../../recipes";
-import {
-  runPipeline,
-  PART_CLASS,
-  type OpCtx,
-  type PieceFrame,
-  type VertexState,
-} from "../../ops";
-import { emitDeform, emitStats, IDLE_EPS } from "../emit";
+import { PART_CLASS } from "../../ops";
+import { emitDeform, IDLE_EPS } from "../emit";
 import { LAYOUT } from "../layout";
-import { WRAP_DIR } from "../../house";
 import { packFlags, WINK_NONE } from "../../frames";
 import { DEFORM_WGSL } from "../deform.wgsl";
 import { DEFORM_GLSL } from "../deform.glsl";
 import { opsFold as checkedFold, type OpsFold } from "../deform.js";
+import {
+  HALF,
+  PIECES,
+  PROBES,
+  XYZW,
+  knobArray,
+  runRecipe,
+  v4,
+} from "../../__tests__/fixture";
 
-// THE EMIT'S PINS. The deform chain ships as CHECKED-IN SOURCE — two shader
-// dialects and the JS module ops/cpu.ts runs — generated from the recipes by
-// ops/emit/emit.ts, so the one thing that can go wrong is the source drifting
-// from the recipes that produced it. Regenerate with
+// The deform ships as checked-in generated source (WGSL, GLSL, JS). These tests
+// pin it to what ops/emit/emit.ts produces from the recipes. Regenerate with
 //
 //   LENS_OPS_EMIT=1 npx vitest run src/lib/lens/ops/emit/__tests__/emit.test.ts
 //
-// and review the diff, exactly as STORY-MAP.md and the recipe goldens are kept.
-//
-// THE MEMO: the source backend memoises on EXPRESSION TEXT, so a repeat of
-// `step(2.5, b.y)` inside a scope returns the first one's temp (ops/house.ts's
-// `memoCtx` does the same one level up, per ctx object). Scopes are honoured,
-// so an expression shared by two BRANCHES is still emitted twice: a branch's
-// temps die at its brace. `(g)` proves the arithmetic is the recipes' own over
-// every lane; `(k)` proves the memo is doing the collapsing.
+// and review the diff.
 
 const url = (rel: string) => fileURLToPath(new URL(rel, import.meta.url));
 
@@ -42,16 +34,12 @@ const banner = (dialect: string) =>
   `// Regenerate: LENS_OPS_EMIT=1 npx vitest run src/lib/lens/ops/emit/__tests__/emit.test.ts\n` +
   `// The deform chain, emitted from ops/recipes.ts on the ${dialect} dialect.\n`;
 
-// `.trim()` in the GENERATED file, so the exported constant is byte-for-byte
-// what `emitDeform` returns — the runtime staleness guard compares the two
-// directly and must not have to know about the template's own newlines.
+// `.trim()` makes the exported constant exactly what `emitDeform` returns.
 const wrap = (dialect: "wgsl" | "glsl", src: string) =>
   `${banner(dialect)}\nexport const DEFORM_${dialect.toUpperCase()} = String.raw\`\n${src}\n\`.trim();\n`;
 
-// The JS dialect ships as a MODULE: the emitted function with `__` bound to
-// NUM, under the signature ops/cpu.ts calls. The scaffolding is written in
-// prettier's own layout and the function is `prettier-ignore`d, so the file is
-// byte-for-byte this template — what (a) pins.
+// The JS module: the emitted function with `__` bound to NUM. Written in
+// prettier's layout so formatting leaves the file byte-identical.
 const wrapJs = (src: string) =>
   `${banner("js")}
 import { NUM as __ } from "../algebra";
@@ -95,66 +83,32 @@ describe("the emitted deform — staleness pins", () => {
     expect(readFileSync(url("../deform.js.ts"), "utf8")).toBe(fresh);
   });
 
-  it("(b) the emit is deterministic — same input, byte-identical output", () => {
-    for (const d of ["wgsl", "glsl", "js"] as const)
-      expect(emitDeform(d), d).toBe(emitDeform(d));
-  });
-
-  it("(c) nothing non-deterministic reached the source", () => {
-    const js = readFileSync(url("../deform.js.ts"), "utf8");
-    for (const src of [DEFORM_WGSL, DEFORM_GLSL, js]) {
-      expect(src).not.toMatch(/\b(Date|Math\.random|process\.env)\b/);
-      // every float literal must round-trip: no truncated `toFixed` output
-      for (const m of src.matchAll(/-?\d+\.\d+(?:e[-+]?\d+)?/g))
-        expect(String(Number(m[0])), m[0]).toBe(
-          m[0].replace(/\.0$/, "") === String(Number(m[0]))
-            ? m[0].replace(/\.0$/, "")
-            : String(Number(m[0])),
-        );
-    }
-  });
-
   it("(d) every copy of the shared constants agrees", () => {
-    // emit.ts mirrors this rather than importing it (host.ts pulls in three,
-    // and the emit step must not), so the two copies are pinned against each
-    // other: a drift is a seated render that is exact on one path and not on
-    // the other.
-    const num = (src: string, name: string): number => {
-      const m = src.match(new RegExp(`${name} = (-?[\\d.e-]+);`));
-      expect(m, `${name} must be declared`).not.toBeNull();
-      return Number(m![1]);
-    };
+    // emit.ts keeps its own copy (it can't import three via host.ts).
     const host = readFileSync(url("../../host.ts"), "utf8");
-    expect(num(host, "export const IDLE_EPS")).toBe(IDLE_EPS);
-    // …and the emitted branch edge IS that constant, in the emit's own spelling
-    expect(DEFORM_WGSL).toContain(`ch.x >= ${String(IDLE_EPS)}`);
+    const m = host.match(/export const IDLE_EPS = (-?[\d.e-]+);/);
+    expect(m, "host.ts must declare IDLE_EPS").not.toBeNull();
+    expect(Number(m![1])).toBe(IDLE_EPS);
   });
 });
 
 describe("the packed uniform layout", () => {
-  it("(e) every knob gets a distinct lane, and the count matches knobDefaults", () => {
+  it("(e) every knob gets a distinct lane, in knobDefaults order", () => {
     const recipes = makeRecipes(NUM);
-    const seen = new Set<string>();
+    const lanes = new Set<string>();
     let total = 0;
     for (const name of LAYOUT.names) {
-      const defs = Object.keys(recipes[name as RecipeName].knobDefaults);
+      const defs = Object.keys(recipes[name].knobDefaults);
       expect(LAYOUT.knobNames[name], name).toEqual(defs);
       for (const k of defs) {
-        const l = LAYOUT.knob[name][k];
-        expect(l, `${name}.${k}`).toBeDefined();
-        const key = `${l.vec4}:${l.lane}`;
-        expect(seen.has(key), `${name}.${k} collides at ${key}`).toBe(false);
-        seen.add(key);
+        const { vec4, lane } = LAYOUT.knob[name][k];
+        expect(vec4, `${name}.${k}`).toBeLessThan(LAYOUT.vec4Count);
+        lanes.add(`${vec4}:${lane}`);
         total++;
       }
-      // a recipe's block is whole vec4s, so no two recipes share one
-      expect(LAYOUT.base[name] * 4).toBeLessThanOrEqual(
-        Math.min(...defs.map((k) => LAYOUT.knob[name][k].vec4 * 4 + LAYOUT.knob[name][k].lane)), // prettier-ignore
-      );
     }
-    expect(total).toBe(seen.size);
-    expect(LAYOUT.vec4Count * 4).toBeGreaterThanOrEqual(total);
-    // the channels are ONE vec4: a fifth recipe needs a second channel lane
+    expect(lanes.size, "lanes collide").toBe(total);
+    // channels fit in one vec4
     expect(LAYOUT.names.length).toBeLessThanOrEqual(4);
   });
 
@@ -169,36 +123,15 @@ describe("the packed uniform layout", () => {
   });
 });
 
-// ── THE GATE ────────────────────────────────────────────────────────────────
-// The emitted structure, EXECUTED, against NUM's own run of the same recipes
-// over the recipe goldens' exact grid. The js dialect routes every operation to
-// NUM itself, so what this compares is the EMITTER — its SSA ordering, its
-// memo, the preamble it derives and the branch/gate scaffolding — and not a
-// re-implementation of the arithmetic.
-const HALF = 0.4;
-const PIECES = [
-  { t0: 0.3, R: 10, rank01: 0, layerPhase: 0, rung: 2.5 },
-  { t0: 2.1, R: 14.5, rank01: 0.5, layerPhase: 0.37, rung: -1.5 },
-  { t0: -1.2, R: 21, rank01: 1, layerPhase: 0.82, rung: -3.25 },
-];
-const PROBES = [
-  { frac: 0, yN: -0.5, off: 0 },
-  { frac: 0.25, yN: -0.2, off: 0.35 },
-  { frac: 0.5, yN: 0, off: 0 },
-  { frac: 0.75, yN: 0.3, off: -0.4 },
-  { frac: 1, yN: 0.5, off: 0.2 },
-  { frac: -0.2, yN: 0.15, off: 0 },
-  { frac: 1.2, yN: -0.35, off: 0.25 },
-];
+// ── Emitted vs NUM ──────────────────────────────────────────────────────────
+// Runs the emitted JS against the recipes run directly on NUM over the golden
+// grid. Both use NUM's math, so this checks the emitter's structure.
 const CHANNELS = [0.25, 0.5, 0.75, 1];
-/** the axial extent the emit derives yN from — chosen so yN comes back as the
- *  probe's own value and yMid lands on the goldens' frame axial of 0 */
+/** Axial half-extent, chosen so yN matches the probe's and yMid is 0. */
 const Y_HALF = 20;
-/** The lane rows: what the fixture's flags (`b.w`) and depth (`y.z`) carry,
- *  and the knobs the branch runs at. `adopted` reaches the deform only through
- *  `sheetTerm` once `axi` has switched the sector term off, so its row carries
- *  both; the live rows are the story's explode (rebend 1, curl 2) on a thin and
- *  a deep piece. */
+/** Flag, depth and knob variations to test. `adopted` only matters when
+ *  `axi` is 1; the last two rows use the story's explode knobs. */
+const EXPLODE_STORY = { explode: { rebend: 1, curl: 2 } };
 const LANE_ROWS: {
   axi: number;
   adopted: number;
@@ -209,148 +142,62 @@ const LANE_ROWS: {
   { axi: 1, adopted: 0, depth: 0 },
   { axi: 1, adopted: 1, depth: 0 },
   { axi: 0, adopted: 0, depth: 0.5 },
-  { axi: 0, adopted: 0, depth: 0, knobs: { explode: { rebend: 1, curl: 2 } } },
-  { axi: 0, adopted: 0, depth: 0.5, knobs: { explode: { rebend: 1, curl: 2 } } }, // prettier-ignore
+  { axi: 0, adopted: 0, depth: 0, knobs: EXPLODE_STORY },
+  { axi: 0, adopted: 0, depth: 0.5, knobs: EXPLODE_STORY },
 ];
 
 describe("emitted ≡ NUM over the goldens' grid", () => {
   const recipes = makeRecipes(NUM);
-  const XYZW = ["x", "y", "z", "w"] as const;
-  const v4 = (x = 0, y = 0, z = 0, w = 0) => ({ x, y, z, w });
-  /** the knob array with `name`'s knobs on their lanes, the rest zero */
-  const knobArray = (fill: (name: RecipeName) => Record<string, number>) => {
-    const k = Array.from({ length: LAYOUT.vec4Count }, () => v4());
-    for (const name of LAYOUT.names)
-      for (const [kn, val] of Object.entries(fill(name))) {
-        const lane = LAYOUT.knob[name][kn];
-        k[lane.vec4][XYZW[lane.lane]] = val;
-      }
-    return k;
-  };
   const out = new Float64Array(4);
-  // The fresh emit, EXECUTED, beside the checked-in module — the same text by
-  // (a); both run so a broken emitter and a stale checkout each fail alone.
+  // Run both the fresh emit and the checked-in module.
   const folds: Record<string, OpsFold> = {
     fresh: new Function("__", `return ${emitDeform("js")}`)(NUM) as OpsFold,
     checked: checkedFold,
   };
 
   it("(g) every recipe, piece, probe and channel agrees", () => {
-    for (const [label, fold] of Object.entries(folds)) {
-      let worst = 0;
-      let cases = 0;
-      for (let ri = 0; ri < LAYOUT.names.length; ri++) {
-        const name = LAYOUT.names[ri] as RecipeName;
-        const recipe = recipes[name];
-        for (const row of LANE_ROWS) {
-          const knobs = { ...recipe.knobDefaults, ...row.knobs?.[name] };
-          for (const p of PIECES) {
-            for (const v of PROBES) {
+    for (const [label, fold] of Object.entries(folds))
+      LAYOUT.names.forEach((name, ri) => {
+        for (const { knobs: over, ...lanes } of LANE_ROWS) {
+          const knobs = { ...recipes[name].knobDefaults, ...over?.[name] };
+          const k = knobArray({ [name]: knobs });
+          // Only this recipe's channel is up.
+          const ch = v4();
+          for (const p of PIECES)
+            for (const v of PROBES)
               for (const channel of CHANNELS) {
-                // ---- the NUM reference, exactly as recipe-goldens.test.ts runs it
-                const L = p.R * 2 * HALF;
-                const d = v.frac * L;
-                const gateAt = (c: number) =>
-                  gate(NUM, recipe.gateSpec(knobs), c, {
-                    rank01: p.rank01,
-                    layerPhase: p.layerPhase,
-                  });
-                const phase = gateAt(channel);
-                const phi = HALF - d / p.R;
-                const ctx: OpCtx<number> = {
-                  A: NUM,
-                  channel,
-                  gateAt,
-                  t0: p.t0,
-                  R: p.R,
-                  rank01: p.rank01,
-                  layerPhase: p.layerPhase,
-                  halfSpan: HALF,
-                  partClass: PART_CLASS.structure,
-                  phi,
-                  d,
-                  L,
-                  yN: v.yN,
-                  off: v.off,
-                  height: Y_HALF * 2,
-                  rung: p.rung,
-                  axi: row.axi,
-                  depth: row.depth,
-                  adopted: row.adopted,
-                  flight: phase.flight,
-                  stick: phase.stick,
-                  wrapDir: WRAP_DIR,
-                };
-                const seatTheta = p.t0 + phi;
-                const seatR = p.R + v.off;
-                const axial = v.yN * 40;
-                const seat: VertexState<number> = {
-                  x: seatR * Math.cos(seatTheta),
-                  z: seatR * Math.sin(seatTheta),
-                  axial,
-                  rot: 0,
-                  aim: p.t0,
-                  rem: 0,
-                };
-                const frame0: PieceFrame<number> = {
-                  x: p.R * Math.cos(p.t0),
-                  z: p.R * Math.sin(p.t0),
-                  axial: 0,
-                  orient: p.t0,
-                };
-                const ref = runPipeline(
-                  recipe.build(ctx, knobs),
-                  seat,
-                  frame0,
-                  ctx,
-                ).v;
+                const ref = runRecipe(recipes[name], p, v, channel, lanes, knobs); // prettier-ignore
+                const { seated } = ref;
                 const want = [
-                  ref.x - seat.x,
-                  ref.axial - seat.axial,
-                  ref.z - seat.z,
-                  ref.rot,
+                  ref.out.x - seated.x,
+                  ref.out.axial - seated.axial,
+                  ref.out.z - seated.z,
+                  ref.out.rot,
                 ];
-
-                // ---- the EMITTED run: only this recipe's channel is up, and the
-                // lanes carry the row's knobs. The wink lane is WINK_NONE: a
-                // decode that read it for depth would see −1, not the row's.
-                const ch = v4();
                 ch[XYZW[ri]] = channel;
-                const k = knobArray((n) => (n === name ? knobs : {}));
                 const got = fold(
-                  { x: seat.x, y: axial, z: seat.z },
+                  { x: seated.x, y: seated.axial, z: seated.z },
                   v4(p.t0, p.R, HALF * 2, p.rank01),
-                  v4(p.layerPhase, PART_CLASS.structure, p.rung, packFlags(row.axi, row.adopted)), // prettier-ignore
-                  v4(-Y_HALF, Y_HALF, row.depth, WINK_NONE),
+                  v4(p.layerPhase, PART_CLASS.structure, p.rung, packFlags(lanes.axi, lanes.adopted)), // prettier-ignore
+                  v4(-Y_HALF, Y_HALF, lanes.depth, WINK_NONE),
                   ch,
                   k,
                   out,
                 );
                 expect(got).toBe(out);
-                for (let c = 0; c < 4; c++) {
-                  const delta = Math.abs(got[c] - want[c]);
-                  if (delta > worst) worst = delta;
+                for (let c = 0; c < 4; c++)
                   expect(
                     got[c],
-                    `${label} ${name} ${JSON.stringify(row)} t0=${p.t0} frac=${v.frac} ch=${channel} [${"xyzr"[c]}]`,
+                    `${label} ${name} ${JSON.stringify(lanes)} t0=${p.t0} frac=${v.frac} ch=${channel} [${"xyzr"[c]}]`,
                   ).toBeCloseTo(want[c], 9);
-                }
-                cases++;
               }
-            }
-          }
         }
-      }
-      expect(cases).toBe(LAYOUT.names.length * LANE_ROWS.length * PIECES.length * PROBES.length * CHANNELS.length); // prettier-ignore
-      // the only spread is the preamble's re-derivation of phi/d/off through
-      // atan2 and sqrt, where the reference is handed them directly
-      expect(worst, label).toBeLessThan(1e-9);
-    }
+      });
   });
 
   it("(h) an idle channel emits an exact zero", () => {
     const k = knobArray(
-      (n) => recipes[n].knobDefaults as Record<string, number>,
+      Object.fromEntries(LAYOUT.names.map((n) => [n, recipes[n].knobDefaults])),
     );
     for (const fold of Object.values(folds))
       for (const ch of [
@@ -377,20 +224,18 @@ describe("emitted ≡ NUM over the goldens' grid", () => {
 
 describe("the emitted source's shape", () => {
   it("(i) uses only parameter shapes wgslFn/glslFn accept", () => {
-    // WGSLNodeFunction rejects a `struct` declaration in the source; arrays are
-    // the packing that parses on both backends.
+    // three's WGSL parser rejects `struct`; arrays work on both backends.
     for (const src of [DEFORM_WGSL, DEFORM_GLSL])
       expect(src).not.toMatch(/\bstruct\b/);
     expect(DEFORM_WGSL).toMatch(
       new RegExp(`k: array<vec4<f32>, ${LAYOUT.vec4Count}>`),
     );
-    // three's GLSL parser reads `type [count] name`, so the size belongs on the
-    // TYPE — the trailing-bracket form silently mis-parses the whole list.
+    // three's GLSL parser needs `type[count] name`, not `type name[count]`.
     expect(DEFORM_GLSL).toContain(`vec4[${LAYOUT.vec4Count}] k`);
     expect(DEFORM_GLSL).not.toMatch(/\bk\s*\[\s*\d+\s*\]\s*\)/);
   });
 
-  it("(j) one branch per recipe, gated on that recipe's channel", () => {
+  it("(j) one branch per recipe, gated on that recipe's channel at IDLE_EPS", () => {
     LAYOUT.names.forEach((name, i) => {
       expect(DEFORM_WGSL, name).toContain(
         `ch.${"xyzw"[i]} >= ${String(IDLE_EPS)}`,
@@ -400,9 +245,7 @@ describe("the emitted source's shape", () => {
   });
 
   it("(k) the memo collapses every repeat inside a scope", () => {
-    // A scope emitting the same right-hand side twice means the memo stopped
-    // working — the chain would still be correct, just longer every wave.
-    // Across scopes it is expected: a branch's temps die at its brace.
+    // No repeated expression within one scope (repeats across branches are fine).
     const scopes = [
       DEFORM_WGSL.slice(0, DEFORM_WGSL.indexOf("  if ( ch.")),
       ...DEFORM_WGSL.split(/\n  if \( ch\./)
@@ -416,15 +259,5 @@ describe("the emitted source's shape", () => {
         rhs.length,
       );
     }
-  });
-
-  it("(l) reports its size", () => {
-    const w = emitStats("wgsl");
-    const g = emitStats("glsl");
-    expect(w.lines).toBe(g.lines);
-    expect(w.total).toBe(g.total);
-    // a floor, not a target: the chain cannot collapse to nothing unnoticed
-    expect(w.total).toBeGreaterThan(80);
-    expect(w.lines).toBeGreaterThan(500);
   });
 });

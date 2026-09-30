@@ -1,88 +1,27 @@
-// The SOURCE backend for `Algebra<S>`: emits shader source text (WGSL, GLSL or
-// JS) instead of numbers, so the recipes, gate and pipeline yield the deform
-// chain from the same code the CPU spec runs. SSA with a memo: each operation
-// allocates one temp, and an expression already emitted in scope returns its
-// temp — the CSE TSL cannot do. Scopes are real: `fork()` gives an `if` branch
-// its own line list and memo layered over the parent's; a child may read a
-// parent temp, never the reverse.
+// An `Algebra` that writes source text (WGSL, GLSL or JS) instead of computing
+// numbers. Each operation becomes one temp; a repeated expression reuses its
+// temp. `fork()` opens a nested scope (an `if` branch) that can read its
+// parent's temps but not add to them.
 
 import type { Algebra, Sc } from "../algebra";
 
 export type Dialect = "wgsl" | "glsl" | "js";
 
-interface DialectSpec {
-  /** one SSA binding */
-  decl(v: string, expr: string): string;
-  /** algebra name → emitted callee (JS routes to the NUM shim, `__`) */
-  call: Record<string, string>;
-}
-
-const SPEC: Record<Dialect, DialectSpec> = {
-  wgsl: {
-    decl: (v, e) => `let ${v} = ${e};`,
-    call: {
-      min: "min",
-      max: "max",
-      clamp: "clamp",
-      mix: "mix",
-      step: "step",
-      smoothstep: "smoothstep",
-      sin: "sin",
-      cos: "cos",
-      atan2: "atan2",
-      abs: "abs",
-      pow: "pow",
-      sqrt: "sqrt",
-      floor: "floor",
-      fract: "fract",
-    },
-  },
-  glsl: {
-    decl: (v, e) => `float ${v} = ${e};`,
-    call: {
-      min: "min",
-      max: "max",
-      clamp: "clamp",
-      mix: "mix",
-      step: "step",
-      smoothstep: "smoothstep",
-      sin: "sin",
-      cos: "cos",
-      atan2: "atan", // GLSL's two-arg atan IS atan2
-      abs: "abs",
-      pow: "pow",
-      sqrt: "sqrt",
-      floor: "floor",
-      fract: "fract",
-    },
-  },
-  // The JS dialect routes every op to the NUM backend itself (`__`), so an
-  // executed emit differs from NUM only in STRUCTURE — which is exactly what
-  // the equivalence gate is testing.
-  js: {
-    decl: (v, e) => `const ${v} = ${e};`,
-    call: {
-      min: "__.min",
-      max: "__.max",
-      clamp: "__.clamp",
-      mix: "__.mix",
-      step: "__.step",
-      smoothstep: "__.smoothstep",
-      sin: "__.sin",
-      cos: "__.cos",
-      atan2: "__.atan2",
-      abs: "__.abs",
-      pow: "__.pow",
-      sqrt: "__.sqrt",
-      floor: "__.floor",
-      fract: "__.fract",
-    },
-  },
+/** One SSA binding per dialect. */
+const DECL: Record<Dialect, (v: string, expr: string) => string> = {
+  wgsl: (v, e) => `let ${v} = ${e};`,
+  glsl: (v, e) => `float ${v} = ${e};`,
+  js: (v, e) => `const ${v} = ${e};`,
 };
 
-/** A float literal that round-trips exactly. `toString` is the shortest form
- *  that parses back to the same double; shader dialects need the decimal point
- *  on whole numbers, JS does not care and takes the same text. */
+/** The emitted callee for an algebra function: GLSL spells atan2 `atan`, and
+ *  JS routes every call to the NUM backend `__`. */
+function callee(dialect: Dialect, name: string): string {
+  if (dialect === "js") return `__.${name}`;
+  return dialect === "glsl" && name === "atan2" ? "atan" : name;
+}
+
+/** A float literal that round-trips exactly (shaders need `.0` on integers). */
 export function litOf(dialect: Dialect, n: number): string {
   if (!Number.isFinite(n))
     throw new Error(`lens emit: non-finite literal ${n}`);
@@ -93,20 +32,18 @@ export function litOf(dialect: Dialect, n: number): string {
 
 export interface SrcEmitter {
   A: Algebra<string>;
-  /** the statements emitted so far, in order */
+  /** statements emitted so far */
   lines: string[];
-  /** a nested scope: its own lines, reading this scope's temps but not
-   *  publishing into it (a shader block's temps die at the brace) */
+  /** a nested scope that can read this scope's temps */
   fork(): SrcEmitter;
 }
 
-/** One emitter over `dialect`. `counter` is shared by every fork so temp names
- *  stay globally unique and monotonic — the determinism the byte-pin rests on. */
+/** An emitter for `dialect`. Forks share one counter so temp names are unique
+ *  and deterministic. */
 export function srcAlgebra(
   dialect: Dialect,
   parent?: { memo: Map<string, string>; counter: { n: number } },
 ): SrcEmitter {
-  const spec = SPEC[dialect];
   const lines: string[] = [];
   const memo = new Map<string, string>(parent?.memo);
   const counter = parent?.counter ?? { n: 0 };
@@ -118,7 +55,7 @@ export function srcAlgebra(
     const hit = memo.get(expr);
     if (hit !== undefined) return hit;
     const v = `t${counter.n++}`;
-    lines.push(spec.decl(v, expr));
+    lines.push(DECL[dialect](v, expr));
     memo.set(expr, v);
     return v;
   };
@@ -130,7 +67,7 @@ export function srcAlgebra(
   const call =
     (name: string) =>
     (...args: Sc<string>[]): string =>
-      emit(`${spec.call[name]}(${args.map(lift).join(", ")})`);
+      emit(`${callee(dialect, name)}(${args.map(lift).join(", ")})`);
 
   const A: Algebra<string> = {
     lit: (n) => litOf(dialect, n),
@@ -141,15 +78,15 @@ export function srcAlgebra(
     neg: (a) => emit(`(-${lift(a)})`),
     min: call("min"),
     max: call("max"),
-    clamp: (x, lo, hi) => call("clamp")(x, lo, hi),
-    mix: (a, b, t) => call("mix")(a, b, t),
-    step: (edge, x) => call("step")(edge, x),
-    smoothstep: (e0, e1, x) => call("smoothstep")(e0, e1, x),
+    clamp: call("clamp"),
+    mix: call("mix"),
+    step: call("step"),
+    smoothstep: call("smoothstep"),
     sin: call("sin"),
     cos: call("cos"),
-    atan2: (y, x) => call("atan2")(y, x),
+    atan2: call("atan2"),
     abs: call("abs"),
-    pow: (x, e) => call("pow")(x, e),
+    pow: call("pow"),
     sqrt: call("sqrt"),
     floor: call("floor"),
     fract: call("fract"),

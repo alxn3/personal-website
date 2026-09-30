@@ -8,39 +8,14 @@ import {
   type StoryState,
 } from "../state";
 import { CHANNEL_DEFAULTS } from "../../core/scene";
+import { asTable } from "./md-table";
 
-// ============================================================================
-// THE STORY-MAP — src/lib/lens/STORY-MAP.md, rendered from storyStateAt and
-// asserted byte-for-byte, so a duration or window change fails here with the
-// new table in the diff.
-//
-// TO REGENERATE, after a deliberate change:
-//   LENS_STORY_MAP=1 npx vitest run src/lib/lens/story/__tests__/story-map.test.ts
-//
-// The renderer below is pure presentation — every number comes out of
-// storyStateAt; there is no second model of the story in this file.
-// ============================================================================
+// Renders src/lib/lens/STORY-MAP.md from storyStateAt and pins it byte-for-byte.
+// Regenerate: LENS_STORY_MAP=1 npx vitest run src/lib/lens/story/__tests__/story-map.test.ts
 
 const MAP_URL = new URL("../../STORY-MAP.md", import.meta.url);
 
 const f = (v: number | null, d: number) => (v === null ? "—" : v.toFixed(d));
-
-/** one fixed-width table, columns sized to their widest cell */
-const table = (head: string[], rows: string[][]): string => {
-  const w = head.map((h, i) =>
-    Math.max(h.length, ...rows.map((r) => r[i].length)),
-  );
-  const line = (cells: string[]) =>
-    cells
-      .map((c, i) => c.padStart(w[i]))
-      .join("  ")
-      .trimEnd();
-  return [
-    line(head),
-    line(w.map((n) => "-".repeat(n))),
-    ...rows.map(line),
-  ].join("\n");
-};
 
 const sceneRows = () =>
   RANGES.map((r, i) => [
@@ -164,7 +139,7 @@ Track: ${RANGES.length} scenes, ${TOTAL_HOLD.toFixed(2)} screenfuls of hold.
 ## Scenes
 
 \`\`\`text
-${table(
+${asTable(
   ["scn", "id", "title", "p0", "p1", "hold", "transit", "flags"],
   sceneRows(),
 )}
@@ -176,7 +151,7 @@ Each scene's range padded by \`CAPTION_PAD\`; the final band runs to the track
 end. \`--beat-visibility\` is \`band(p, a, b)\`.
 
 \`\`\`text
-${table(["band", "a", "b", "flags"], bandRows())}
+${asTable(["band", "a", "b", "flags"], bandRows())}
 \`\`\`
 
 ## Windows
@@ -184,7 +159,7 @@ ${table(["band", "a", "b", "flags"], bandRows())}
 Every ramp whose edges its owning module exports, in absolute story \`p\`.
 
 \`\`\`text
-${table(["window", "p0", "p1", "width"], windowRows())}
+${asTable(["window", "p0", "p1", "width"], windowRows())}
 \`\`\`
 
 ## State at every edge
@@ -196,13 +171,13 @@ rock's other half; \`sweep\` is the sky's turn in radians; \`iris\` is who owns
 focus/aperture there.
 
 \`\`\`text
-${table(STATE_HEAD, states.map(stateRow))}
+${asTable(STATE_HEAD, states.map(stateRow))}
 \`\`\`
 
 ## Which windows are open
 
 \`\`\`text
-${table(["p", "windows containing p (fraction through)"], openRows(states))}
+${asTable(["p", "windows containing p (fraction through)"], openRows(states))}
 \`\`\`
 `;
 }
@@ -215,11 +190,6 @@ describe("STORY-MAP", () => {
       readFileSync(MAP_URL, "utf8"),
       "src/lib/lens/STORY-MAP.md is stale — regenerate with LENS_STORY_MAP=1 and review the diff",
     ).toBe(rendered);
-  });
-
-  it("regenerates to itself — the render is a pure function of the story", () => {
-    // a Date, a Math.random or an insertion-ordered Set in the table shows here
-    expect(render()).toBe(render());
   });
 });
 

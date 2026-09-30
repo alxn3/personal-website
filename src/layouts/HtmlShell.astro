@@ -8,18 +8,13 @@ import "../styles/global.css";
 interface Props {
   title?: string;
   description?: string;
-  lang?: string;
 }
 
-const {
-  title = "Alex Lin",
-  description = "Personal website",
-  lang = "en",
-} = Astro.props;
+const { title = "Alex Lin", description = "Personal website" } = Astro.props;
 ---
 
 <!doctype html>
-<html lang={lang}>
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
 

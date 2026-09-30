@@ -2,9 +2,8 @@ import { describe, expect, it } from "vitest";
 import * as THREE from "three/webgpu";
 import { createWarmQueue, warmDrawSteps, type WarmStep } from "../warm";
 
-// THE WARM LAW: one step per tick ahead of the tick's own render, never a
-// second pass draw in one tick, and a step checks the TICK's state, not the
-// queue's — a step that cannot run on this tick waits for one it can.
+// At most one warm step per frame; a step that can't run on this frame waits
+// for one where it can.
 
 const step = (bare: boolean, log: string[], name: string): WarmStep => ({
   bare,

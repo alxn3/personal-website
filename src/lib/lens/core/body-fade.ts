@@ -1,10 +1,7 @@
-// The body fade's capture law (SceneHandle.setBodyFade). The fade writes
-// `opacity` onto shared materials, so it remembers what each wore and puts it
-// back exactly at 1. The capture is by material identity and only ever grows:
-// a material that joins the set mid-fade (the glass, when the dive hands it
-// back) is captured from its shipped state and written the live level.
+// Save/restore for SceneHandle.setBodyFade, which writes `opacity` onto shared
+// materials and must put each one back exactly at full opacity.
 
-/** the slice of THREE.Material the fade writes */
+/** the part of THREE.Material the fade writes */
 export interface FadeMaterial {
   transparent: boolean;
   opacity: number;
@@ -16,11 +13,8 @@ export interface FadeSaved {
   opacity: number;
 }
 
-/** Fold every material of `materials` not yet in `saved` into the capture and
- *  write `opacity` on the whole set. `ownsTransparent` names the materials
- *  whose flag has another owner (materials/unified.ts) and is left alone.
- *  `transparent` is raised only where it moves: three keys a pipeline on it,
- *  so `needsUpdate` there is a program rebuild. */
+/** Save any of `materials` not yet in `saved`, then write `opacity` on all
+ *  saved ones. Leaves `transparent` alone where `ownsTransparent` says so. */
 export function captureBodyFade<M extends FadeMaterial>(
   saved: Map<M, FadeSaved>,
   materials: Iterable<M>,
@@ -37,9 +31,7 @@ export function captureBodyFade<M extends FadeMaterial>(
   for (const m of saved.keys()) m.opacity = opacity;
 }
 
-/** Put every captured material back exactly and empty the capture, so the
- *  next fade captures afresh — a look swap may have re-materialed every mesh
- *  since. */
+/** Restore every saved material and clear `saved`. */
 export function restoreBodyFade<M extends FadeMaterial>(
   saved: Map<M, FadeSaved>,
   ownsTransparent: (m: M) => boolean,

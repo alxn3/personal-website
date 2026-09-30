@@ -1,16 +1,12 @@
 import * as THREE from "three/webgpu";
+import type { SceneState } from "../core/scene";
 
-// Dev only — dynamically imported. `?mtrace`: one row per rendered frame, so
-// the story's movement can be reviewed as curves rather than stills. Harvest
-// from the console as `window.__lensMotionTrace`.
-//
-// It reads the camera and nothing else: the lens never rotates in world space
-// (the camera orbits it, optical axis world +X), so aim, roll, screen position
-// and apparent size all follow from the camera pose. Through the fly-through
-// the camera is parked and the lens translates past it, so the rows there are
-// flat and `ndc`/`rad` project the lens' home rather than where it is.
+// Dev only, dynamically imported. `?mtrace`: records the camera every rendered
+// frame, read from the console as `window.__lensMotionTrace`. The lens sits at
+// the world origin with its optical axis on world X; during the fly-through the
+// lens moves instead of the camera, so `ndc`/`rad` there show its home position.
 
-/** Ring capacity — ~5.5 min at 60fps, far past any scripted sweep. */
+/** Max samples kept (~5.5 min at 60fps). */
 const CAP = 20000;
 
 export interface MotionSample {
@@ -28,7 +24,7 @@ export interface MotionSample {
   /** camera up (world) */
   up: [number, number, number];
   fov: number;
-  /** degrees between the view direction and the optical axis, ±X (min of the two) */
+  /** degrees between the view direction and the optical axis (±X) */
   aim: number;
   /** degrees the world's vertical is rotated on screen */
   roll: number;
@@ -36,33 +32,16 @@ export interface MotionSample {
   ndc: [number, number];
   /** NDC half-height a sphere of the model's radius subtends at the origin */
   rad: number;
-  ch: {
-    zoom: number;
-    focus: number;
-    aperture: number;
-    peel: number;
-    explode: number;
-    assemble: number;
-  };
+  ch: Pick<
+    SceneState,
+    "zoom" | "focus" | "aperture" | "peel" | "explode" | "assemble"
+  >;
 }
 
 export interface MotionTrace {
   samples: MotionSample[];
   clear(): void;
-  record(
-    camera: THREE.PerspectiveCamera,
-    s: {
-      story: number;
-      storyTarget: number;
-      zoom: number;
-      focus: number;
-      aperture: number;
-      peel: number;
-      explode: number;
-      assemble: number;
-    },
-    radius: number,
-  ): void;
+  record(camera: THREE.PerspectiveCamera, s: SceneState, radius: number): void;
 }
 
 const DEG = 180 / Math.PI;
@@ -85,8 +64,7 @@ export function mountMotionTrace(): MotionTrace {
     },
     record(camera, s, radius) {
       const t = performance.now();
-      // the pose is final at the call site, but matrixWorldInverse is only
-      // refreshed by the render — project() needs it now
+      // project() needs matrixWorldInverse, which is otherwise set at render.
       camera.updateMatrixWorld();
       const m = camera.matrixWorld.elements;
       _right.set(m[0], m[1], m[2]).normalize();

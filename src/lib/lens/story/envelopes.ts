@@ -1,13 +1,12 @@
-// The hero driver's envelopes, as pure functions of the story position `p`.
-// Story mode evaluates them at the eased p, so at rest the frame is exactly
+// Every story envelope as a pure function of the story position p (0..1).
+// The hero driver evaluates them at the eased p, so a resting frame is exactly
 // what they say.
-//
-// HOMEPAGE-CHUNK LAW: the driver is in the initial chunk, so this may import
-// only core/, story/story.ts and story/reveal.ts — never optics/ or a lazy
-// story module (fly/trails/constellations).
+// This file is in the homepage's first chunk: import only core/, story.ts and
+// reveal.ts here, never optics/ or a lazy story module.
 
 import { clamp01, deg, smoothstep } from "../core/math";
 import { MODEL_BORE_X_Z } from "../core/scene";
+import type { RecipeName } from "../ops/recipes";
 import {
   DIVE_P0,
   FLY_EXIT_END,
@@ -21,41 +20,35 @@ import {
 } from "./story";
 import { ROLL_P1, revealRollAt } from "./reveal";
 
-// scene ranges — all pacing derives from the STORY table durations
-const heroR = RANGES[0];
-const zR = rangeOf("zoom");
-const peR = rangeOf("peel");
-const caR = rangeOf("cards");
-const inR = rangeOf("internals");
-const fR = rangeOf("flythrough");
-const rwR = rangeOf("rewrap");
-const capR = rangeOf("capsOn");
+const heroScene = RANGES[0];
+const zoomScene = rangeOf("zoom");
+const peelScene = rangeOf("peel");
+const cardsScene = rangeOf("cards");
+const internalsScene = rangeOf("internals");
+const flyScene = rangeOf("flythrough");
+const rewrapScene = rangeOf("rewrap");
+const bloomScene = rangeOf("capsOn");
 
-// --- the mechanism channels --------------------------------------------------
-// Each mechanism PULSES over its own scene — rises during the hold, resets
-// during the NEXT scene's transit.
+// --- mechanism channels: each rises over one window and falls over a later one
 
-/** the zoom channel's window: up over the zoom scene, back down over the peel */
+/** The lens zooms in during the zoom scene and back out early in the peel. */
 export const ZOOM_PULSE: { rise: StoryWindow; fall: StoryWindow } = {
   rise: ["zoom", 0.15, 0.85],
   fall: ["peel", 0, 0.4],
 };
 
-/** The descent: the explode channel's fall, and the knob for the ending's
- *  pacing. The last pieces must land inside ROCK, before ROSE_PULSE's foot. */
+/** The ending's descent: the exploded pieces fall back into place. The last
+ *  pieces must land inside ROCK, before the bloom starts. */
 export const CONSTRUCT: StoryWindow = ["capsOn", 0.03, 0.64];
 
+/** The pieces fly apart during the trails scene and come home on CONSTRUCT. */
 export const EXPLODE_PULSE: { rise: StoryWindow; fall: StoryWindow } = {
   rise: ["trails", 0.05, 0.5],
   fall: CONSTRUCT,
 };
 
-/** The DEPARTURE: the outer layers come apart on the assemble channel — the
- *  reassembly reversed (rising IS coming apart), scoped off the mechanism by
- *  `ASSEMBLE_KEEP_SCOPE`. The layer order is the recipe's gate stagger, not
- *  this window's. The rise fills the peel scene so every piece flies its whole
- *  flight in frame; the fall waits until every one of them has dissolved
- *  (WINK_SPAN's end). */
+/** The peel: the outer layers fly off the lens (rising = coming apart) and
+ *  return only once every one of them has faded out (WINK_SPAN's end). */
 export const CARDS_APART: { rise: StoryWindow; fall: StoryWindow } = {
   rise: [
     ["zoom", 0.85],
@@ -64,10 +57,8 @@ export const CARDS_APART: { rise: StoryWindow; fall: StoryWindow } = {
   fall: ["cards", 0.16, 0.3],
 };
 
-/** The lens stands up for the internals scene: 0 = the bore lies along world
- *  +X, the pose every other scene is written against; 1 = it points at +Y. The
- *  fall must land INSIDE the flythrough transit — the dive is written along
- *  world +X and needs the bore exactly on that axis before its first frame. */
+/** The lens stands up for the internals scene: 0 = bore along world +X (every
+ *  other scene's pose), 1 = bore along +Y. It must lie back down before the dive. */
 export const UPRIGHT: { rise: StoryWindow; fall: StoryWindow } = {
   rise: [
     ["cards", 0.8],
@@ -76,50 +67,42 @@ export const UPRIGHT: { rise: StoryWindow; fall: StoryWindow } = {
   fall: ["flythrough", 0, 0.2],
 };
 
-/** the tip, 0..1 — a pulse like the mechanism channels, and 0 at both ends of
- *  the track so no other span sees the model off its authored axis */
+/** How far the lens stands up at p, 0..1. */
 export const uprightAt = pulseFn(UPRIGHT, "upright");
 
-/** THE NOSE DIP: the bore sits a little below horizontal across the cards
- *  scene, so peelcards' turn about world +Y sweeps a cone rather than a flat
- *  spin. It must stay inside the cards scene, disjoint from the peel's bore
- *  roll — the driver folds both into the same `z`, and a dipped bore under that
- *  roll precesses instead of rolling in place. */
+/** The nose dips below horizontal in the cards scene, so the turn sweeps a
+ *  cone. Must stay clear of the peel's bore roll, which shares the same `z`. */
 export const DIP: { rise: StoryWindow; fall: StoryWindow } = {
   rise: ["cards", 0, 0.3],
   fall: UPRIGHT.rise,
 };
 
-/** THE HUDDLE: the bare core draws axially compact for the cards chapter. It
- *  may not start before the scene boundary — the peel's departing pieces fly
- *  from SEATED positions — and its release is UPRIGHT's own rise. */
+/** The bare mechanism draws together along its axis for the cards scene. It
+ *  may not start before the peel's pieces have left their seats. */
 export const HUDDLE: { rise: StoryWindow; fall: StoryWindow } = {
   rise: ["cards", 0.02, 0.16],
   fall: UPRIGHT.rise,
 };
 
-/** the huddle at p, 0..1 — 0 at both ends of the track */
+/** The huddle at p, 0..1. */
 export const huddleAt = pulseFn(HUDDLE, "huddle");
 
-/** how far the nose dips, radians */
+/** How far the nose dips, radians. */
 export const DIP_MAX = deg(15);
 
 const dipFracAt = pulseFn(DIP, "dip");
 
-/** the dip at p, radians ≥ 0 — hero-driver SUBTRACTS it from the tip's own
- *  `MODEL_BORE_X_Z * (1 − uprightAt(p))`; exactly 0 outside the window */
+/** The nose dip at p, radians ≥ 0; the driver subtracts it from the tilt. */
 export const dipAt = (p: number): number => DIP_MAX * dipFracAt(p);
 
-/** THE SPINNING-TOP ROCK: the standing lens nutates about the bore while the
- *  last pieces land, damping to dead still before the bloom opens. A cone, not
- *  a tilt — `rockZAt` goes on the model's tilt and `rockYAt` on its turn. Both
- *  are exactly 0 outside the window and C1 at both edges. */
+/** The standing lens wobbles like a spinning top while the last pieces land,
+ *  then settles dead still before the bloom. Exactly 0 outside the window. */
 export const ROCK: StoryWindow = ["capsOn", 0.42, 0.72];
 
-/** how far the bore leans at the wobble's peak, radians */
+/** The wobble's peak lean, radians. */
 export const ROCK_MAX = deg(12);
 
-/** turns of precession across the window */
+/** Turns of wobble across the window. */
 const ROCK_TURNS = 2.25;
 
 const [ROCK_P0, ROCK_P1] = span("rock", windowEdges(ROCK));
@@ -127,25 +110,26 @@ const [ROCK_P0, ROCK_P1] = span("rock", windowEdges(ROCK));
 const ROCK_SPAN = ROCK_P1 - ROCK_P0;
 const ROCK_RATE = 2 * Math.PI * ROCK_TURNS;
 
-/** the lean at p, radians ≥ 0 — up off zero rate, then damped out */
+/** The wobble's lean at p, radians: eases in, then damps out. */
 const rockLeanAt = (p: number): number => {
   const u = clamp01((p - ROCK_P0) / ROCK_SPAN);
   return ROCK_MAX * smoothstep(0, 0.15, u) * (1 - smoothstep(0.45, 1, u));
 };
 
-/** where the lean points at p, radians round the bore */
+/** Which way the lean points at p, radians around the bore. */
 const rockPhaseAt = (p: number): number =>
   ROCK_RATE * clamp01((p - ROCK_P0) / ROCK_SPAN);
 
+/** The wobble's tilt component (added to the model's z). */
 export const rockZAt = (p: number): number =>
   rockLeanAt(p) * Math.cos(rockPhaseAt(p));
 
+/** The wobble's turn component (added to the model's y). */
 export const rockYAt = (p: number): number =>
   rockLeanAt(p) * Math.sin(rockPhaseAt(p));
 
-/** The bloom — the one channel with no fall; the story ends inside it. It may
- *  not overlap the assemble or explode channels (all fold the same wedge), so
- *  its foot sits past both falls — channel-ease.test.ts pins the order. */
+/** The bloom: the ending's origami flower opens and stays open (no fall). It
+ *  must start after the assemble and explode falls; channel-ease.test.ts pins it. */
 export const ROSE_PULSE: { rise: StoryWindow } = {
   rise: ["capsOn", 0.72, 0.96],
 };
@@ -153,101 +137,109 @@ export const ROSE_PULSE: { rise: StoryWindow } = {
 export const zoomAt = pulseFn(ZOOM_PULSE, "zoom");
 export const explodeAt = pulseFn(EXPLODE_PULSE, "explode");
 
-/** The assemble channel runs ONCE on the track — the cards scene's departure,
- *  and nothing else. It may not run in the ending: the host SUMS each recipe's
- *  delta, so two saturated recipes cannot compose into a rigid pose. */
+/** The peel's departure. The only assemble pulse on the track: recipe deltas
+ *  add up, so it may not also run during the ending's explode. */
 export const assembleAt = pulseFn(CARDS_APART, "cards.apart");
 export const roseAt = pulseFn(ROSE_PULSE, "rose");
 
-/** THE ENDING'S SPREAD (ops/recipes.ts `explode.bloom`): how far up its own
- *  meridian each piece slides at full channel, in its own seat radii. A story
- *  knob over the recipe's /lens default; a constant, since the spread's pacing
- *  is EXPLODE_PULSE's. */
+// --- recipe knobs the story sets (defaults live in ops/recipes.ts)
+
+/** explode.bloom: how far each piece slides outward in the ending, in seat radii. */
 export const ENDING_BLOOM = 4.5;
 
-/** THE MID-FALL CURL (ops/recipes.ts `explode.curl`): how far off its seated
- *  radius a shell wedge opens on the way down, as a coil factor beyond 1. The
- *  recipe's window is the piece's own flight, so it is 0 at the park and 0 at
- *  the seat. A story knob over the recipe's 0 default. */
+/** explode.curl: how far a shell wedge curls open mid-fall (a coil factor beyond 1). */
 export const ENDING_CURL = 4.5;
 
-/** THE RING PHASE (ops/recipes.ts `explode.ringPhase`): turns of parked azimuth
- *  per model-mm of a piece's ladder station, which offsets each ladder group's
- *  seams so the park reads as broken concentric rings rather than a pinwheel.
- *  A story knob over the recipe's 0 default. */
+/** explode.ringPhase: offsets each ring's seams (turns per model-mm) so the
+ *  parked pieces read as broken rings rather than a pinwheel. */
 export const ENDING_RING_PHASE = 0.0325;
 
-/** THE PARKED REBEND (ops/recipes.ts `explode.rebend`): 1 = each parked wedge
- *  is re-bent, at constant arc length, to the radius of the ring the spread has
- *  carried it to, relaxing to its own curvature as it flies home. A story knob
- *  over the recipe's 0 default. */
+/** explode.rebend: 1 = a parked wedge bends to its new ring's radius and
+ *  relaxes back on the way home. */
 export const ENDING_REBEND = 1;
 
-/** The departure's scope knob (ops/recipes.ts `assemble.keepScope`), 1 for the
- *  whole story. A constant: a step would move the keep-set mid-glide. */
+/** assemble.keepScope for the whole story. Constant: changing it mid-flight
+ *  would move pieces. */
 export const ASSEMBLE_KEEP_SCOPE = 1;
 
-// --- the iris hand-over ------------------------------------------------------
+/** Every recipe knob the story sets, by recipe; the rest keep their defaults. */
+export const STORY_KNOBS: Partial<Record<RecipeName, Record<string, number>>> =
+  {
+    assemble: { keepScope: ASSEMBLE_KEEP_SCOPE },
+    explode: {
+      bloom: ENDING_BLOOM,
+      curl: ENDING_CURL,
+      ringPhase: ENDING_RING_PHASE,
+      rebend: ENDING_REBEND,
+    },
+  };
 
-/** The aperture ramps shut over the tail of the internals scene and stays
- *  there, so the dive's own opening ramp starts from f/22 with no jump. */
-export const PRE_SHUT = span("preShut", [atFrac(inR, 0.6), atFrac(inR, 0.95)]);
+// --- iris hand-over between the driver and internals.ts
 
-/** The pre-shut ramp — ONE law across both edges of the scene.
- *  story/internals.ts calls it inside the span and adds its breath on top; the
- *  driver writes it outside the span. */
+/** The aperture closes to f/22 late in the internals scene, ready for the dive. */
+export const PRE_SHUT = span("preShut", [
+  atFrac(internalsScene, 0.6),
+  atFrac(internalsScene, 0.95),
+]);
+
+/** The aperture's pre-shut ramp at p. internals.ts adds its breathing on top
+ *  inside its span; the driver writes it alone outside. */
 export const preShutAt = (p: number): number =>
   smoothstep(PRE_SHUT[0], PRE_SHUT[1], p);
 
-/** Where the driver hands focus and aperture to story/internals.ts. The two
- *  writers overlap across the slack, where both laws are exactly 0. */
-export const IRIS_HANDOVER = atFrac(caR, 0.15) - 0.02;
+/** Where internals.ts takes over focus and aperture. Both writers agree across
+ *  the small overlap, where both laws are 0. */
+export const IRIS_HANDOVER = atFrac(cardsScene, 0.15) - 0.02;
 
-/** …and where it takes them back: the internals scene's end. */
-export const IRIS_HANDBACK = inR.p1;
+/** Where the driver takes them back: the end of the internals scene. */
+export const IRIS_HANDBACK = internalsScene.p1;
 span("iris.handover", [IRIS_HANDOVER, IRIS_HANDBACK]);
 
-/** story/internals.ts owns focus and aperture across the cards + internals
- *  span; the two writers are separated by RANGE, not order. */
+/** True where the driver, not internals.ts, writes focus and aperture. */
 export const driverOwnsIris = (p: number): boolean =>
   p < IRIS_HANDOVER || p > IRIS_HANDBACK;
 
-// --- the look ----------------------------------------------------------------
+// --- the ink look
 
-/** Ink fill: wireframe → half through zoom → full at the peel, and full for the
- *  rest of the story. The fills may not dip below the edge lines' flat alpha
- *  (materials/unified.ts `inkLineOpacity`) or pieces draw as hollow outlines. */
-export const INK_HALF = span("ink.half", [atFrac(zR, 0.0), atFrac(zR, 0.5)]);
-export const INK_FULL = span("ink.full", [peR.p0, atFrac(peR, 0.35)]);
+/** The ink drawing fills in: half over the zoom, full early in the peel, then
+ *  stays full. Never below the edge lines' alpha, or pieces draw hollow. */
+export const INK_HALF = span("ink.half", [
+  atFrac(zoomScene, 0.0),
+  atFrac(zoomScene, 0.5),
+]);
+export const INK_FULL = span("ink.full", [
+  peelScene.p0,
+  atFrac(peelScene, 0.35),
+]);
 
 export const inkFillAt = (p: number): number =>
   0.5 * smoothstep(INK_HALF[0], INK_HALF[1], p) +
   0.5 * smoothstep(INK_FULL[0], INK_FULL[1], p);
 
-/** The shell's way back, at the rewrap's first frames — behind the opaque sky
- *  backdrop story/fly.ts still holds, so the pop is unseen. */
-export const SHELL_BACK = span("shell.back", [rwR.p0, atFrac(rwR, 0.05)]);
+/** The shell reappears in the rewrap's first frames, hidden behind the sky. */
+export const SHELL_BACK = span("shell.back", [
+  rewrapScene.p0,
+  atFrac(rewrapScene, 0.05),
+]);
 
-// --- THE WINK ---------------------------------------------------------------
-// How the sides disappear: once carried off the lens the outer casts dissolve,
-// piece by piece, outside-in (core/visibility.ts's bands and scatter), and the
-// cards are born on them (story/peelcards.ts). The mechanism under them is
-// never hidden and never moves (ops/recipes.ts `keepScope`).
+// --- the outer layers' fade-out ("wink")
+// Once off the lens, the outer pieces dissolve one by one, outside-in
+// (core/visibility.ts), and the cards (peelcards.ts) appear on them. The
+// mechanism underneath never hides or moves.
 
-/** THE SHELL'S AND THE INTERIOR'S WINK — hero-driver writes both gates on this
- *  one window. It overlaps the departure's tail rather than queueing after it,
- *  but no piece may begin to dissolve before its own flight is over. It runs
- *  into the cards scene, under the turn, and must be spent before
- *  CARDS_APART's fall walks the departed pieces home. */
-export const WINK_SPAN = span("wink", [atFrac(peR, 0.57), atFrac(caR, 0.15)]);
+/** The shell and interior pieces dissolve. No piece may start before its own
+ *  flight ends, and all must be gone before CARDS_APART brings them home. */
+export const WINK_SPAN = span("wink", [
+  atFrac(peelScene, 0.57),
+  atFrac(cardsScene, 0.15),
+]);
 
-/** The wink LEVEL at p: 1 above the span, 0 past it — what every governed piece
- *  compares its threshold against on the way out. */
+/** The fade level at p: 1 before WINK_SPAN, 0 after. Each piece compares its
+ *  own threshold against it. */
 export const winkLevelAt = (p: number): number =>
   1 - smoothstep(WINK_SPAN[0], WINK_SPAN[1], p);
 
-/** The p at which the wink level reaches `level` — winkLevelAt's inverse on
- *  the span, by bisection (a smoothstep has no closed inverse). */
+/** The p where the fade level reaches `level` (winkLevelAt's inverse, by bisection). */
 export const winkPAt = (level: number): number => {
   let lo = WINK_SPAN[0];
   let hi = WINK_SPAN[1];
@@ -259,51 +251,42 @@ export const winkPAt = (level: number): number => {
   return (lo + hi) / 2;
 };
 
-/** The shell's wink-out and its way back. One envelope for all three casts —
- *  the per-piece thresholds order them outside-in. */
+/** The shell's fade level: out on WINK_SPAN, back on SHELL_BACK. */
 export const shellFadeAt = (p: number): number =>
   winkLevelAt(p) + smoothstep(SHELL_BACK[0], SHELL_BACK[1], p);
 
-/** The interior's return, UNDER THE INK: a wink only dissolves while the body
- *  is transparent (materials/unified.ts `bodyTransparent`), and the dive draws
- *  the body opaque from DIVE_P0 − HYST on, so the window sits inside the
- *  approach's ink-out (story/fly.ts flyInkAt), where the pieces arrive as ink
- *  the way they left. envelopes.test.ts pins every wink window to that cover. */
-export const INTERIOR_BACK = span("interior.back", [fR.p0, atFrac(fR, 0.12)]);
+/** The interior pieces return during the flythrough approach, while the body is
+ *  still drawn as transparent ink (a piece can only dissolve while it is). */
+export const INTERIOR_BACK = span("interior.back", [
+  flyScene.p0,
+  atFrac(flyScene, 0.12),
+]);
 
-/** Cladding + rest-cast leave on the shell's window but return over the
- *  flythrough approach, so the dive flies through the full interior. */
+/** The interior's fade level: out with the shell, back on INTERIOR_BACK. */
 export const interiorFadeAt = (p: number): number =>
   winkLevelAt(p) + smoothstep(INTERIOR_BACK[0], INTERIOR_BACK[1], p);
 
-// --- the dust ----------------------------------------------------------------
+// --- dust
 
-/** Where the bloom's petals mount (story/petals.ts SPAN_P0): a pad below the
- *  rose's foot, so a scrub parked on the edge cannot thrash the mount. */
+/** Where the bloom's petals mount: just before the bloom starts. */
 export const PETALS_P0 = windowEdges(ROSE_PULSE.rise)[0] - 0.01;
 
-/** THE DUST: the ambient motes (story/cinematics.ts) are off through the dive,
- *  where they would float in front of the sky, and from the petals' mount on,
- *  where the petals replace them. ONE writer — the driver — so the two spans
- *  cannot race on a resume. */
+/** The ambient dust is on except during the dive and once the petals mount. */
 export const dustAt = (p: number): boolean =>
   !(p >= DIVE_P0 && p <= FLY_EXIT_END) && p < PETALS_P0;
 
-// --- the stage tint ----------------------------------------------------------
+// --- stage tint
 
-/** An 8-bit RGB triple, the form the STORY table authors a stage tint in. */
+/** An 8-bit RGB triple. */
 export type Rgb = [number, number, number];
-/** One tint stop: the story p it is authored at, and the colour there. */
+/** A tint stop: a story p and the colour there. */
 export type BgStop = [number, Rgb];
 
-/** The tint stop table for a theme: each scene's authored tint at its
- *  hold-centre. Built once per theme, not per frame. */
+/** Each scene's tint at its range midpoint, for one theme. */
 export const bgStopsFor = (light: boolean): BgStop[] =>
   RANGES.map((r) => [(r.p0 + r.p1) / 2, light ? r.scene.bgLight : r.scene.bg]);
 
-/** The tint at p, interpolated between the two bracketing stops and rounded to
- *  whole channel values. Writes into `out`: the per-frame path allocates
- *  nothing. */
+/** The tint at p, interpolated between stops and rounded. Writes into `out`. */
 export const bgTintAt = (
   stops: BgStop[],
   p: number,
@@ -320,116 +303,93 @@ export const bgTintAt = (
   return out;
 };
 
-/** The tint at p for a theme, for readers that do not hold a table. */
+/** The tint at p for a theme. */
 export const bgAt = (p: number, light: boolean): Rgb =>
   bgTintAt(bgStopsFor(light), p);
 
-// --- the instrument chrome ---------------------------------------------------
+// --- HUD and chrome
 
-/** The scene whose range contains p — the HUD index and the rail's lit dot.
- *  Past the last range it is the last scene: the story is over, not absent. */
-export const sceneIndexAt = (p: number): number => {
-  for (let k = 0; k < RANGES.length; k++) if (p < RANGES[k].p1) return k;
-  return RANGES.length - 1;
-};
-
-/** The HUD's f-stop table — the aperture channel quantized onto real stops. */
+/** The HUD's f-stops, from wide open to shut. */
 export const F_STOPS = ["2.8", "4", "5.6", "8", "11", "16", "22"];
 
-/** The HUD's focal length, mm: the zoom channel across the lens' own range. */
+/** The HUD's focal length in mm for a zoom channel value. */
 export const focalMmAt = (zoom: number): number => Math.round(18 + zoom * 32);
 
 /** The HUD's f-stop for an aperture channel value. */
 export const fStopOf = (aperture: number): string =>
   F_STOPS[Math.round(clamp01(aperture) * (F_STOPS.length - 1))];
 
-/** the scroll cue lives only in the hero */
+/** The scroll cue fades out across the hero scene. */
 export const SCROLL_CUE = span("scrollCue", [
-  atFrac(heroR, 0.1),
-  atFrac(heroR, 0.9),
+  atFrac(heroScene, 0.1),
+  atFrac(heroScene, 0.9),
 ]);
 
 export const scrollCueAt = (p: number): number =>
   1 - smoothstep(SCROLL_CUE[0], SCROLL_CUE[1], p);
 
-/** Instrument chrome fades over the tail of the final scene, derived from the
- *  capsOn range rather than absolute p. */
-export const CHROME_FADE = span("chrome", [atFrac(capR, 0.77), capR.p1]);
+/** The HUD and scene rail fade out at the end of the final scene. */
+export const CHROME_FADE = span("chrome", [
+  atFrac(bloomScene, 0.77),
+  bloomScene.p1,
+]);
 
 export const chromeAt = (p: number): number =>
   1 - smoothstep(CHROME_FADE[0], CHROME_FADE[1], p);
 
-// --- the model's orientation ------------------------------------------------
+// --- model orientation
 
-// THE BORE ROLL: the peel scene's own lens motion — the body turns rigidly
-// about its optical axis while the layers unwrap off it. It rides the model's
-// `x` euler, which is a bore roll only while the turn (`y`) and the dip (`z`)
-// are exactly 0: `orientationAt` composes Rx·Ry·Rz.
-
-/** peel: the roll's span, spent before the scene ends */
+// Peel: the lens spins once about its own optical axis while the layers come
+// off. This is the model's x euler, a pure bore roll only while y and z are 0.
 const ROLL_START = 0.06;
 const ROLL_END = 0.92;
-/** WHOLE turns about the bore, SIGNED — negative is the departure's own winding
- *  direction (ops/house WRAP_DIR). It MUST stay an integer: peelRollAt drops to
- *  exactly 0 past the window, and a whole revolution makes that an identity. */
+/** Whole turns, signed (negative = the peel's winding direction). Must stay an
+ *  integer so dropping back to 0 afterwards is seamless. */
 const ROLL_TURNS = -1;
 
-/** THE BORE ROLL'S SPAN in absolute story p, [open, spent]. */
+/** The peel's spin about the bore. */
 export const PEEL_ROLL_SPAN = span("peel.roll", [
-  atFrac(peR, ROLL_START),
-  atFrac(peR, ROLL_END),
+  atFrac(peelScene, ROLL_START),
+  atFrac(peelScene, ROLL_END),
 ]);
 
-/** THE BORE ROLL'S SHAPE at p, normalized 0 → 1 — a smoothstep, so the body
- *  winds up and settles in plain sight. */
+/** The spin's progress at p, 0..1. */
 export const peelRollFracAt = (p: number): number =>
   smoothstep(PEEL_ROLL_SPAN[0], PEEL_ROLL_SPAN[1], p);
 
-/** THE LENS' ROLL, radians about its OWN BORE — `orientationAt`'s `x` where the
- *  reveal's roll is 0. Exactly 0 at both edges: below the window literally,
- *  past it because ROLL_TURNS makes the drop an identity. */
+/** The spin at p, radians about the bore; 0 before and after the span. */
 export const peelRollAt = (p: number): number =>
   p >= PEEL_ROLL_SPAN[1] ? 0 : ROLL_TURNS * 2 * Math.PI * peelRollFracAt(p);
 
-// THE TURN: the cards scene's one motion — the lens turns clockwise about world
-// +Y with its bore dipped below horizontal, so the nose sweeps a cone. It is
-// spent exactly where the lens reaches vertical (UPRIGHT), where a rotation
-// about +Y no longer moves the bore.
-
-/** cards: where the turn opens — the frame the peel hands over on. The ramp
- *  leaves at rate exactly 0, so no frame reads as its first. */
-const TURN_START = 0;
-/** internals: where it is spent, and where the lens is fully upright */
-const TURN_END = 0.3;
-/** WHOLE revolutions about world +Y, SIGNED — negative sweeps the nose from
- *  world +X toward +Z, clockwise from above. It MUST stay an integer, for the
- *  same reason as ROLL_TURNS. */
+// Cards: the lens circles about world +Y with its nose dipped, sweeping a
+// cone. It finishes as the lens stands upright, where a +Y turn no longer
+// moves the bore.
+const TURN_START = 0; // cards-scene fraction
+const TURN_END = 0.3; // internals-scene fraction
+/** Whole turns, signed (negative = clockwise from above). Must stay an integer,
+ *  as ROLL_TURNS. */
 const TURN_TURNS = -2;
 
-/** THE TURN'S SPAN in absolute story p, [open, spent]. */
+/** The cards scene's turn about world +Y. */
 export const TURN_SPAN = span("peel.turn", [
-  atFrac(caR, TURN_START),
-  atFrac(inR, TURN_END),
+  atFrac(cardsScene, TURN_START),
+  atFrac(internalsScene, TURN_END),
 ]);
 
-/** THE TURN'S SHAPE at p, normalized 0 → 1 over TURN_SPAN — a smoothstep, so
- *  the rate is 0 at BOTH edges. */
+/** The turn's progress at p, 0..1. */
 export const peelTurnFracAt = (p: number): number =>
   smoothstep(TURN_SPAN[0], TURN_SPAN[1], p);
 
-/** THE LENS' TURN, radians about WORLD +Y — `orientationAt`'s `y` where the
- *  rock is 0. Exactly 0 at both edges, as peelRollAt is. */
+/** The turn at p, radians about world +Y; 0 before and after the span. */
 export const peelTurnAt = (p: number): number =>
   p >= TURN_SPAN[1] ? 0 : TURN_TURNS * 2 * Math.PI * peelTurnFracAt(p);
 
-/** The reveal's roll is live from the explode rise's foot (it scales by the
- *  channel) to ROLL_P1 — registered here, where both edges are known. */
+// The reveal's roll (reveal.ts) runs from the explode's rise to ROLL_P1.
 span("roll", [windowEdges(EXPLODE_PULSE.rise)[0], ROLL_P1]);
 
-/** The model's euler at p, radians — the one formula behind
- *  setModelOrientation. x: the peel's bore roll, then the reveal's own; y: the
- *  cards' turn about world +Y plus the rock; z: the tip (bore on world +X, up
- *  for the internals) less the nose dip, plus the rock's other half. */
+/** The model's euler at p, radians. x: the peel spin plus the reveal roll;
+ *  y: the cards turn plus the wobble; z: the tip (bore on +X, up for the
+ *  internals) less the nose dip, plus the wobble. */
 export const orientationAt = (
   p: number,
   out = { x: 0, y: 0, z: 0 },

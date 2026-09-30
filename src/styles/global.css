@@ -35,10 +35,8 @@
     display: none;
   }
 
-  /* `.theme-anim` is on <html> only for the ~400ms around a theme flip —
-     permanent transitions would slow every hover and the scroll-driven stage
-     tint. transition-property is EXPLICIT — animating `all` (or
-     opacity/transform) would fight the lens hero's caption fades. */
+  /* On <html> only during a theme flip. Colour properties only, so it never
+     touches the hero's opacity-based caption fades. */
   html.theme-anim,
   html.theme-anim *,
   html.theme-anim *::before,

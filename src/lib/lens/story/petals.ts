@@ -1,19 +1,14 @@
-// THE BLOOM'S PETALS — the rose ending's ambient: cut-paper petals drifting
-// down the frame while the flower holds open. They REPLACE the ambient dust
-// (story/cinematics.ts) for the length of the bloom; the driver's dust law
-// (story/envelopes.ts dustAt) turns the motes off at this span's foot.
+// The rose ending's petals: flat paper petals drifting down the screen while the
+// flower is open. They replace the ambient dust during the bloom (dustAt in
+// story/envelopes.ts turns the dust off here).
 //
-// LAZY MODULE, like story/fly.ts and story/trails.ts: reached ONLY through
-// hero-driver's dynamic import(), never re-exported from index.ts.
+// Lazy module: only hero-driver's dynamic import() may reach it, and index.ts
+// must never re-export it.
 //
-// THE 2D LAW: a petal is a VIEW-SPACE billboard — centre, fall, sway and turn
-// are authored in the camera's own frame, so gravity is always screen-down.
-// Only its DEPTH is 3D, so petals pass behind the flower as well as in front.
-//
-// NOTHING PER FRAME BUT TWO UNIFORMS. The field is ONE instanced draw of a
-// four-vertex template; every petal's fall, sway, spin and flutter is solved in
-// the vertex stage. Time accrues only INSIDE the span, off the tick's dt, and
-// the envelope is exactly 0 below the bloom's foot.
+// Each petal is a view-space billboard, so it always falls screen-down; only
+// its depth is 3D, letting petals pass behind the flower. The whole field is
+// one instanced draw animated in the vertex shader; per frame only uniforms
+// change.
 
 import * as THREE from "three/webgpu";
 import {
@@ -34,76 +29,55 @@ import {
 } from "three/tsl";
 import type { TslNode } from "../ops/tsl-types";
 import type { SceneHandle } from "../core/scene";
-import { lerp, smoothstep } from "../core/math";
+import { lcg, lerp, smoothstep } from "../core/math";
 import { isLightTheme, watchTheme } from "../core/theme";
 import { STORY_R, rangeOf, windowEdges } from "./story";
 import { PETALS_P0, ROSE_PULSE } from "./envelopes";
 
 const TAU = Math.PI * 2;
 
-// --- the window --------------------------------------------------------------
+// --- Timing ---
 
 const [ROSE_P0, ROSE_P1] = windowEdges(ROSE_PULSE.rise);
 
-/** Where the field is fully in: over the first half of the bloom, so the petals
- *  arrive WITH the flower rather than after it. */
+/** Story p where the petals are fully in: halfway through the bloom. */
 export const PETAL_RISE = ROSE_P0 + 0.5 * (ROSE_P1 - ROSE_P0);
 
-/** The field's envelope — a straight multiplier on every petal's alpha, exactly
- *  0 at and below the bloom's foot, and it never falls. */
+/** Overall petal opacity: 0 up to the bloom's start, then rises and stays. */
 export const petalEnvAt = (p: number): number =>
   smoothstep(ROSE_P0, PETAL_RISE, p);
 
-/** Where the field mounts: a pad below the envelope's foot, authored with the
- *  dust law in story/envelopes.ts, so a scrub parked on the edge cannot thrash
- *  attach/detach. */
+/** Story-p span the field is mounted over (starts a little before it shows). */
 export const SPAN_P0 = PETALS_P0;
-/** …and the top: the track's end. The bloom is the last thing the story does. */
 export const SPAN_P1 = 1;
 
-// --- the look ----------------------------------------------------------------
+// --- Look ---
+// Lengths are in units of each petal's depth (a constant fraction of the
+// frame). Heights that must clear the top edge use frame half-heights instead.
 
-// All lengths are in units of the petal's own DEPTH, which makes them constant
-// fractions of the frame at every depth — but NOT at every viewport, since
-// core/scene divides the frame's half-height by `camera.zoom`. Anything that
-// has to clear the TOP EDGE is written in frame half-heights instead (`top`,
-// live through `uFrameHalf`).
-
-/** The ending's park distance in STORY_R units, read off the capsOn row so the
- *  surface line below stays on the lens' base if the row's distance is retuned. */
+/** Camera distance in the final scene, in STORY_R units. */
 const ENDING_DIST = Math.hypot(...rangeOf("capsOn").scene.cam.pos);
 
-/** The same distance in world units: how far in front of the camera the
- *  standing lens is, which the depth band is written against. */
+/** Camera distance to the standing lens, world units. */
 export const LENS_DIST = ENDING_DIST * STORY_R;
 
-/** The lens base's drop below the frame's centre, as an angle times the park
- *  distance — what the surface line derives from. */
+/** How far below frame centre the lens base sits, times the camera distance. */
 const BASE_DROP = 0.191;
 
 export const PETAL_LOOK = {
-  /** dozens, not thousands (the render hot-path law) */
   count: 64,
-  /** the depths the field is spread over, as fractions of the standing lens'
-   *  distance (`LENS_DIST`): behind the flower as well as in front of it */
+  /** depth range, as fractions of LENS_DIST (both behind and in front) */
   depth: [0.8, 1.25] as [number, number],
-  /** half the spawn band's width, in units of depth. Wide enough that no
-   *  viewport shows the band's edge out to about aspect 2.9. */
+  /** half-width of the spawn band, in depth units */
   spanX: 0.78,
-  /** where a petal's own fall STARTS, in units of THE FRAME'S OWN half-height
-   *  (`SceneHandle.frameHalf`, live): past the top edge at every viewport
-   *  shape. A fixed depth fraction would not clear a phone's taller frame. */
+  /** start height range, in frame half-heights (above the top edge) */
   top: [1.35, 2.1] as [number, number],
-  /** THE SURFACE LINE — where every fall ENDS, whatever height it started at:
-   *  the standing lens' base in the bloom's frame. Derived, so it stays on the
-   *  base if the capsOn row moves. */
+  /** height where every fall ends: the lens base */
   ground: -BASE_DROP / ENDING_DIST,
-  /** the height above that line a petal THINS over — keyed on the HEIGHT, not
-   *  the petal's own clock, so the field reaches rest weight on one level */
+  /** height above the ground over which a petal fades to its rest alpha */
   settle: 0.14,
-  /** THE REST: each petal spends the `at`→`out` span of its cycle lying on the
-   *  line. `alpha` is the weight it rests at (a floor under the descent fade),
-   *  `squash` the lying quad's height, `flatten` the u-span it tips over. */
+  /** Resting on the ground from cycle fraction `at` to `out`: `alpha` is the
+   *  resting opacity, `squash` the lying height, `flatten` how fast it lies. */
   rest: {
     at: 0.72,
     out: 0.94,
@@ -111,58 +85,45 @@ export const PETAL_LOOK = {
     squash: 0.32,
     flatten: 0.05,
   },
-  /** the quad's half-size — constant on SCREEN at every depth, so the field
-   *  reads as layers of flat paper rather than a perspective cloud */
+  /** half-size range, in depth units (constant on screen) */
   size: [0.0075, 0.0135] as [number, number],
   /** seconds to fall the whole band */
   fallSeconds: [16, 28] as [number, number],
-  /** the drift across the fall — amplitude in frame units, rate in rad/s */
+  /** side-to-side drift: amplitude in depth units, rate in rad/s */
   sway: {
     amp: [0.012, 0.045] as [number, number],
     rate: [0.1, 0.3] as [number, number],
   },
-  /** the turn IN THE SCREEN PLANE, rad/s — a petal never tumbles through a
-   *  third axis */
+  /** in-plane spin, rad/s */
   spin: [0.05, 0.2] as [number, number],
-  /** the paper turning edge-on — the quad's WIDTH breathes to this floor */
+  /** width oscillation (paper turning edge-on): rate in rad/s, minimum width */
   flutter: { rate: [0.15, 0.45] as [number, number], floor: 0.45 },
-  /** per-petal alpha, so the field has depth without shading */
+  /** per-petal alpha range */
   alpha: [0.5, 1] as [number, number],
 };
 
-/** THE SILHOUETTE, in the quad's own ±1 coordinates: a petal pointed at the tip
- *  and at the base, `belly` fuller below the middle. One flat tone. */
+/** Petal outline in the quad's ±1 coordinates: pointed at both ends, fuller
+ *  below the middle. */
 const SHAPE = { width: 0.72, belly: 0.18, feather: 0.09 };
 
-/** Two tints per stage, mixed per petal: the site's `--highlight` terracotta
- *  and whatever the stage is not. */
+/** Two tints per theme, mixed per petal. */
 const PETAL_INK = {
   dark: { warm: 0xd99a63, cool: 0xf1ecde, opacity: 0.82 },
   light: { warm: 0xd18a5d, cool: 0xa89070, opacity: 0.74 },
 };
 
-// --- the field ---------------------------------------------------------------
+// --- The field ---
 
-/** Deterministic, never Math.random: the field is the same on every machine and
- *  every reload. */
-function lcg(seed: number): () => number {
-  let s = seed >>> 0;
-  return () => {
-    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
-    return s / 4294967296;
-  };
-}
-
-export interface PetalAttributes {
+interface PetalAttributes {
   /** (column, phase, fall rate, depth) */
   aFall: Float32Array;
   /** (sway amplitude, sway rate, spin rate, flutter rate) */
   aTurn: Float32Array;
-  /** (half-size, alpha, tint mix, own start height) */
+  /** (half-size, alpha, tint mix, start height) */
   aLook: Float32Array;
 }
 
-/** The per-petal constants, one draw's worth. */
+/** Per-petal random constants, packed four floats per petal. */
 export function buildPetalField(look = PETAL_LOOK): PetalAttributes {
   const rnd = lcg(20260823);
   const pick = (r: readonly [number, number]) => lerp(r[0], r[1], rnd());
@@ -172,8 +133,8 @@ export function buildPetalField(look = PETAL_LOOK): PetalAttributes {
   const aLook = new Float32Array(n * 4);
   for (let i = 0; i < n; i++) {
     aFall[i * 4] = rnd() * 2 - 1; // column, ±1 across the band
-    aFall[i * 4 + 1] = rnd(); // phase: where in its own fall it starts
-    aFall[i * 4 + 2] = 1 / pick(look.fallSeconds); // bands per second
+    aFall[i * 4 + 1] = rnd(); // starting phase in its fall
+    aFall[i * 4 + 2] = 1 / pick(look.fallSeconds); // falls per second
     aFall[i * 4 + 3] = pick(look.depth) * LENS_DIST; // world units
     aTurn[i * 4] = pick(look.sway.amp);
     aTurn[i * 4 + 1] = pick(look.sway.rate);
@@ -187,25 +148,23 @@ export function buildPetalField(look = PETAL_LOOK): PetalAttributes {
   return { aFall, aTurn, aLook };
 }
 
-export interface PetalField {
+interface PetalField {
   mesh: THREE.Mesh;
   uTime: { value: number };
   uEnv: { value: number };
-  /** the live frame half-height per unit depth — the ruler `top` is written in */
+  /** frame half-height per unit depth; `top` is measured in this */
   uFrameHalf: { value: number };
   uWarm: { value: THREE.Color };
   uCool: { value: THREE.Color };
   uOpacity: { value: number };
 }
 
-/** Build the one draw: a four-vertex template, three instanced attributes and
- *  one material, with no GPU work until the first draw. */
+/** Build the instanced petal mesh and its material. */
 export function buildPetalObject(light: boolean): PetalField {
   const { aFall, aTurn, aLook } = buildPetalField();
   const geo = new THREE.InstancedBufferGeometry();
   geo.instanceCount = PETAL_LOOK.count;
-  // `position` holds the quad's ±1 CORNER, not a place: the landing point is
-  // solved from the instance's own attributes below
+  // `position` holds the quad's ±1 corners; placement comes from the attributes
   geo.setAttribute(
     "position",
     new THREE.BufferAttribute(
@@ -219,8 +178,7 @@ export function buildPetalObject(light: boolean): PetalField {
   geo.setAttribute("aFall", new THREE.InstancedBufferAttribute(aFall, 4));
   geo.setAttribute("aTurn", new THREE.InstancedBufferAttribute(aTurn, 4));
   geo.setAttribute("aLook", new THREE.InstancedBufferAttribute(aLook, 4));
-  // stated, not computed: the template is a unit quad and the petals are placed
-  // in view space, so a measured sphere would describe nothing
+  // petals are placed in view space, so give a fixed bounding sphere
   geo.boundingSphere = new THREE.Sphere(
     new THREE.Vector3(),
     PETAL_LOOK.depth[1] * LENS_DIST,
@@ -229,7 +187,7 @@ export function buildPetalObject(light: boolean): PetalField {
   const pal = light ? PETAL_INK.light : PETAL_INK.dark;
   const uTime = uniform(0);
   const uEnv = uniform(0);
-  // the landscape frame at the ending's fov, until the driver writes the live one
+  // default: a 30° fov frame, until the driver writes the live value
   const uFrameHalf = uniform(Math.tan((30 * Math.PI) / 360));
   const uWarm = uniform(new THREE.Color(pal.warm));
   const uCool = uniform(new THREE.Color(pal.cool));
@@ -241,17 +199,15 @@ export function buildPetalObject(light: boolean): PetalField {
   const depth: TslNode = fall.w;
   const phase: TslNode = fall.y.mul(TAU);
 
-  // THE FALL: one wrapped ramp, 0 at the petal's own top, on the surface from
-  // `rest.at` until the wrap. `fract` makes the field endless with no respawn.
+  // u: position in the petal's repeating cycle, 0 = top; it rests on the
+  // ground from `rest.at` until it wraps
   const u: TslNode = fract(fall.y.add(uTime.mul(fall.z)));
   const R = PETAL_LOOK.rest;
-  // the landing clock: past `rest.at` every animated term runs on the moment
-  // this petal touched down — the overshoot in u over the fall rate
+  // animation time, frozen at the moment the petal lands
   const tEff: TslNode = uTime.sub(
     clamp(u.sub(R.at), float(0), float(1)).div(fall.z),
   );
-  // every fall ends on the same line, from its own start height, easing out
-  // onto it
+  // ease-out drop from the start height to the ground
   const uf: TslNode = clamp(u.div(R.at), float(0), float(1));
   const drop: TslNode = uf.mul(float(2).sub(uf));
   const sway: TslNode = sin(tEff.mul(turn.y).add(phase)).mul(turn.x);
@@ -263,8 +219,7 @@ export function buildPetalObject(light: boolean): PetalField {
   );
   const cy: TslNode = y.mul(depth);
 
-  // the corner, turned in the SCREEN plane and squashed across its width as the
-  // paper turns edge-on
+  // corner offset: spun in the screen plane, width narrowed by the flutter
   const half: TslNode = look.x.mul(depth);
   const edgeOn: TslNode = cos(tEff.mul(turn.w).add(phase)).mul(0.5).add(0.5);
   const flutter: TslNode = mix(
@@ -278,8 +233,7 @@ export function buildPetalObject(light: boolean): PetalField {
   const px: TslNode = positionGeometry.x.mul(half).mul(flutter);
   const py: TslNode = positionGeometry.y.mul(half);
 
-  // the touchdown: over `rest.flatten` of u the turned quad tips into the lying
-  // pose — full width, height squashed — and holds it for the rest
+  // on landing, blend to the lying pose: full width, squashed height
   const g: TslNode = smoothstepTsl(float(R.at), float(R.at + R.flatten), u);
   const ox: TslNode = mix(
     px.mul(ca).sub(py.mul(sa)),
@@ -293,15 +247,13 @@ export function buildPetalObject(light: boolean): PetalField {
   );
 
   const mat = new THREE.MeshBasicNodeMaterial();
-  // no modelViewMatrix: the petal IS its view-space place, so the object's own
-  // transform is irrelevant and the fall is always screen-down
+  // positions are already in view space, so skip modelViewMatrix
   mat.vertexNode = cameraProjectionMatrix.mul(
     vec4(cx.add(ox), cy.add(oy), depth.negate(), 1),
   );
 
-  // The fade is the fall's: a petal lights off screen as it leaves its top and
-  // thins on the way down, keyed on HEIGHT, but only to the REST floor. The
-  // tail of its own cycle then dissolves it on the line.
+  // Fade in at the top, fade toward the rest alpha near the ground, then fade
+  // out at the end of the cycle.
   const hFade: TslNode = smoothstepTsl(
     float(PETAL_LOOK.ground),
     float(PETAL_LOOK.ground + PETAL_LOOK.settle),
@@ -320,8 +272,7 @@ export function buildPetalObject(light: boolean): PetalField {
   const vX: TslNode = varying(positionGeometry.x);
   const vY: TslNode = varying(positionGeometry.y);
 
-  // the silhouette: half-width closes to a point at the tip and at the base,
-  // fuller below the middle
+  // petal outline: half-width at height vY
   const hw: TslNode = float(1)
     .sub(vY.mul(vY))
     .mul(float(1).sub(vY.mul(SHAPE.belly)))
@@ -335,38 +286,33 @@ export function buildPetalObject(light: boolean): PetalField {
   mat.colorNode = mix(uWarm, uCool, vTint);
   mat.opacityNode = inside.mul(vInk).mul(uEnv).mul(uOpacity);
   mat.transparent = true;
-  // a petal behind the flower must be hidden by it, and alphaTest keeps the
-  // faded-out ones and the quad's empty corners out of the depth buffer
+  // write depth so the flower hides petals behind it; alphaTest keeps faded
+  // petals and empty corners out of the depth buffer
   mat.depthWrite = true;
   mat.alphaTest = 0.02;
   mat.side = THREE.DoubleSide;
-  // flat ink, not a lit surface (the 2D/3D design law)
   mat.toneMapped = false;
 
   const mesh = new THREE.Mesh(geo, mat);
   mesh.name = "Lens_Petals";
-  // placed in view space: three's frustum test would ask about the origin
   mesh.frustumCulled = false;
   mesh.raycast = () => {};
 
   return { mesh, uTime, uEnv, uFrameHalf, uWarm, uCool, uOpacity };
 }
 
-// --- the module --------------------------------------------------------------
+// --- The scene driver ---
 
 export interface StoryPetals {
-  /** Upload the field's buffers off the gesture. Idempotent. */
+  /** Pre-upload the petal buffers. Idempotent. */
   warm(): void;
 }
 
-/**
- * Start the petals. Registers a scene.onEvaluate callback for the life of the
- * page; the hero's scene is never disposed, so there is no teardown.
- */
+/** Start the petals. Registers a per-frame callback for the life of the page. */
 export function createStoryPetals(scene: SceneHandle): StoryPetals {
   const field = buildPetalObject(isLightTheme());
   let shown = false;
-  /** the field's own clock, seconds — accrues only while petals are drawn */
+  /** seconds; advances only while petals are visible */
   let t = 0;
 
   watchTheme((l) => {
@@ -379,8 +325,7 @@ export function createStoryPetals(scene: SceneHandle): StoryPetals {
 
   scene.onEvaluate((p, dtMs) => {
     const dt = dtMs / 1000;
-    // written unconditionally: a flick can leave the bloom between two frames,
-    // and a held envelope freezes a field of petals on the stage
+    // always write the envelope so a fast scroll never leaves a stale value
     const env = petalEnvAt(p);
     field.uEnv.value = env;
 
@@ -389,22 +334,19 @@ export function createStoryPetals(scene: SceneHandle): StoryPetals {
         scene.removeOverlay(field.mesh);
         shown = false;
       }
-      return false; // outside the bloom: nothing drawn, no time accrued
+      return false;
     }
 
     if (!shown) {
       scene.addOverlay(field.mesh);
       shown = true;
     }
-    // mounted at envelope 0 (the pad below the foot) nothing is drawn, so the
-    // fall neither runs nor asks for a frame
+    // mounted but invisible: don't advance time or request frames
     if (env <= 0) return false;
     t += dt;
     field.uTime.value = t;
-    // the frame the fall is written against, live: a resize or a fov change
-    // moves the top edge the petals have to start above
     field.uFrameHalf.value = scene.frameHalf();
-    return true; // the fall runs on time
+    return true;
   });
 
   return {

@@ -1,22 +1,17 @@
 import * as THREE from "three/webgpu";
 import { isGlassElement } from "../core/parts";
 
-// Dev only — dynamically imported. Measures the shipped model's optical
-// elements and prints a paste-ready PRESCRIPTION table for
-// optics/prescription.ts. Per `Element_*` mesh: vertices into the GLB root's
-// frame, split front/rear by outward-normal Y (rim excluded), each surface
-// sphere-fitted by Coope's least squares (centre on the axis at yMm + 1/c); a
-// Y spread under FLAT_SPREAD_MM is a plane. Valid only at default channels.
+// Dev only, dynamically imported. Measures each `Element_*` glass mesh and
+// prints a PRESCRIPTION table for optics/prescription.ts: vertices are split
+// into front/rear surfaces by normal and each is sphere-fitted. Run only with
+// every channel at its default.
 
-/**
- * Outward-normal Y threshold that separates the optical surfaces from the rim:
- * front above +NORMAL_MIN, rear below −NORMAL_MIN, everything between thrown
- * away. 0.35 ≈ 70° off axis, so a cylindrical edge never contaminates a fit.
- */
+/** Normal Y above which a vertex is on the front surface (below −this: rear);
+ *  anything between is rim. */
 const NORMAL_MIN = 0.35;
 /** A surface flatter than this (mm of Y spread) is reported as a plane, c = 0. */
 const FLAT_SPREAD_MM = 0.05;
-/** Below this many surface vertices the fit is not trustworthy; report a plane. */
+/** Fewer surface vertices than this are reported as a plane. */
 const MIN_CAP_POINTS = 12;
 
 export interface ProbeSurface {
@@ -26,12 +21,9 @@ export interface ProbeSurface {
   yMm: number;
   /** clear semi-diameter (max radial extent of the surface), mm */
   apertureMm: number;
-  /** Diagnostic, not pasted into the prescription: RMS of ||p − centre| − r|
-   *  over the surface's vertices, mm. Small = the sphere fits. 0 = flat. */
+  /** diagnostic: RMS distance of the vertices from the fitted sphere, mm */
   rmsMm: number;
-  /** Diagnostic, not pasted into the prescription: how far the fitted centre
-   *  sits off the optical axis, mm. Small = the surface is a figure of
-   *  revolution about +Y. 0 = flat. */
+  /** diagnostic: distance of the fitted centre from the optical axis, mm */
   axisOffMm: number;
 }
 
@@ -41,8 +33,7 @@ export interface ProbeEntry {
   rear: ProbeSurface;
 }
 
-/** Solve a small dense symmetric system by Gaussian elimination with partial
- *  pivoting. Returns null if the system is singular (a degenerate cap). */
+/** Solve m·x = b by Gaussian elimination; null if singular. */
 function solve(m: number[][], b: number[]): number[] | null {
   const n = b.length;
   const a = m.map((row, i) => [...row, b[i]]);
@@ -66,18 +57,13 @@ function solve(m: number[][], b: number[]): number[] | null {
   return x;
 }
 
-/**
- * Coope's linear sphere fit over `pts` (flat xyz triples): minimise the
- * residual of |p|² = 2a·x + 2b·y + 2c·z + k in the four unknowns (a, b, c, k),
- * where (a, b, c) is the centre and radius = sqrt(k + a² + b² + c²). Linear —
- * one normal-equation solve, no iteration, no initial guess.
- */
+/** Least-squares sphere fit (Coope's linear method) over flat xyz triples:
+ *  solves |p|² = 2c·p + k for centre c, with radius² = k + |c|². */
 function fitSphere(
   pts: number[],
 ): { cx: number; cy: number; cz: number; r: number } | null {
   const n = pts.length / 3;
   if (n < MIN_CAP_POINTS) return null;
-  // design row per point: [2x, 2y, 2z, 1], target |p|²
   const M = [
     [0, 0, 0, 0],
     [0, 0, 0, 0],
@@ -112,8 +98,7 @@ function probeSurface(pts: number[]): ProbeSurface {
   let yMin = Infinity;
   let yMax = -Infinity;
   let apertureMm = 0;
-  // The vertex of the surface is its axial point — the vertex closest to the
-  // optical axis, which on a dome is the pole, wherever it sits in Y.
+  // The surface's axial position is that of its vertex nearest the axis.
   let bestR = Infinity;
   let yMm = 0;
   for (let i = 0; i < pts.length; i += 3) {
@@ -137,7 +122,7 @@ function probeSurface(pts: number[]): ProbeSurface {
   if (yMax - yMin < FLAT_SPREAD_MM) return flat;
   const fit = fitSphere(pts);
   if (!fit) return flat;
-  // Centre at yMm + 1/c ⇒ c = 1/(centre.y − yMm), signed.
+  // Centre at yMm + 1/c, so c = 1 / (centre.y − yMm).
   const dy = fit.cy - yMm;
   if (Math.abs(dy) < 1e-6) return flat;
   let sum = 0;
@@ -149,9 +134,8 @@ function probeSurface(pts: number[]): ProbeSurface {
     sum += d * d;
   }
   return {
+    ...flat,
     c: round(1 / dy, 6),
-    yMm: round(yMm, 3),
-    apertureMm: round(apertureMm, 3),
     rmsMm: round(Math.sqrt(sum / n), 3),
     axisOffMm: round(Math.hypot(fit.cx, fit.cz), 3),
   };
@@ -175,7 +159,7 @@ export function probePrescription(root: THREE.Object3D): ProbeEntry[] {
       );
       return;
     }
-    // mesh local → world → GLB-root local (the gltf frame, real millimetres)
+    // Mesh-local to GLB-root space (millimetres).
     const m = new THREE.Matrix4().multiplyMatrices(toRoot, o.matrixWorld);
     const nm = new THREE.Matrix3().getNormalMatrix(m);
     const front: number[] = [];
@@ -199,7 +183,7 @@ export function probePrescription(root: THREE.Object3D): ProbeEntry[] {
   return out;
 }
 
-/** Expose the probe on the console. Dev-only caller. */
+/** Expose the probe on the console as `window.__lensPrescriptionProbe()`. */
 export function installPrescriptionProbe(root: THREE.Object3D): void {
   (window as unknown as Record<string, unknown>).__lensPrescriptionProbe =
     () => {

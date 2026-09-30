@@ -10,13 +10,12 @@ import HtmlShell from "./HtmlShell.astro";
 interface Props {
   title?: string;
   description?: string;
-  lang?: string;
 }
 
-const { title, description, lang } = Astro.props;
+const { title, description } = Astro.props;
 ---
 
-<HtmlShell title={title} description={description} lang={lang}>
+<HtmlShell title={title} description={description}>
   <Navbar />
   <main class="max-w-layout mx-auto w-full flex-1 px-4 pt-16 sm:px-6 lg:px-8">
     <slot />

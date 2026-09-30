@@ -21,23 +21,13 @@ const toGroupLabel = (segment: string) =>
  * first with no header.
  */
 export function buildRailGroups(projects: Project[]): RailGroup[] {
-  const groupNames = [
-    ...new Set(
-      projects
-        .filter((item) => item.id.includes("/"))
-        .map((item) => item.id.split("/")[0]),
-    ),
-  ];
-  return [
-    {
-      label: null,
-      items: projects.filter((item) => !item.id.includes("/")),
-    },
-    ...groupNames.map((name) => ({
-      label: toGroupLabel(name),
-      items: projects.filter(
-        (item) => item.id.includes("/") && item.id.split("/")[0] === name,
-      ),
-    })),
-  ].filter((group) => group.items.length > 0);
+  const groups = Map.groupBy(projects, (item) =>
+    item.id.includes("/") ? item.id.split("/")[0] : null,
+  );
+  return [...groups]
+    .sort(([a], [b]) => Number(a !== null) - Number(b !== null))
+    .map(([name, items]) => ({
+      label: name === null ? null : toGroupLabel(name),
+      items,
+    }));
 }

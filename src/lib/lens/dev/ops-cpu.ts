@@ -7,14 +7,11 @@ import {
 } from "../ops/cpu";
 import { recipeChannels, recipeKnobs, RECIPE_NAMES } from "../ops/host";
 
-// Dev only — dynamically imported. The whole-geometry CPU deform, for
-// dev/inspect.ts: the per-vertex sweep that fills a picking proxy, the decal
-// shrink-wrap binding it reproduces, and the state key its rebuild policy uses.
-// The evaluation itself lives in ops/cpu.ts.
+// Dev only, dynamically imported. Whole-geometry CPU deform for inspect.ts's
+// picking proxies (the per-vertex math lives in ops/cpu.ts).
 
-/** The live op state as one comparable string — every recipe channel and knob.
- *  The mechanism channels are absent: they drive real object transforms, so no
- *  vertex moves in local space because of them. */
+/** Every recipe channel and knob value as one string, to detect changes.
+ *  Mechanism channels move whole objects, not vertices, so they are left out. */
 export function opsStateKey(): string {
   const ch = recipeChannels();
   const kn = recipeKnobs();
@@ -27,14 +24,9 @@ export function opsStateKey(): string {
 }
 
 /**
- * Write `geo`'s vertex positions as the shader places them into `out`
- * (xyz-packed, length 3 × position.count), in the geometry's own mesh-local
- * space — object transforms are not applied.
- *
- * `mesh` is the geometry's owner, read for its mechanism spin tag; omit it and
- * a spin-tagged mesh's vertices land where they would without the
- * counter-rotation. A geometry without the `_op*` frame attributes is copied
- * through seated.
+ * Write `geo`'s vertices as the shader places them into `out` (xyz-packed),
+ * in mesh-local space. `mesh` supplies the spin counter-rotation; without it
+ * that step is skipped. Geometry without an `_op*` frame is copied unchanged.
  */
 export function displaceInto(
   geo: THREE.BufferGeometry,
@@ -43,7 +35,7 @@ export function displaceInto(
 ): void {
   const pos = geo.getAttribute("position");
   const n = pos.count;
-  // The decal shrink-wrap binding (ops/frames.ts): present only on decals.
+  // Decals only: the host triangle each vertex is wrapped onto.
   const wa = geo.getAttribute("_wrapA");
   const wb = geo.getAttribute("_wrapB");
   const wc = geo.getAttribute("_wrapC");
@@ -63,9 +55,7 @@ export function displaceInto(
     }
     const sampleAt = fieldAt(i);
     if (wa && wb && wc) {
-      // The shrink-wrap binding, mirroring host.ts: rebuild this decal vertex
-      // from its host triangle's deformed corners, so picking rides the same
-      // faceted surface the render does.
+      // Rebuild the decal vertex on its deformed host triangle, as host.ts does.
       const c0 = [wa.getX(i), wa.getY(i), wa.getZ(i)];
       const c1 = [wb.getX(i), wb.getY(i), wb.getZ(i)];
       const c2 = [wc.getX(i), wc.getY(i), wc.getZ(i)];

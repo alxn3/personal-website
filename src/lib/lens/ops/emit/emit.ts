@@ -1,12 +1,8 @@
-// THE EMITTER: assembles `opsFold` — the deform chain as one shader function —
-// by running the REAL recipes, gate and pipeline on the source backend: the
-// preamble that derives the ctx from the packed lanes, one uniform-branched
-// block per recipe, the delta form and the hard idle gate. The emitter IS the
-// deform; ops/host.ts binds its WGSL/GLSL output and ops/cpu.ts runs its JS.
-//
-// The `js` dialect is the CPU evaluator (deform.js.ts, run by ops/cpu.ts) and
-// the equivalence gate: it executes, so an emit is checked against NUM over the
-// goldens' own grid. Its ops route to `__`, the NUM backend the host binds.
+// Generates `opsFold`, the whole deform as one function, by running the real
+// recipes on the source-text algebra: a preamble that unpacks the frame, then
+// one block per recipe that runs only when its channel is live. Output is
+// checked in as deform.{wgsl,glsl,js}.ts; the JS one runs on the CPU (ops/cpu.ts)
+// with its math routed to the NUM backend `__`.
 
 import { gate } from "../gate";
 import { makeRecipes } from "../recipes";
@@ -21,61 +17,40 @@ import { srcAlgebra, litOf, type Dialect } from "./algebra-src";
 import { LAYOUT } from "./layout";
 import { WRAP_DIR } from "../house";
 
-/** host.ts's idle edge, kept as a literal rather than imported (host.ts pulls
- *  in three, the emit step must not); `emit.test.ts` (d) pins the two copies. */
+/** Same value as host.ts IDLE_EPS (not imported: host.ts pulls in three). */
 export const IDLE_EPS = 1e-6;
 const HOUSE_FROM = -1;
 const TAU = 6.283185307179586;
 
-/** How each dialect spells the things the algebra does not cover: the input
- *  reads, the mutable accumulators, and the wrapper. */
+/** How each dialect spells the wrapper, the accumulators and the return. */
 interface Shape {
-  /** `p.x` / `p[0]` */
-  comp(v: string, i: number): string;
-  /** `k[2].z` / `k[2][2]` */
-  lane(vec4: number, lane: number): string;
   header(knobVec4s: number): string;
   accum(name: string): string;
-  addTo(name: string, expr: string): string;
-  branch(cond: string): string;
   ret(x: string, y: string, z: string, w: string): string;
 }
 
 const XYZW = ["x", "y", "z", "w"];
+/** `p.x`: every dialect reads inputs through `.xyzw`. */
+const comp = (v: string, i: number): string => `${v}.${XYZW[i]}`;
 
 const SHAPES: Record<Dialect, Shape> = {
   wgsl: {
-    comp: (v, i) => `${v}.${XYZW[i]}`,
-    lane: (q, l) => `k[${q}].${XYZW[l]}`,
     header: (n) =>
       `fn opsFold( p: vec3<f32>, a: vec4<f32>, b: vec4<f32>, y: vec4<f32>, ch: vec4<f32>, k: array<vec4<f32>, ${n}> ) -> vec4<f32> {`,
     accum: (n) => `var ${n} = 0.0;`,
-    addTo: (n, e) => `${n} = ${n} + ${e};`,
-    branch: (c) => `if ( ${c} ) {`,
     ret: (x, y, z, w) => `return vec4<f32>( ${x}, ${y}, ${z}, ${w} );`,
   },
   glsl: {
-    comp: (v, i) => `${v}.${XYZW[i]}`,
-    lane: (q, l) => `k[${q}].${XYZW[l]}`,
-    // `vec4[N] k`, not `vec4 k[N]`: three's GLSLNodeFunction tokenizes a
-    // parameter as `type [count] name`, so the trailing-bracket form makes it
-    // read the size as the NEXT parameter's type and walk off the list.
+    // `vec4[N] k`, not `vec4 k[N]`: three's GLSL parser only reads the former.
     header: (n) =>
       `vec4 opsFold( vec3 p, vec4 a, vec4 b, vec4 y, vec4 ch, vec4[${n}] k ) {`,
     accum: (n) => `float ${n} = 0.0;`,
-    addTo: (n, e) => `${n} = ${n} + ${e};`,
-    branch: (c) => `if ( ${c} ) {`,
     ret: (x, y, z, w) => `return vec4( ${x}, ${y}, ${z}, ${w} );`,
   },
-  // Reads `.xyzw` like the shaders, so a three Vector3/Vector4 is an input as
-  // it stands; writes into an out-param, so a frame allocates nothing.
+  // Reads `.xyzw`, so three vectors work as inputs; writes into `out`.
   js: {
-    comp: (v, i) => `${v}.${XYZW[i]}`,
-    lane: (q, l) => `k[${q}].${XYZW[l]}`,
     header: () => `(function opsFold( p, a, b, y, ch, k, out ) {`,
     accum: (n) => `let ${n} = 0;`,
-    addTo: (n, e) => `${n} = ${n} + ${e};`,
-    branch: (c) => `if ( ${c} ) {`,
     ret: (x, y, z, w) =>
       `out[0] = ${x};\n  out[1] = ${y};\n  out[2] = ${z};\n  out[3] = ${w};\n  return out;`,
   },
@@ -84,39 +59,36 @@ const SHAPES: Record<Dialect, Shape> = {
 /** The emitted deform, as source. */
 export function emitDeform(dialect: Dialect): string {
   const S = SHAPES[dialect];
-  const lit = (n: number) => litOf(dialect, n);
   const top = srcAlgebra(dialect);
   const A = top.A;
 
-  // ── the preamble: the ctx, derived from the packed lanes ───────────────
-  const px = S.comp("p", 0);
-  const py = S.comp("p", 1);
-  const pz = S.comp("p", 2);
-  const t0 = S.comp("a", 0);
-  const R = S.comp("a", 1);
-  const rank01 = S.comp("a", 3);
-  const layerPhase = S.comp("b", 0);
-  const partClass = S.comp("b", 1);
-  const rung = S.comp("b", 2);
-  const yMin = S.comp("y", 0);
-  const yMax = S.comp("y", 1);
-  const depth = S.comp("y", 2);
-  // ops/frames.ts packFlags: `b.w` = axi + 2·adopted; `y.w` is the wink lane,
-  // which only the materials read.
-  const flags = S.comp("b", 3);
+  // ── Preamble: the ctx, unpacked from the frame attributes ─────────────
+  const px = comp("p", 0);
+  const py = comp("p", 1);
+  const pz = comp("p", 2);
+  const t0 = comp("a", 0);
+  const R = comp("a", 1);
+  const rank01 = comp("a", 3);
+  const layerPhase = comp("b", 0);
+  const partClass = comp("b", 1);
+  const rung = comp("b", 2);
+  const yMin = comp("y", 0);
+  const yMax = comp("y", 1);
+  const depth = comp("y", 2);
+  // b.w = axi + 2·adopted (ops/frames.ts packFlags).
+  const flags = comp("b", 3);
   const adopted = A.floor(A.mul(flags, 0.5));
   const axi = A.sub(flags, A.mul(adopted, 2));
 
-  const halfSpan = A.mul(S.comp("a", 2), 0.5);
+  const halfSpan = A.mul(comp("a", 2), 0.5);
   const yMid = A.mul(A.add(yMin, yMax), 0.5);
   const theta = A.atan2(pz, px);
-  // wrapPi: x − TAU·floor((x + π) / TAU)
+  // Wrap to ±π: x − TAU·floor((x + π) / TAU)
   const off0 = A.sub(theta, t0);
   const phi = A.sub(
     off0,
     A.mul(TAU, A.floor(A.div(A.add(off0, Math.PI), TAU))),
   );
-  // the algebra has only sqrt: ops.ts's own `radiusOf` spells the radius so
   const radius = A.sqrt(A.add(A.mul(px, px), A.mul(pz, pz)));
   const d = A.mul(R, A.add(A.mul(phi, HOUSE_FROM), halfSpan));
   const L = A.mul(R, A.mul(halfSpan, 2));
@@ -137,21 +109,20 @@ export function emitDeform(dialect: Dialect): string {
   for (const l of top.lines) out.push(`  ${l}`);
   for (const n of ["dX", "dY", "dZ", "dR"]) out.push(`  ${S.accum(n)}`);
 
-  // ── one uniform-branched block per recipe ───────────────────────────────
+  // ── One branch per recipe ───────────────────────────────────────────────
   LAYOUT.names.forEach((name, i) => {
     const scope = top.fork();
     const B = scope.A;
-    const channel = S.comp("ch", i);
+    const channel = comp("ch", i);
     const knobs = Object.fromEntries(
       LAYOUT.knobNames[name].map((kn) => {
         const l = LAYOUT.knob[name][kn];
-        return [kn, S.lane(l.vec4, l.lane)];
+        return [kn, `k[${l.vec4}].${XYZW[l.lane]}`];
       }),
     ) as Record<string, string>;
 
-    // THE TABLE IS BUILT PER BRANCH, on the fork's algebra: `makeRecipes` binds
-    // `A` into every closure it returns, so a table built on the top emitter
-    // would write `gateSpec`'s temps into the preamble — after it was printed.
+    // Build the recipes on this branch's algebra so their temps land inside
+    // the branch, not in the already-printed preamble.
     const recipe = makeRecipes(B)[name];
     const spec = recipe.gateSpec(knobs);
     const gateAt = (c: string | number) =>
@@ -190,20 +161,22 @@ export function emitDeform(dialect: Dialect): string {
     const items = recipe.build(ctx, knobs);
     validatePipeline(items, name);
     const res = runPipeline(items, seated, frame0, ctx);
-    // The delta form, measured against the authored point itself (law 2). The
-    // branch below IS the hard idle gate (law 3): a skipped recipe adds nothing.
+    // Delta from the authored point; a skipped branch adds nothing.
     const dx = B.sub(res.v.x, px);
     const dy = B.sub(res.v.axial, py);
     const dz = B.sub(res.v.z, pz);
     const dr = res.v.rot;
 
     out.push("");
-    out.push(`  ${S.branch(`${channel} >= ${lit(IDLE_EPS)}`)}`);
+    out.push(`  if ( ${channel} >= ${litOf(dialect, IDLE_EPS)} ) {`);
     for (const l of scope.lines) out.push(`    ${l}`);
-    out.push(`    ${S.addTo("dX", dx)}`);
-    out.push(`    ${S.addTo("dY", dy)}`);
-    out.push(`    ${S.addTo("dZ", dz)}`);
-    out.push(`    ${S.addTo("dR", dr)}`);
+    for (const [acc, e] of [
+      ["dX", dx],
+      ["dY", dy],
+      ["dZ", dz],
+      ["dR", dr],
+    ])
+      out.push(`    ${acc} = ${acc} + ${e};`);
     out.push("  }");
   });
 
@@ -211,23 +184,4 @@ export function emitDeform(dialect: Dialect): string {
   out.push(`  ${S.ret("dX", "dY", "dZ", "dR")}`);
   out.push(dialect === "js" ? "})" : "}");
   return out.join("\n");
-}
-
-/** Statement/temp counts for the emit report — the numbers the pins quote. */
-export function emitStats(dialect: Dialect): {
-  lines: number;
-  transcendentals: Record<string, number>;
-  total: number;
-} {
-  const src = emitDeform(dialect);
-  const hist: Record<string, number> = {};
-  for (const m of src.matchAll(/\b(sin|cos|atan2?|sqrt|pow)\(/g)) {
-    const key = m[1] === "atan" ? "atan2" : m[1];
-    hist[key] = (hist[key] ?? 0) + 1;
-  }
-  return {
-    lines: src.split("\n").length,
-    transcendentals: hist,
-    total: Object.values(hist).reduce((a, b) => a + b, 0),
-  };
 }

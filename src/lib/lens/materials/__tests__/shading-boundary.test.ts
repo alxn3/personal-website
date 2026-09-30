@@ -2,8 +2,8 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-// The shading.ts ↔ shading-bench.ts edge must stay type-only: a value import
-// either way folds the bench's lazy chunk into the homepage's shared bundle.
+// shading.ts and shading-bench.ts may only `import type` each other, or the
+// lazy bench ends up in the homepage bundle.
 
 const src = (rel: string): string =>
   readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
@@ -21,7 +21,7 @@ describe("the shading lazy boundary", () => {
 
   it("shading.ts names the bench with type-only imports", () => {
     expect(valueEdges(swapper, "shading-bench")).toEqual([]);
-    // …and the boundary is still THERE (a rename must not vacuously pass)
+    // …and the type import still exists (so a rename can't pass vacuously)
     expect(swapper).toMatch(/^import type .* from ["']\.\/shading-bench/m);
   });
 

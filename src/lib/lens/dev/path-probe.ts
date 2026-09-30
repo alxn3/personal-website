@@ -3,13 +3,12 @@ import { attribute, uniform, varying, vec4 } from "three/tsl";
 import { opsLocalPosition } from "../ops/host";
 import { FRAME_ATTRS } from "../ops/frames";
 
-// Dev only — dynamically imported. Reads back where the deform shader puts a
-// chosen set of vertices: no math of its own — it runs `opsLocalPosition()` on
-// a throwaway mesh laid out one vertex per pixel of a float render target (one
-// column per sample, one row per timestep; the step index is written to alpha
-// so readback is independent of row order) and reads the pixels back.
+// Dev only, dynamically imported. Reads back where the deform shader puts a set
+// of vertices: it runs `opsLocalPosition()` on a mesh drawn one pixel per sample
+// into a float render target (one column per sample, one row per step) and
+// reads the pixels.
 
-/** One probe point: a real vertex of a real frame-carrying mesh. */
+/** One probe point: a vertex of a mesh that carries the `_op*` frame. */
 export interface ProbeSample {
   mesh: THREE.Mesh;
   /** index into `mesh.geometry`'s position attribute */
@@ -17,32 +16,22 @@ export interface ProbeSample {
 }
 
 export interface PositionProbe {
-  /** columns = probe points */
-  readonly count: number;
-  /** rows = timesteps this probe can hold */
-  readonly rows: number;
   /** Seated (rest) local position of each sample, xyz-packed. */
   readonly seated: Float32Array;
-  /** Compile the probe pipeline. Call once before the first renderRow — a
-   *  WebGPU pipeline that isn't ready yet would render an empty row. */
+  /** Call once before the first renderRow, or the first rows come back empty. */
   compile(): Promise<void>;
-  /** Begin a batch: binds the target and stops the renderer clearing between
-   *  rows. Must be paired with `end()`. */
+  /** Bind the target and stop auto-clear; pair with `end()`. */
   begin(): void;
-  /** Evaluate the deformation graph at the CURRENT uniform/transform state and
-   *  write it into row `row`. */
+  /** Evaluate the deform at the current uniforms into row `row`. */
   renderRow(row: number): void;
   end(): void;
-  /** Read `rowCount` rows back. Returns `[row][sample] → vec3` in each sample's
-   *  own mesh-local space, indexed by the row written into alpha, so a backend
-   *  row flip cannot transpose the result. */
+  /** Read `rowCount` rows as `[row][sample]` xyz in each sample's mesh-local
+   *  space. Throws if any row is missing. */
   read(rowCount: number): Promise<Float32Array>;
   dispose(): void;
 }
 
-// Two triangles per sample, covering exactly one pixel of the target. Points
-// would be cheaper but point size is backend-dependent (WGSL has no
-// gl_PointSize); a quad is portable.
+// Two triangles per sample, covering one pixel (point size is not portable).
 const CORNERS = [
   [0, 0],
   [1, 0],
@@ -52,15 +41,8 @@ const CORNERS = [
   [0, 1],
 ] as const;
 
-/**
- * Build a probe over `samples`, able to hold `rows` timesteps. The geometry
- * copies each sample's seated `position` plus every `_op*` frame attribute the
- * graph reads, taken from ops/frames.ts's FRAME_ATTRS.
- *
- * A sample whose mesh is missing a frame attribute throws: uploading zeros
- * would put `R = 0` — a divisor all over the op algebra — into the graph and
- * hand back plausible-looking garbage.
- */
+/** A probe over `samples` holding `rows` steps. Throws if a sample's mesh
+ *  lacks a frame attribute (zeros would give R = 0, a divisor in the ops). */
 export function createPositionProbe(
   renderer: THREE.WebGPURenderer,
   samples: ProbeSample[],
@@ -79,40 +61,33 @@ export function createPositionProbe(
 
   samples.forEach((s, i) => {
     const geo = s.mesh.geometry;
-    const p = geo.getAttribute("position");
-    for (const { name, size } of FRAME_ATTRS) {
+    const meshName = s.mesh.name || "(unnamed)";
+    const attrs = FRAME_ATTRS.map(({ name, size }) => {
       const a = geo.getAttribute(name);
       if (!a)
         throw new Error(
-          `probe: mesh "${s.mesh.name || "(unnamed)"}" has no ${name} — ` +
+          `probe: mesh "${meshName}" has no ${name} — ` +
             `ops/frames.ts did not run over it, and probing it with zeros ` +
             `would feed the op graph R = 0 (a divisor)`,
         );
       if (a.itemSize !== size)
         throw new Error(
-          `probe: mesh "${s.mesh.name || "(unnamed)"}" has ${name} with ` +
+          `probe: mesh "${meshName}" has ${name} with ` +
             `itemSize ${a.itemSize}, expected ${size}`,
         );
-    }
-    const px = p.getX(s.vertex);
-    const py = p.getY(s.vertex);
-    const pz = p.getZ(s.vertex);
-    seated[i * 3] = px;
-    seated[i * 3 + 1] = py;
-    seated[i * 3 + 2] = pz;
+      return { name, size, a };
+    });
+    const p = geo.getAttribute("position");
+    const xyz = [p.getX(s.vertex), p.getY(s.vertex), p.getZ(s.vertex)];
+    seated.set(xyz, i * 3);
     for (let c = 0; c < CORNERS.length; c++) {
       const v = i * CORNERS.length + c;
-      position[v * 3] = px;
-      position[v * 3 + 1] = py;
-      position[v * 3 + 2] = pz;
+      position.set(xyz, v * 3);
       col[v] = i;
-      corner[v * 2] = CORNERS[c][0];
-      corner[v * 2 + 1] = CORNERS[c][1];
-      for (const { name, size } of FRAME_ATTRS) {
-        const a = geo.getAttribute(name);
+      corner.set(CORNERS[c], v * 2);
+      for (const { name, size, a } of attrs)
         for (let k = 0; k < size; k++)
           extra[name][v * size + k] = a.getComponent(s.vertex, k) as number;
-      }
     }
   });
 
@@ -124,14 +99,12 @@ export function createPositionProbe(
     geometry.setAttribute(name, new THREE.BufferAttribute(extra[name], size));
   }
 
-  // Target width padded to a multiple of 16 texels: WebGPU requires a
-  // texture→buffer copy's bytesPerRow to be a multiple of 256 and three hands
-  // the readback back with that padding in it. 16 × rgba32float = 256 bytes.
+  // Width padded to 16 texels (256 bytes of rgba32float), WebGPU's readback
+  // row alignment.
   const texW = Math.ceil(count / 16) * 16;
 
   const uRow = uniform(0);
-  // TSL attribute()/uniform() nodes carry math methods the .d.ts doesn't
-  // declare — the same `any` escape hatch ops/host.ts uses.
+  // TSL node math methods are missing from the typings.
   const c = attribute("_probeCol", "float") as any;
   const k = attribute("_probeCorner", "vec2") as any;
   const row = uRow as any;
@@ -142,20 +115,17 @@ export function createPositionProbe(
   material.depthTest = false;
   material.depthWrite = false;
   material.side = THREE.DoubleSide;
-  // vertexNode replaces the whole model-view-projection chain: this mesh is a
-  // pixel layout, not something in the scene.
+  // Place each sample straight in clip space (no camera transform).
   material.vertexNode = vec4(ndcX, ndcY, 0, 1);
-  // varying() forces the deformation to run in the vertex stage, where the real
-  // material runs it; alpha carries the row (offset by 1, so the cleared value 0
-  // reads as "never written") and makes readback self-describing.
+  // varying() keeps the deform in the vertex stage, as in the real material.
+  // Alpha stores row + 1, so a cleared pixel (0) reads as "never written".
   material.fragmentNode = vec4(varying(opsLocalPosition()) as any, row.add(1));
 
   const mesh = new THREE.Mesh(geometry, material);
   mesh.frustumCulled = false;
   const probeScene = new THREE.Scene();
   probeScene.add(mesh);
-  // Any camera works — vertexNode discards the MVP chain entirely — but the
-  // renderer still calls updateProjectionMatrix on it, which bare Camera lacks.
+  // Unused by vertexNode, but the renderer needs a real camera.
   const probeCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 
   const target = new THREE.RenderTarget(texW, rows, {
@@ -171,13 +141,9 @@ export function createPositionProbe(
   let prevAutoClear = true;
 
   return {
-    count,
-    rows,
     seated,
     async compile() {
-      // The target must be bound while compiling: compileAsync builds the
-      // pipeline for the currently bound colour format, and a canvas pipeline
-      // is not the one a float target needs — the first rows come back empty.
+      // Compile against the float target's format, not the canvas's.
       const prev = renderer.getRenderTarget();
       renderer.setRenderTarget(target);
       await renderer.compileAsync(probeScene, probeCamera);
@@ -188,9 +154,7 @@ export function createPositionProbe(
       prevAutoClear = renderer.autoClear;
       renderer.setRenderTarget(target);
       renderer.autoClear = false;
-      // Clear once so anything the batch does not write reads as alpha 0 —
-      // "no row here".
-      renderer.clear();
+      renderer.clear(); // unwritten pixels read as alpha 0
     },
     renderRow(r) {
       uRow.value = r;
@@ -201,9 +165,8 @@ export function createPositionProbe(
       renderer.autoClear = prevAutoClear;
     },
     async read(rowCount) {
-      // Always transfer the full target: a partial read would depend on which
-      // end of the texture the backend calls row 0. Alpha then says which
-      // timestep each pixel belongs to, and unwritten pixels drop out.
+      // Read the whole target and place each pixel by the row in its alpha,
+      // so a backend's row order does not matter.
       const raw = (await renderer.readRenderTargetPixelsAsync(
         target,
         0,
@@ -215,8 +178,8 @@ export function createPositionProbe(
       const written = new Uint8Array(rowCount);
       for (let i = 0; i < rows * texW; i++) {
         const sample = i % texW;
-        if (sample >= count) continue; // alignment padding, never drawn
-        const r = Math.round(raw[i * 4 + 3]) - 1; // the row is IN the pixel
+        if (sample >= count) continue; // alignment padding
+        const r = Math.round(raw[i * 4 + 3]) - 1;
         if (r < 0 || r >= rowCount) continue;
         written[r] = 1;
         const o = (r * count + sample) * 3;
@@ -224,8 +187,6 @@ export function createPositionProbe(
         out[o + 1] = raw[i * 4 + 1];
         out[o + 2] = raw[i * 4 + 2];
       }
-      // A row that never arrived would read as the origin and poison every
-      // derived number, so refuse to hand back a partial result.
       const missing = [...written].flatMap((w, r) => (w ? [] : [r]));
       if (missing.length) {
         throw new Error(

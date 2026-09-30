@@ -10,8 +10,7 @@ import { Icon } from "astro-icon/components";
   x-data
   x-on:click="$store.theme.toggle()"
 >
-  <!-- icon visibility is driven by the .dark class via CSS, so the
-       right icon paints immediately with no flash -->
+  <!-- CSS picks the icon from html.dark, so it never flashes -->
   <Icon name="lucide:sun" class="size-4 dark:hidden" aria-hidden="true" />
   <Icon
     name="lucide:moon"

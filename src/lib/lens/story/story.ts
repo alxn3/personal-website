@@ -1,87 +1,88 @@
-// THE STORY TABLE — the single source of pacing for the scroll-jacked lens
-// story. Everything downstream (track height, each scene's normalized range
-// `p`, camera path, mechanism curves, caption bands, stage tints, the HUD) is
-// derived from STORY below, so a scene edit here is the whole edit.
-//
-// SCOPE: story STRUCTURE only — beat order, durations, camera poses,
-// tints, rail flags, titles. Mechanism envelope tuning lives in
-// story/envelopes.ts, cinematic implementation in story/cinematics.ts, overlay
-// content in components/LensStory.astro. Don't consolidate those in here.
+// The story table: the single source of pacing for the scroll-driven lens
+// story. Track height, each scene's scroll range, the camera path, caption
+// bands, stage tints and the HUD all derive from STORY below.
+// Structure only: envelopes live in envelopes.ts, cinematic extras in
+// cinematics.ts, caption content in components/LensStory.astro.
 
 import { smoothstep } from "../core/math";
 import { FLY } from "../optics/fly-core";
 
-/** The story's ORBIT RADIUS, world units: every scene's `pos` is a direction in
- *  units of this, and the park shifts (`xs`, `ys`) are in the same unit. */
+/** The camera's orbit radius, world units. Pose `pos`, `xs` and `ys` are in
+ *  units of this. */
 export const STORY_R = 11;
 
-/** THE REVEAL ENDS HERE — a fraction through `rewrap`: the frame the lens' last
- *  leg home opens (story/fly.ts flySeatAt). It must sit past the shell's
- *  crossfade in (rewrap-local [0.06, 0.16]). */
-export const REVEAL_END_F = 0.25;
+/** Rewrap fraction where the reveal ends and the lens' last leg home starts
+ *  (fly.ts flySeatAt). Must sit past the shell's crossfade (rewrap 0.06–0.16). */
+const REVEAL_END_F = 0.25;
 
-/** Where the rewrap's camera move leaves, as a fraction of the scene. The
- *  camera must be dead still through the reveal crossfade (story/fly.ts
- *  flyRevealAt's far edge) and then creep off zero rate. */
+/** Rewrap fraction where the camera starts pulling back, after holding still
+ *  through the reveal crossfade. */
 export const CAM_RELEASE_F = 0.16;
 
-/** THE DIVE'S LAST FRAME — a fraction through `rewrap`, where story/fly.ts hands
- *  the scene back. Here, not in fly.ts, because the dust law in
- *  story/envelopes.ts needs it and fly.ts is lazy. */
-export const FLY_EXIT_F = 0.58;
+/** Rewrap fraction of the dive's last frame. Lives here because the dust law
+ *  in envelopes.ts needs it and fly.ts is lazy. */
+const FLY_EXIT_F = 0.58;
 
-/** Where the last of the sky is exactly gone — a fraction through `rewrap`:
- *  the far edge of the starfield's fade (story/fly.ts skyOutAt), the frame the
- *  fov hand-back may open (story/fly.ts FOV_BACK) and the frame the sky's turn
- *  may end (story/reveal.ts TURN_P1). It must sit past REVEAL_END_F. Here
- *  because fly.ts is lazy and reveal.ts homepage-safe: they cannot import each
- *  other. */
-export const SKY_OUT_END_F = 0.32;
+/** Rewrap fraction where the sky has fully faded: the fov hand-back may start
+ *  (fly.ts FOV_BACK) and the sky's turn must end (reveal.ts TURN_P1). Must sit
+ *  past REVEAL_END_F. */
+const SKY_OUT_END_F = 0.32;
 
 export interface Pose {
-  pos: [number, number, number]; // camera direction (scaled by the scene radius)
+  /** camera direction, in units of STORY_R */
+  pos: [number, number, number];
   fov: number;
   up: [number, number, number];
-  ortho: number; // 1 = flatten to an orthographic elevation on the HOLD (or over
-  // the scene's own `orthoIn`/`orthoOut` window); 0 = perspective
-  xs: number; // horizontal lens-park: >0 shoves the lens left (caption sits right)
-  ys?: number; // vertical look-shift along camera-up: a 2D reframe on a detail
-  target?: [number, number, number]; // orbit centre / look-at, WORLD units,
-  // default [0,0,0] (lens centre is the origin; optical axis = world X, front
-  // at +X). Shifts the whole orbit sphere. Unlike ys, it moves the 3D pivot.
-  wide?: number; // the frame width this scene needs, in units of its own
-  // on-axis half-height; the camera pulls back until it fits. Default 1 = never
-  // pulls back. Applied in applyStoryFraming, so it scales the pose.
-  near?: number; // portrait push-in: the orbit offset scales by
-  // lerp(near, 1, parkScale), so it only exists on narrow frames. Default 1.
-  lift?: number; // portrait lift, a fraction of the canvas height, + = up;
-  // gated by (1 − parkScale) like `near`. Default 0.06.
+  /** 1 = flatten to an orthographic elevation on the hold (or over the
+   *  scene's `orthoIn`/`orthoOut`); 0 = perspective */
+  ortho: number;
+  /** horizontal park: > 0 shoves the lens left (caption on the right) */
+  xs: number;
+  /** vertical shift along camera-up: a 2D reframe on a detail */
+  ys?: number;
+  /** orbit centre / look-at, world units; default the origin (lens centre,
+   *  optical axis = world X, front at +X). Unlike `ys` it moves the 3D pivot. */
+  target?: [number, number, number];
+  /** frame width the scene needs, in its own half-heights; narrower
+   *  viewports pull the camera back to fit. Default 1. */
+  wide?: number;
+  /** portrait push-in: the orbit offset scales by lerp(near, 1, parkScale).
+   *  Default 1. */
+  near?: number;
+  /** portrait lift, a fraction of canvas height (+ = up), gated like `near`.
+   *  Default 0.06. */
+  lift?: number;
 }
 
-// Scene CONTENT is not in this table — overlay markup is authored in
-// components/LensStory.astro via <LensSceneContent scene="…">, keyed by id.
+// Caption markup is not here: it lives in components/LensStory.astro via
+// <LensSceneContent scene="…">, keyed by id.
 export interface StoryScene {
   id: string;
-  title: string; // display name — the HUD readout ("SCN 05 / LIGHT PATH") and the rail label
-  rail?: boolean; // show this scene on the scene rail (bottom-right progress dots)
-  hold: number; // duration weight, ≈ screenfuls of scroll
-  transit: number; // 0..1 of the scene spent easing the camera IN from the previous pose
-  cam: Pose; // settle pose (the parked "hold")
-  bg: [number, number, number]; // stage tint on the hold (dark theme)
-  bgLight: [number, number, number]; // stage tint on the hold (light theme — warm paper family)
-  // The flatten's own window, scene-local fractions, when the flat frame is not
-  // the park: either one present replaces story/camera.ts's default parked
-  // schedule. An omitted side means the flatten arrives already open or never
-  // closes inside the scene. Both need `cam.ortho` > 0.
+  /** HUD readout and scene-rail label */
+  title: string;
+  /** show a dot on the scene rail */
+  rail?: boolean;
+  /** duration weight, ≈ screenfuls of scroll */
+  hold: number;
+  /** fraction of the scene spent easing the camera in from the previous pose */
+  transit: number;
+  /** the pose the camera settles into */
+  cam: Pose;
+  /** stage tint, dark theme */
+  bg: [number, number, number];
+  /** stage tint, light theme */
+  bgLight: [number, number, number];
+  /** The flatten's own window, scene-local fractions, replacing camera.ts's
+   *  default. An omitted side is already open / never closes. Needs `cam.ortho`. */
   orthoIn?: [number, number];
   orthoOut?: [number, number];
-  camHold?: number; // fraction of THIS scene's range the camera move waits
-  // before starting — it opens the move late. Validated below: under `transit`.
-  capEnd?: number; // scene-local fraction where the caption's band ends early,
-  // instead of running CAPTION_PAD past the scene. Validated: within (transit, 1].
+  /** scene fraction the camera waits before moving; must be below `transit` */
+  camHold?: number;
+  /** scene fraction where the caption band ends early; within (transit, 1] */
+  capEnd?: number;
 }
 
-// --- the story --------------------------------------------------------------
+// --- the story ---------------------------------------------------------------
 export const STORY: StoryScene[] = [
   {
     id: "hero",
@@ -90,8 +91,8 @@ export const STORY: StoryScene[] = [
     transit: 0,
     bg: [29, 26, 20],
     bgLight: [244, 240, 230],
-    // dead-front elevation, lens right; on a phone pushed in and dropped under
-    // the top-anchored intro type
+    // flat front view, lens on the right; on a phone pushed in and dropped
+    // below the intro text
     cam: {
       pos: [1.3, 0, 0],
       fov: 30,
@@ -107,36 +108,32 @@ export const STORY: StoryScene[] = [
     title: "ZOOM",
     rail: true,
     hold: 1.35,
-    // long, so scenes 1→3 read as one flow; the ortho flatten still reaches 1
+    // long, so the first three scenes read as one flow
     transit: 0.6,
     bg: [29, 26, 20],
     bgLight: [244, 240, 230],
-    cam: { pos: [0, 0, 1.3], fov: 32, up: [0, 1, 0], ortho: 1, xs: -0.24 }, // side profile (horizontal)
+    // flat side profile
+    cam: { pos: [0, 0, 1.3], fov: 32, up: [0, 1, 0], ortho: 1, xs: -0.24 },
   },
   {
     id: "peel",
     title: "PEEL",
     rail: true,
-    // long enough to play both the departure (story/envelopes.ts CARDS_APART)
-    // and the wink behind it (story/peelcards.ts WINK_SPAN)
+    // room for the layers flying off and fading out
     hold: 1.5,
-    // the camera is still swinging round while the sides come off, then holds
-    // the rear-on pose the scene hands over on.
+    // the camera is still swinging round while the sides come off
     transit: 0.66,
     bg: [26, 23, 17],
     bgLight: [240, 236, 226],
-    // One arc, no waypoints, spending the chapter's whole azimuth: from the
-    // zoom's side profile round to DEAD ASTERN (the dive's own azimuth), which
-    // every scene from here to the dive's park holds. The story's furthest
-    // pull-back, so the expansion's flower reads as one.
+    // one arc from the side profile round to directly behind the lens, where
+    // every scene up to the dive stays; the story's widest shot
     cam: {
       pos: [-2.2774, 0.6328, 0],
       fov: 32,
       up: [0, 1, 0],
       ortho: 0,
       xs: -0.28,
-      // a phone gets the core at a third of the width; the cloud's outer pieces
-      // clip the sides
+      // on a phone the core fills a third of the width; outer pieces clip
       near: 0.65,
     },
   },
@@ -148,10 +145,8 @@ export const STORY: StoryScene[] = [
     transit: 0.5,
     bg: [26, 23, 17],
     bgLight: [240, 236, 226],
-    // The turn's hold: the push back in off the peel's pull-back, onto the bare
-    // mechanism, on the peel's own rear azimuth. It must hold the card shell's
-    // swell (story/peelcards.ts SHELL_R) for the whole scene, since a card
-    // passes the camera on every revolution. xs POSITIVE = caption right.
+    // pushes back in on the bare mechanism from behind, caption on the right;
+    // must keep the orbiting cards (peelcards.ts SHELL_R) in frame
     cam: {
       pos: [-1.4436, 0.3, 0],
       fov: 32,
@@ -168,11 +163,9 @@ export const STORY: StoryScene[] = [
     transit: 0.3,
     bg: [30, 35, 24],
     bgLight: [238, 242, 229],
-    // Side elevation of the STANDING lens (story/envelopes.ts uprightAt) on the
-    // bare mechanism, at the chapter's own azimuth, looking slightly down —
-    // the pitch the fly-through's approach gives back. `target` pivots the
-    // orbit at the focus rig so the zoom lands on the mechanism. Don't pull
-    // |pos| much below ~1.0: the depth fade shows the chassis through itself.
+    // side view of the standing lens, looking slightly down, orbiting the focus
+    // rig. Much closer than |pos| ~1.0 and the depth fade shows the chassis
+    // through itself.
     cam: {
       pos: [-1.0024, 0.34, 0],
       fov: 26,
@@ -180,8 +173,7 @@ export const STORY: StoryScene[] = [
       ortho: 0,
       xs: 0.1,
       ys: 0.03,
-      // the tip carries the focus rig round with the lens, from world x ≈ −1 to
-      // y ≈ −1
+      // the focus rig, which the tip carries from x ≈ −1 to y ≈ −1
       target: [0, -1.0, 0],
     },
   },
@@ -189,20 +181,17 @@ export const STORY: StoryScene[] = [
     id: "flythrough",
     title: "FLY-THROUGH",
     rail: true,
-    // the 0.5 approach below plus the 1.8 the DIVE itself scrubs over
+    // a 0.5 approach, then 1.8 for the dive itself
     hold: 2.3,
-    // The approach IS this scene's transit, and the dive starts when it ends
-    // (DIVE_P0 below reads it). One tilt up into the bore, the lens meeting it
-    // on UPRIGHT's fall; then the camera PARKS and the LENS travels
-    // (SceneHandle.setLensDolly) from here to the sky's end.
+    // the approach tilts up into the bore; then the camera parks and the lens
+    // moves (SceneHandle.setLensDolly). DIVE_P0 is where it ends.
     transit: 0.5 / 2.3,
-    // the caption leaves before the throat, so the climax carries no type
+    // the caption leaves before the dive
     capEnd: 0.5,
     bg: [12, 11, 8],
     bgLight: [231, 227, 215],
-    // THE DIVE'S PARK, exact: |pos| × STORY_R = FLY.distFar is the pose the
-    // dive's own path (optics/fly-core flyPose) starts from, so the model's
-    // dolly is 0 on the dive's first frame.
+    // the dive's starting pose exactly (|pos| × STORY_R = FLY.distFar), so the
+    // lens dolly is 0 on the dive's first frame
     cam: {
       pos: [-FLY.distFar / STORY_R, 0, 0],
       fov: FLY.fovFar,
@@ -219,9 +208,8 @@ export const STORY: StoryScene[] = [
     transit: 0,
     bg: [10, 9, 7],
     bgLight: [238, 234, 222],
-    // Sky scene — holds the fly-through's parked pose exactly (transit 0 must
-    // not snap). The lens is parked at its dolly's full reach, behind this
-    // camera: there is nothing in frame but sky.
+    // holds the dive's parked pose; the lens is behind the camera, so the frame
+    // is all sky
     cam: {
       pos: [-FLY.distFar / STORY_R, 0, 0],
       fov: FLY.fovFar,
@@ -234,14 +222,12 @@ export const STORY: StoryScene[] = [
     id: "trails",
     title: "TRAILS",
     rail: true,
-    // long, because the sky turns a half revolution here
-    // (optics/star-trails.ts TRAIL_SWEEP_MAX) ramped over most of the scene
+    // long, because the sky turns half a revolution here
     hold: 1.7,
     transit: 0,
     bg: [10, 9, 7],
     bgLight: [238, 234, 222],
-    // still the same parked pose, and the pose the ending's first move leaves
-    // from
+    // same parked pose; the ending's first move leaves from here
     cam: {
       pos: [-FLY.distFar / STORY_R, 0, 0],
       fov: FLY.fovFar,
@@ -253,32 +239,19 @@ export const STORY: StoryScene[] = [
   {
     id: "rewrap",
     title: "REWRAP",
-    // the trails→reveal hand-over lives in this scene's early fractions and
-    // needs room
+    // the hand-over from the sky back to the lens needs room
     hold: 1.9,
-    // the pull-back runs almost the whole scene and then parks, waiting out the
-    // reveal's crossfade (CAM_RELEASE_F) before it creeps off zero rate
+    // a long pull-back that waits out the reveal crossfade first
     transit: 0.92,
     camHold: CAM_RELEASE_F,
-    // The ending goes flat, and stays flat across the boundary into the descent
-    // (the capsOn row's `orthoOut` is the other half). It may not open before
-    // the dive's fov hand-back is wholly released (story/fly.ts FOV_BACK) —
-    // the flatten IS a fov change, and would scale what the other owner draws.
+    // the frame goes flat and stays flat into the next scene (see its
+    // `orthoOut`); may not start before the dive's fov hand-back has finished
     orthoIn: [0.52, 0.8],
     bg: [22, 20, 14],
     bgLight: [238, 234, 222],
-    // Still on the dive's axis — the sky's parked direction, pulled back and
-    // nothing else: no azimuth, no up-vector turn, no waypoints. The reach
-    // frames the unwrapped cloud at its widest.
-    //
-    // The target sits up the bore, and its distance is the FLATTEN'S MATCHING
-    // PLANE: the flatten holds `dist · tan(fov/2)` constant (story/camera.ts
-    // `back`), so content at the target plane keeps its screen size exactly.
-    // Placed at the cloud's outermost pieces, so the projection change does not
-    // read as a zoom. On this leg the shift is on-axis, hence invisible.
-    //
-    // `wide` pulls the camera back until the cloud fits a portrait frame, which
-    // is the binding constraint here; landscape is untouched.
+    // pulls straight back along the dive's axis to frame the exploded pieces at
+    // their widest. `target` sits at the outermost pieces, so going flat keeps
+    // them the same size on screen; `wide` fits them on a portrait screen.
     cam: {
       pos: [-2.8, 0, 0],
       fov: 30,
@@ -290,33 +263,21 @@ export const STORY: StoryScene[] = [
     },
   },
   {
+    // the id stays `capsOn` for the markup and /lens; the beat is the bloom
     id: "capsOn",
-    // The id stays `capsOn` though the beat is the BLOOM: the id is a contract
-    // (REQUIRED_IDS below, the caption slot in components/LensStory.astro,
-    // /lens's preview span). Only the display label differs.
     title: "BLOOM",
-    // long enough for five beats: the first pieces leaving, the quarter-turn,
-    // the fall, the rock (story/envelopes.ts ROCK), and the bloom (ROSE_PULSE)
+    // pieces leaving, the quarter-turn, the fall, the wobble and the bloom
     hold: 2.2,
-    // Flat and still → turn → still. The camera holds the rewrap's face-on park
-    // while the flatten drains, then makes ONE quarter-orbit onto the lens'
-    // side — the ending's only camera move, rolling the up-vector +Y → +X. The
-    // hold outlasts the flatten's blend, so the projection is wholly back
-    // before the turn opens.
+    // holds still while the flatten fades, then one quarter-orbit onto the
+    // lens' side, rolling camera-up from +Y to +X
     camHold: 0.11,
     transit: 0.44,
-    // the other half of the rewrap's `orthoIn`: the flat frame arrives already
-    // open and the depth comes back over the descent's first pieces
+    // the rewrap's flatten arrives open and fades over the first falling pieces
     orthoOut: [0.02, 0.1],
     bg: [29, 26, 20],
     bgLight: [244, 240, 230],
-    // The frame the bloom plays in, and the page's hand-off frame: upright,
-    // centred, far enough out to hold the whole column. No waypoints — one 90°
-    // leg at a near-constant radius off the rewrap's park, swinging to the
-    // lens' −Z side. The distance is portrait's: any nearer and the mid-fall
-    // spread clips a phone's one-half-height-wide frame.
-    // `near` is the portrait-only way in; `lift` 0 centres the bloom between
-    // the nav and the caption
+    // the final frame: the upright lens centred, far enough out that the
+    // falling pieces fit a phone; `lift` 0 centres the bloom
     cam: {
       pos: [0, 0, -2.0],
       fov: 30,
@@ -329,11 +290,9 @@ export const STORY: StoryScene[] = [
   },
 ];
 
-// --- authoring validation ----------------------------------------------------
-// Table invariants, checked at module load so a bad edit fails at boot.
+// --- validation, run at module load so a bad edit fails at boot --------------
 
-// Scene ids consumers resolve BY NAME — story/camera.ts, story/envelopes.ts,
-// story/reveal.ts and pages/lens.astro's preview span.
+// Scene ids other modules look up by name.
 const REQUIRED_IDS = [
   "hero",
   "zoom",
@@ -368,15 +327,12 @@ export function validateStory(story: StoryScene[]): void {
         throw new Error(
           `lens story: scene "${sc.id}" camHold must be within [0,1) (got ${sc.camHold})`,
         );
-      // the hold eats the move's own window, so a hold at or past `transit`
-      // leaves no move at all
       if (sc.camHold >= sc.transit)
         throw new Error(
           `lens story: scene "${sc.id}" camHold (${sc.camHold}) must be below its transit (${sc.transit}) — the hold opens the move late, it does not replace it`,
         );
     }
     if (sc.capEnd !== undefined) {
-      // a caption may leave early, never before its own camera move has landed
       if (!(sc.capEnd > sc.transit && sc.capEnd <= 1))
         throw new Error(
           `lens story: scene "${sc.id}" capEnd (${sc.capEnd}) must lie within (transit ${sc.transit}, 1]`,
@@ -402,7 +358,7 @@ export function validateStory(story: StoryScene[]): void {
     throw new Error(
       `lens story: missing required scene id(s) ${missing.map((id) => `"${id}"`).join(", ")} — consumers resolve these by name (see REQUIRED_IDS); rename the scene there too, or keep the id`,
     );
-  // story/envelopes.ts takes RANGES[0] positionally for the scroll-cue fade.
+  // envelopes.ts reads RANGES[0] as the hero
   if (story[0].id !== "hero")
     throw new Error(
       `lens story: the first scene must be "hero" (got "${story[0].id}") — story/envelopes.ts reads RANGES[0] positionally`,
@@ -410,14 +366,9 @@ export function validateStory(story: StoryScene[]): void {
 }
 validateStory(STORY);
 
-// --- derived pacing ---------------------------------------------------------
-// Track length is the total duration in screenfuls → svh, clamped at both ends.
-//
-// THE UNIT LAW: svh for all story GEOMETRY (this file, the caption bands, the
-// sticky slots in LensSceneContent.astro), since dvh re-lays-out the track when
-// a mobile toolbar collapses. The two deliberate dvh survivors are the pinned
-// stage (LensStory.astro's `h-dvh`, which is what hero-driver subtracts to form
-// p's denominator) and the caption fade-IN anchors.
+// --- track length --------------------------------------------------------------
+// Total hold in screenfuls → svh, clamped in px. Story geometry uses svh, not
+// dvh, so a collapsing mobile toolbar does not re-lay-out the track.
 export const TOTAL_HOLD = STORY.reduce((s, sc) => s + sc.hold, 0);
 const PER_SCREENFUL_MIN_PX = 460;
 const PER_SCREENFUL_MAX_PX = 1000;
@@ -432,7 +383,7 @@ export interface SceneRange {
   p1: number;
 }
 
-/** Each scene's normalized scroll range [p0, p1), cumulative over durations. */
+/** Each scene's scroll range [p0, p1), in proportion to its hold. */
 export const RANGES: SceneRange[] = (() => {
   const out: SceneRange[] = [];
   let acc = 0;
@@ -450,50 +401,48 @@ export const rangeOf = (id: string): SceneRange => {
   return r;
 };
 
-// --- caption bands ----------------------------------------------------------
-// The HTML layout of the hero's captions: each captioned scene gets a band
-// element in the scroll track (components/LensSceneContent.astro) with a sticky
-// caption inside, so captions appear, pin and leave by DOCUMENT POSITION.
-//
-// The geometry is SCROLL space, NOT a percentage of track: p = scrollY /
-// (track − 100svh), so a band for [a, b] starts a·(100% − 100svh) down and is
-// (b − a) of that plus one viewport of pin room. Sizing as a plain percentage
-// of the track puts every band p·100svh late.
+/** The index of the scene containing p; the last scene past the end. */
+export const sceneIndexAt = (p: number): number => {
+  for (let k = 0; k < RANGES.length; k++) if (p < RANGES[k].p1) return k;
+  return RANGES.length - 1;
+};
 
-/** Overlap pad on each side of a scene's range, in normalized story p — the
- *  slight lead-in/lead-out that makes neighbouring captions cross-fade. */
+// --- caption bands -------------------------------------------------------------
+// Each captioned scene gets a band element in the scroll track
+// (LensSceneContent.astro) with a sticky caption inside. Band geometry is in
+// scroll space, p = scrollY / (track − 100svh), not a percentage of the track.
+
+/** Overlap on each side of a scene's range, in p, so neighbouring captions
+ *  cross-fade. */
 export const CAPTION_PAD = 0.01;
 
-/** The track's SCROLLABLE length, as CSS: everything but the viewport the stage
- *  is pinned to. p = scrollY / this. */
+/** The track's scrollable length as CSS (p = scrollY / this). */
 export const TRACK_SCROLL_CSS = `calc(${TRACK_HEIGHT_CSS} - 100svh)`;
 
-/** How long a caption crossfade runs, in scroll pixels — the bands' overlap.
- *  LensStory.astro publishes it as --cap-fade on #lens-track. */
+/** A caption crossfade's length in scroll px; published as --cap-fade. */
 export const CAPTION_FADE_CSS = `calc(${2 * CAPTION_PAD} * ${TRACK_SCROLL_CSS})`;
 
 export interface CaptionBand {
   id: string;
-  /** band edges in normalized story p (the scene's range, padded) */
+  /** band edges in p */
   a: number;
   b: number;
-  /** the band as a CSS box on the track — see the scroll-space note above */
+  /** the band as a CSS box on the track */
   top: string;
   height: string;
-  /** this band ends AT the track end: nothing follows it to hand over to */
+  /** the band runs to the end of the track */
   final: boolean;
-  /** `final` as an Astro attribute value: Astro stringifies a `false` on a
-   *  data-* attribute rather than dropping it, so call sites read this. */
+  /** `final` for an Astro attribute (Astro renders `false` rather than
+   *  dropping it) */
   finalAttr: true | undefined;
 }
 
-/** `f` of the track's scrollable length, as a CSS length — TRACK_SCROLL_CSS
- *  expressed against the band's absolutely-positioned containing block. */
+/** Fraction `f` of the track's scrollable length, against the band's
+ *  containing block. */
 const scroll = (f: number) => `${f.toFixed(6)} * (100% - 100svh)`;
 
 export const CAPTION_BANDS: CaptionBand[] = RANGES.map(({ scene, p0, p1 }) => {
   const a = Math.max(0, p0 - CAPTION_PAD);
-  // the final scene's band runs to the END of the track — nothing follows it
   const final = p1 >= 0.999;
   const b = final
     ? 1
@@ -511,8 +460,8 @@ export const CAPTION_BANDS: CaptionBand[] = RANGES.map(({ scene, p0, p1 }) => {
   };
 });
 
-/** The band a scene id owns. Throws, so an overlay block naming a missing
- *  scene is a BUILD error (the Astro template calls this in frontmatter). */
+/** The band for a scene id. Throws, so a caption naming a missing scene fails
+ *  the build. */
 export const bandOf = (id: string): CaptionBand => {
   const b = CAPTION_BANDS.find((band) => band.id === id);
   if (!b)
@@ -531,37 +480,34 @@ export const atFrac = (r: SceneRange, f: number): number => {
   return r.p0 + (r.p1 - r.p0) * f;
 };
 
-/** A scene's HOLD CENTRE — the settle region's midpoint, past the camera
- *  transit: where a reader parked in the scene rests. */
+/** The middle of a scene's settled part (after the camera transit): where a
+ *  reader parked in the scene rests. */
 export const holdCentreOf = (r: SceneRange): number =>
   atFrac(r, (r.scene.transit + 1) / 2);
 
-/** REVEAL_END_F as an absolute story p — the form story/fly.ts's windows use.
- *  Declared after `atFrac` because it calls it at module load. */
+/** Where the reveal ends, as absolute p. */
 export const REVEAL_END = atFrac(rangeOf("rewrap"), REVEAL_END_F);
 
-/** SKY_OUT_END_F as an absolute story p. */
+/** Where the sky has fully faded, as absolute p. */
 export const SKY_OUT_END = atFrac(rangeOf("rewrap"), SKY_OUT_END_F);
 
-/** FLY_EXIT_F as an absolute story p — the far edge of the fly span. */
+/** The dive's last frame, as absolute p. */
 export const FLY_EXIT_END = atFrac(rangeOf("rewrap"), FLY_EXIT_F);
 
-/** THE DIVE'S FIRST FRAME as an absolute story p: the end of the `flythrough`
- *  scene's camera approach, where the camera parks and the LENS starts moving.
- *  Also the body-fade channel's writer seam — hero-driver below, story/fly.ts
- *  above, and the two tiles must meet EXACTLY. */
+/** The dive's first frame: the end of the flythrough's camera approach, where
+ *  the camera parks and the lens starts moving. The body fade passes from the
+ *  driver to fly.ts exactly here. */
 const FLY_RANGE = rangeOf("flythrough");
 export const DIVE_P0 = atFrac(FLY_RANGE, FLY_RANGE.scene.transit);
 
-/** A point on the story timeline: fraction `f` through the named scene. */
+/** A point on the timeline: fraction `f` through the named scene. */
 export type StoryPoint = [id: string, f: number];
-/** A smoothstep window: both edges in ONE scene (`[id, f0, f1]`), or each edge
- *  in its OWN scene (`[[idA, f0], [idB, f1]]` — e.g. a scrub that runs from one
- *  scene into the next). */
+/** A smoothstep window: both edges in one scene (`[id, f0, f1]`), or each edge
+ *  in its own scene (`[[idA, f0], [idB, f1]]`). */
 export type StoryWindow =
   [id: string, f0: number, f1: number] | [StoryPoint, StoryPoint];
 
-/** A window's absolute story p edges. */
+/** A window's edges in absolute p. */
 export const windowEdges = (w: StoryWindow): [number, number] => {
   if (typeof w[0] === "string") {
     const [id, f0, f1] = w as [string, number, number];
@@ -572,7 +518,7 @@ export const windowEdges = (w: StoryWindow): [number, number] => {
   return [atFrac(rangeOf(a[0]), a[1]), atFrac(rangeOf(b[0]), b[1])];
 };
 
-/** A pulse edge pair, resolved and checked. */
+/** A pulse window's edges, checked to run forward. */
 const pulseEdges = (
   w: StoryWindow,
   side: "rise" | "fall",
@@ -585,23 +531,8 @@ const pulseEdges = (
   return [a, b];
 };
 
-/** Mechanism envelope: smoothstep RISE over one window × optional smoothstep
- *  FALL over another (omit `fall` for a one-way ramp). Windows name their
- *  scenes — see StoryWindow for the two edge forms. */
-export const pulse = (
-  p: number,
-  w: { rise: StoryWindow; fall?: StoryWindow },
-): number => {
-  const [r0, r1] = pulseEdges(w.rise, "rise");
-  const rise = smoothstep(r0, r1, p);
-  if (!w.fall) return rise;
-  const [f0, f1] = pulseEdges(w.fall, "fall");
-  return rise * (1 - smoothstep(f0, f1, p));
-};
-
-/** The same envelope with its windows resolved ONCE, as a scalar function of p
- *  — `pulse` re-resolves both windows on every call. Registers `name.rise` and
- *  `name.fall` in the window registry. */
+/** An envelope that rises over `rise` and, if given, falls over `fall`, as a
+ *  function of p. Registers `name.rise` and `name.fall` as windows. */
 export const pulseFn = (
   w: { rise: StoryWindow; fall?: StoryWindow },
   name: string,
@@ -609,7 +540,6 @@ export const pulseFn = (
   const [r0, r1] = span(`${name}.rise`, pulseEdges(w.rise, "rise"));
   if (!w.fall) return (p: number) => smoothstep(r0, r1, p);
   const [f0, f1] = span(`${name}.fall`, pulseEdges(w.fall, "fall"));
-  // an overlapping fall eats the rise: the pulse never reaches 1
   if (f0 < r1)
     throw new Error(
       `lens story: pulse "${name}" fall opens (p ${f0}) before its rise is spent (p ${r1})`,
@@ -619,7 +549,7 @@ export const pulseFn = (
 
 // --- the window registry -----------------------------------------------------
 
-/** A named window in absolute story p, recorded where it is authored. */
+/** A named window in absolute p. */
 export interface StoryWindowSpan {
   name: string;
   p0: number;
@@ -628,10 +558,8 @@ export interface StoryWindowSpan {
 
 const WINDOWS = new Map<string, StoryWindowSpan>();
 
-/** Record a named window and hand its edges back, so every window is
- *  reportable by construction. A name registers once: a second registration
- *  with other edges is a collision and throws, except under HMR, where a
- *  retuned module re-registers its own windows. */
+/** Register a named window and return its edges. Registering a name again with
+ *  different edges throws, except under HMR. */
 export const span = (
   name: string,
   edges: [number, number],
@@ -649,8 +577,8 @@ export const span = (
   return edges;
 };
 
-/** Every window registered so far, sorted by (p0, p1, name). Complete once
- *  every story module has loaded — story/state.ts imports them all. */
+/** Every registered window, sorted by (p0, p1, name). Complete only once every
+ *  story module has loaded (state.ts imports them all). */
 export const storyWindows = (): StoryWindowSpan[] =>
   [...WINDOWS.values()].sort(
     (a, b) => a.p0 - b.p0 || a.p1 - b.p1 || a.name.localeCompare(b.name, "en"),

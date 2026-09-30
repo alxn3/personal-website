@@ -29,53 +29,29 @@ import { isOpticalGlass, isDecal, isAccessory } from "../core/parts";
 import { WINK_WIDTH } from "../core/visibility";
 import { clamp01 } from "../core/math";
 
-// The story's two looks on one material: "realistic" (core/model.ts's PBR spec,
-// re-classed to a node material so the op deform rides it) and "ink" (the
-// drawing), blended by `uInk` on `outputNode`:
+// The model's main material: the "realistic" PBR look and the "ink" drawing
+// in one material, blended by `uInk`:
 //
-//     output  = mix(the PBR result, inkColor · celShade, uInk)
-//     opacity = materialOpacity · mix(1, uInkFill · depthFade, uInk) · wink
+//     output  = mix(PBR result, inkColor * celShade, uInk)
+//     opacity = materialOpacity * mix(1, uInkFill * depthFade, uInk) * wink
 //
-// Wearing a look is a uniform write — nothing is re-materialled.
-//
-// Two things cannot blend:
-//   - `transparent`, flipped on the shared body materials at the uInk 0-edge.
-//     three copies the transmission backdrop from the opaque pass only, so a
-//     permanently-transparent body would vanish inside the glass during the
-//     dive. core/scene's body fade wants the same flag, so it has one owner
-//     with two inputs — `writeTransparent`.
-//   - Glass. `transmission > 0` puts a mesh in the transmission pass forever,
-//     so while the body is transparent a transmissive element refracts the
-//     background and reads as a hole through the lens. The elements therefore
-//     keep two materials and swap at GLASS_HANDOVER, where both sides are at
-//     zero opacity. A plain crossfade of two fills: no line-work on glass.
-//
-// The ink twin: at uInk = 1 the blend still emits the whole PBR fragment path
-// and multiplies it by zero, so the body swaps to a MeshBasicNodeMaterial built
-// from the same builders with `lights = false`. Both sides are the same
-// expression at uInk = 1, so the swap needs no cross-fade — and the edge is
-// `=== 1`, never `> 1 − ε`. A twin is never worn on a pipeline that has not
-// been drawn: three keys a pipeline on the material class and the render
-// context, so each key's twin is warmed per `RenderCtx` and a key minted later
-// stays cold, on the blend, until its own warm frame.
-//
-// The bench looks (outline / riso / blueprint / …) are materials/shading.ts's.
+// Two things can't be blended and switch at fixed points instead:
+//   - `transparent` on the body turns on when any ink shows (uInk > 0); an
+//     always-transparent body would vanish behind transmissive glass.
+//   - Glass swaps between its PBR material and a flat ink fill at
+//     GLASS_HANDOVER, where both are at zero opacity.
+// At exactly uInk = 1 the body switches to a cheaper unlit "twin" material
+// that draws the same image, but only once that twin has been warmed
+// (compiled) in the current render context.
 
-/** 0 = the realistic PBR look, 1 = the ink drawing; between = a live blend.
- *  Private: two booleans ride the ramp (the `transparent` flip at the 0-edge,
- *  the elements' swap at GLASS_HANDOVER), so `setInk` is the only writer. */
+/** 0 = realistic, 1 = ink. Write only through setInk. */
 const uInk = uniform(0);
 
-/** Where the elements hand their two materials over — the middle of the ramp,
- *  where both the realistic glass and the ink fill are at zero. Exported as a
- *  reading, not a knob: it is the exact uInk at which three's transmission-pass
- *  framebuffer copy switches off. */
+/** The uInk at which the glass swaps materials (both are invisible there). */
 export const GLASS_HANDOVER = 0.5;
 
-/** The elements' crossfade as the two halves of the ramp. Both are 0 at the
- *  hand-over, which is what makes the material swap invisible. Square-rooted
- *  because the halves are sequential — sqrt rises steeply off zero and so keeps
- *  the elements present right up to the swap. Fresh node per material. */
+/** Glass crossfade: the PBR glass fades over the first half of the ramp and
+ *  the ink fill over the second. sqrt keeps each visible until the swap. */
 const inkBottomHalf = () =>
   clamp(float(1).sub((uInk as any).div(GLASS_HANDOVER)), 0, 1).sqrt() as any;
 const inkTopHalf = () =>
@@ -85,19 +61,15 @@ const inkTopHalf = () =>
     1,
   ).sqrt() as any;
 
-/** Ink fill opacity, 0 = pure line drawing (edge lines only) → 1 = solid fills.
- *  The scroll hero drives this so the intro reads as a blueprint that fills in. */
+/** Ink fill opacity: 0 = edge lines only, 1 = solid fills. */
 export const uInkFill = uniform(1);
 
-/** THE WINK LEVELS core/scene.ts's shell and interior gates write — the fade
- *  level every framed piece compares its own `_opY.w` threshold against. */
+/** Shell and interior fade levels (set by scene.ts; see core/visibility.ts). */
 export const uShellFade = uniform(1);
 export const uInteriorFade = uniform(1);
 
-/** A piece's wink opacity (core/visibility.ts `winkOpacity`, in TSL): the lane
- *  unpacks to a channel and a threshold `t`, and the factor is exactly 1 at
- *  `level >= t`, exactly 0 at `level <= t − WINK_WIDTH`. Per piece, so it rides
- *  a varying. Fresh node per material. */
+/** A piece's dissolve opacity from its `_opY.w` threshold; the shader form of
+ *  `winkOpacity` in core/visibility.ts. Build one per material. */
 export const winkFactor = (): TslNode => {
   const lane = (attribute("_opY", "vec4") as TslNode).w as TslNode;
   const ch = step(1.5, lane) as TslNode;
@@ -106,28 +78,12 @@ export const winkFactor = (): TslNode => {
   return varying(smoothstep(t.sub(WINK_WIDTH), t, level)) as TslNode;
 };
 
-/** The `transparent` law for the shared body materials: transparent while any
- *  ink shows or while core/scene's body fade is under 1, opaque only when
- *  neither wants it. Two callers, one flag — see `writeTransparent`. */
+/** Body materials are transparent while any ink shows or the body is fading. */
 export const bodyTransparent = (inkOn: boolean, fadeOn: boolean) =>
   inkOn || fadeOn;
 
-/** The 1-edge, as the twin's swap reads it. Both are live. */
-export interface InkEdge {
-  /** setInk's live blend (uInk). The twin is worn at exactly 1. */
-  inkMix: number;
-  /** core/scene's body fade is under 1 (materialOpacity is not 1). */
-  fadeOn: boolean;
-}
-
-/** Is the ink twin the whole drawing? Exact at uInk = 1, but only while
- *  `materialOpacity` is the shipped 1: under a body fade the fade owns that
- *  number per instance, so a swap would hand back a material it never saw. */
-export const inkTwinWorn = (e: InkEdge): boolean => e.inkMix === 1 && !e.fadeOn;
-
-// Cel shade: quantized N·L against a fixed key light, three flat bands giving
-// the unlit ink fills form. Uses the transformed normal, so op-deformed pieces
-// band correctly as they peel. Fresh node per material.
+// Cel shading: N·L against a fixed light, quantized into three flat bands.
+// Build one per material.
 export const CEL_LIGHT = new THREE.Vector3(0.45, 0.8, 0.55).normalize();
 export const celShade = () => {
   const ndl = dot(
@@ -140,144 +96,125 @@ export const celShade = () => {
   return float(0.78).add(band.mul(0.38)) as any; // 0.78 · 0.97 · 1.16
 };
 
-// The ink palette — flat fill colours keyed by part name, one variant per site
-// theme. Both themes must take the same branch for a name: the hexes are cached
-// as a pair and a theme flip writes the other into the colour uniform.
+// Ink fill colour per part, per theme. Both themes must take the same branch
+// for a given name.
 function inkFill(name: string, light: boolean): number {
   if (light) {
-    if (isOpticalGlass(name)) return 0x6fa863; // deeper mint — a 0.45-opacity fill must read on paper
+    if (isOpticalGlass(name)) return 0x6fa863; // mint glass
     if (/^Iris_Blade/.test(name)) return 0x5b6478;
-    if (isDecal(name)) return 0x3f3a2f; // printed text goes DARK on light shells
+    if (isDecal(name)) return 0x3f3a2f; // dark printed text
     if (/^Mount_Contacts/.test(name)) return 0xb08428;
     if (/^Mount_/.test(name)) return 0x7c766a;
     if (/^Focus_/.test(name)) return 0xa8672e;
     if (/^PCB_/.test(name)) return 0x5d7a48;
-    if (/Ring_/.test(name)) return 0x4a4f5e; // rubber grips stay dark — real rubber is
+    if (/Ring_/.test(name)) return 0x4a4f5e; // rubber grips
     if (/Band_Mid|Barrel_Base|Chassis/.test(name)) return 0xe3ddcc; // gloss body
     return 0xece6d6; // matte body — paper-light so the dark outlines pop
   }
-  if (isOpticalGlass(name)) return 0x9ccb92; // mint-green glass — uniform across elements
+  if (isOpticalGlass(name)) return 0x9ccb92; // mint glass
   if (/^Iris_Blade/.test(name)) return 0x4b5364; // blued-steel aperture blades
   if (isDecal(name)) return 0xefe8d4; // white printed text
   if (/^Mount_Contacts/.test(name)) return 0xd9a852; // bright brass contacts
   if (/^Mount_/.test(name)) return 0x9a9482; // chrome / metal
-  if (/^Focus_/.test(name)) return 0xc5813f; // focus motor/screw/rods — amber metal
+  if (/^Focus_/.test(name)) return 0xc5813f; // amber focus drive
   if (/^PCB_/.test(name)) return 0x6d8a55; // circuit-board green
   if (/Ring_/.test(name)) return 0x343846; // rubber grip rings — dark slate
   if (/Band_Mid|Barrel_Base|Chassis/.test(name)) return 0x2c2720; // gloss body
   return 0x211d16; // matte body — near-black so the outlines pop
 }
 
-/** Ink edge-line colour: warm white on the dark stage, sepia on the light one. */
+/** Ink edge-line colour per theme. */
 const INK_EDGE = { dark: 0xe4dbc4, light: 0x2f2a20 };
 
-/** EdgesGeometry crease angle for the ink line-work. A reading, not a knob:
- *  story/cost.ts cuts at it and may not spell it twice. */
+/** Crease angle for the ink edge lines. */
 export const EDGE_THRESHOLD_DEG = 24;
 
-/** Does this mesh wear an ink edge-line — `addLine`'s own skip, as a predicate,
- *  so story/cost.ts can select the same set. */
+/** Whether a mesh gets ink edge lines. */
 export const hasInkEdgeLine = (name: string): boolean =>
   !isDecal(name) && !isOpticalGlass(name);
 
-/** Cut every ink edge-line's geometry, keyed by mesh id — `addLine`'s cache,
- *  filled ahead of it. Pure geometry over the frame attributes, so core/scene
- *  runs it on the model-load chain (no renderer) and hands the map to
- *  `createUnified`; anything it misses is still cut on demand. */
+/** Edge-line geometry for `mesh` at a crease angle (the deformable kind if
+ *  the mesh has op frames). */
+export const edgeGeometry = (
+  mesh: THREE.Mesh,
+  deg = EDGE_THRESHOLD_DEG,
+): THREE.BufferGeometry =>
+  hasOpFrames(mesh)
+    ? opsEdgeGeometry(mesh.geometry, deg)
+    : new THREE.EdgesGeometry(mesh.geometry, deg);
+
+/** Precompute ink edge-line geometry per mesh id (no renderer needed), to
+ *  pass to `createUnified`. */
 export function cutInkEdges(
   root: THREE.Object3D,
 ): Map<number, THREE.BufferGeometry> {
   const cut = new Map<number, THREE.BufferGeometry>();
   root.traverse((o) => {
     if (!(o instanceof THREE.Mesh) || !hasInkEdgeLine(o.name)) return;
-    // Accessories are framed by their own later pass, so cutting one here would
-    // cache an unframed line for a mesh that goes on to deform.
+    // accessories get their frames later, so cut theirs then
     if (isAccessory(o.name)) return;
-    cut.set(
-      o.id,
-      hasOpFrames(o)
-        ? opsEdgeGeometry(o.geometry, EDGE_THRESHOLD_DEG)
-        : new THREE.EdgesGeometry(o.geometry, EDGE_THRESHOLD_DEG),
-    );
+    cut.set(o.id, edgeGeometry(o));
   });
   return cut;
 }
 
-/** What one mesh wears: for glass the merged material plus the ink fill that
- *  cannot merge with transmission; for a body mesh its cache key's materials.
- *  Exactly one of `mat` / `body` is set. */
+/** A mesh's materials: glass has `mat` + `ink`, body meshes have `body`. */
 interface Worn {
   mat?: THREE.Material;
   ink?: THREE.Material;
   body?: BodyMats;
 }
 
-/** The two render contexts the story draws the body in. three keys a pipeline
- *  on the context as well as on the shader and `transparent`, so the two are
- *  warmed, and tracked, separately. */
+/** Where the body is drawn: straight to the canvas or through the post pass.
+ *  Shaders compile separately for each. */
 export type RenderCtx = "canvas" | "pass";
 
-/** The body's materials for one cache key. The twin is built on the first frame
- *  that reaches the 1-edge, not at load. */
+/** The body materials for one cache key. */
 interface BodyMats {
-  /** the merged blend — every uInk below 1, and every frame of a body fade */
+  /** the blended material */
   blend: THREE.Material;
-  /** the 1-edge twin. Undefined until it is built. */
+  /** the unlit twin for uInk = 1; built lazily */
   ink?: THREE.Material;
-  /** true once this key's twin has been drawn off-screen in that context — the
-   *  only thing that lets `current` hand it to a mesh there. */
+  /** whether the twin has been warmed in each context (it's only worn if so) */
   warm: Record<RenderCtx, boolean>;
-  /** what the lazy twin build needs, incl. the shared ink colour uniform */
+  /** inputs for building the twin */
   seed: { mesh: THREE.Mesh; framed: boolean; ink: TslNode };
 }
 
-/** which of `BodyMats` the body is wearing right now */
 type BodyLook = "blend" | "ink";
 
-/** one thing a theme flip re-tints, and the pair it flips between */
+/** A colour to switch on theme change. */
 interface Tint {
-  write(hex: number): void;
+  color: THREE.Color;
   dark: number;
   light: number;
 }
 
 export interface UnifiedLook {
-  /** Fold meshes that arrive after creation into the merged look. Also re-keys
-   *  a mesh whose op frame landed late, so it still ends up deforming. */
+  /** Add meshes that loaded later, and re-key meshes whose frames changed. */
   integrate(root: THREE.Object3D): void;
-  /** Put the merged materials back on every mesh — the realistic/ink arm of
-   *  materials/shading.ts's swapper, after a bench look wore something else. */
+  /** Put these materials back on every mesh (after a bench look). */
   wear(): void;
-  /** Blend the pair. The ramp's two edges flip what cannot blend; everything
-   *  else is one uniform write. */
+  /** Set the realistic (0) to ink (1) blend. */
   setInk(v: number): void;
-  /** Declare that core/scene's body fade wants the shared body materials
-   *  transparent (o < 1) — the second input to `writeTransparent`'s flag. */
+  /** Tell this module the body fade is running (it needs `transparent`). */
   bodyFadeActive(on: boolean): void;
-  /** Whether `m`'s `transparent` is this controller's to write — core/scene's
-   *  body fade also covers materials this does not own, and writes those. */
+  /** Whether this module controls `m.transparent`. */
   ownsTransparent(m: THREE.Material): boolean;
-  /** the live blend, for a caller that has to put it back (the warm-up frame) */
+  /** the current blend */
   ink(): number;
-  /** The 1-edge, resolved once per frame from core/scene's tick immediately
-   *  before the render. A twin only goes on if warmed in `ctx`. */
+  /** Called each frame before rendering in `ctx`; picks blend or twin. */
   syncBody(ctx: RenderCtx): void;
-  /** Draw the twin once, off-screen, and only then allow it in `ctx`. `draw`
-   *  renders the scene in the context being warmed and reports whether it
-   *  reached it — a render that collapsed to nothing warms nothing. Wears the
-   *  twin across the draw and puts back exactly what was on. */
+  /** Wear the twins for one `draw` in `ctx` to compile them, then restore.
+   *  `draw` returns false if it didn't reach the scene (nothing warmed). */
   warmBodyLooks(ctx: RenderCtx, draw: () => boolean): void;
-  /** Does any body key still owe a warm frame in `ctx`? Asked per tick, not
-   *  flagged once: `integrate` mints keys after the first warm frame. */
+  /** Whether any body material still needs warming in `ctx`. */
   needsWarm(ctx: RenderCtx): boolean;
-  /** Re-tint the ink for the site theme. A value write — no rebuild. */
+  /** Re-tint for the site theme (no rebuild). */
   setTheme(light: boolean): void;
 }
 
-/** The ink edge-lines' opacity graph, its own function so the law is testable
- *  without a renderer. The lines ride the whole ramp, the factor their fill
- *  mixes on, `materialOpacity`, the only way the body fade reaches them, and
- *  the piece's wink. */
+/** Ink edge-line opacity: uInk × depth fade × material opacity × dissolve. */
 export const inkLineOpacity = (opsPos?: TslNode, wink?: TslNode): TslNode =>
   float(0.9)
     .mul(depthFadeFactor(opsPos))
@@ -285,10 +222,8 @@ export const inkLineOpacity = (opsPos?: TslNode, wink?: TslNode): TslNode =>
     .mul(uInk as any)
     .mul(wink ?? float(1));
 
-/** The glass elements' two opacity graphs — the crossfade's two halves. An
- *  opacityNode replaces the scalar, so `materialOpacity` is the only way the
- *  body fade reaches a NodeMaterial: miss it on either and a column of elements
- *  floats where the lens used to be. */
+/** Glass opacity for the PBR material and the ink fill. Both include
+ *  `materialOpacity` so the fades still reach them. */
 export const glassFillOpacity = (): TslNode =>
   materialOpacity.mul(inkBottomHalf());
 export const glassInkOpacity = (fade?: TslNode): TslNode =>
@@ -297,10 +232,8 @@ export const glassInkOpacity = (fade?: TslNode): TslNode =>
     .mul(materialOpacity)
     .mul(inkTopHalf());
 
-/** The body's two graphs, extracted so the twin cannot drift from the blend —
- *  the pair is only swappable because it is the same expression. `inkOutput`
- *  keeps the `mix` even on the twin, which only renders at uInk = 1 where the
- *  PBR side is multiplied by zero. `ink` is the shared colour uniform. */
+/** Body colour and opacity graphs, shared by the blend and the twin so the two
+ *  always match. `ink` is the fill colour uniform. */
 export const inkOutput = (ink: TslNode): TslNode =>
   vec4(
     mix((output as any).rgb, ink.mul(celShade()), uInk as any),
@@ -311,73 +244,54 @@ export const bodyFillOpacity = (fade: TslNode, wink?: TslNode): TslNode =>
     .mul(mix(float(1), uInkFill.mul(fade), uInk as any) as any)
     .mul(wink ?? float(1)) as unknown as TslNode;
 
-/**
- * Build the merged material for every mesh under `root` and wear it: the deform
- * attach, one material per source material × graph variant, plus the ink half.
- * Runs after deriveFrames / tagMechanismSpins, whose writes the deform graph
- * reads, and before createShading. `edges` is `cutInkEdges`' output, adopted as
- * the line cache.
- */
+/** Build and apply the blended material to every mesh under `root`. Run after
+ *  deriveFrames and tagMechanismSpins. `edges` is `cutInkEdges`' output. */
 export function createUnified(
   root: THREE.Object3D,
   edges?: Map<number, THREE.BufferGeometry>,
 ): UnifiedLook {
-  // Site theme, detected here so both pages get the right palette without
-  // wiring; toggles arrive via setTheme (the pages own the observer).
   let light = !document.documentElement.classList.contains("dark");
   let inkAmount = 0;
-  /** the boolean half of the blend: true whenever any ink is showing */
+  /** uInk > 0 */
   let inkOn = false;
-  /** the elements' own edge (GLASS_HANDOVER) — a different point on the ramp */
+  /** uInk >= GLASS_HANDOVER */
   let glassInkOn = false;
-  /** core/scene's body fade is under 1 — `transparent`'s second input */
   let fadeOn = false;
   let linesBuilt = false;
-  /** which body material every body mesh wears. Moved only by `resolveBody`. */
+  /** set only by resolveBody */
   let bodyLook: BodyLook = "blend";
-  /** the context this frame renders in — a twin is only wearable where its
-   *  pipelines exist */
   let bodyCtx: RenderCtx = "canvas";
-  /** the (look, context) the meshes are dressed for; "" forces a re-dress */
+  /** the `${look}|${ctx}` the meshes are dressed for; "" forces a re-dress */
   let dressed = "";
-  /** body keys still owing a warm frame per context. Counted, not flagged, so
-   *  `integrate`'s late materials re-arm it. */
+  /** body keys not yet warmed, per context */
   const coldKeys: Record<RenderCtx, number> = { canvas: 0, pass: 0 };
   let twinsBuilt = false;
-  // The uniforms are module state but a controller is not, so a rebuilt scene
-  // would otherwise open at the previous one's blend.
+  // Reset the module-level uniforms for this scene.
   uInk.value = 0;
   uInkFill.value = 1;
   uShellFade.value = 1;
   uInteriorFade.value = 1;
 
   const worn = new Map<THREE.Mesh, Worn>();
-  /** the source material each mesh arrived wearing — the merged material
-   *  replaces it, so it is remembered here for a re-key */
+  /** each mesh's original (model.ts) material */
   const source = new Map<THREE.Mesh, THREE.Material>();
-  /** the key each mesh resolved to, so integrate() can tell a mesh that merely
-   *  re-appeared from one whose variant changed */
+  /** each mesh's current cache key */
   const keyed = new Map<THREE.Mesh, string>();
 
-  /** Shared materials: one per source material × ink colour × graph variant,
-   *  not one per mesh — a node graph each would dominate first-frame time. */
+  // Materials are shared per cache key, not built per mesh.
   const merged = new Map<string, THREE.Material>();
-  /** the body's own cache — the blend plus its 1-edge twin per key. */
   const bodyMats = new Map<string, BodyMats>();
   const glassInk = new Map<string, THREE.Material>();
   const lineMats = new Map<string, THREE.LineBasicNodeMaterial>();
-  /** every material whose `transparent` flips at the 0-edge (the body's) */
+  /** body blend materials, whose `transparent` this module sets */
   const flips = new Set<THREE.Material>();
-  /** every 1-edge twin — `ownsTransparent` adds these to `flips` so the body
-   *  fade leaves their flag alone */
   const twins = new Set<THREE.Material>();
   const tints: Tint[] = [];
   const inkLines: THREE.LineSegments[] = [];
   const edgeGeo = edges ?? new Map<number, THREE.BufferGeometry>();
 
-  /** The target class must track the source: NodeMaterial.copy only copies
-   *  properties the target declares, so a MeshPhysicalMaterial copied into a
-   *  MeshStandardNodeMaterial silently drops transmission/ior. */
+  /** Node-material copy of `src`, keeping the physical class for glass (copy
+   *  drops properties the target class lacks). */
   function reclass(src: THREE.Material): THREE.NodeMaterial {
     const m = (src as THREE.MeshPhysicalMaterial).isMeshPhysicalMaterial
       ? new THREE.MeshPhysicalNodeMaterial()
@@ -386,29 +300,23 @@ export function createUnified(
     return m as unknown as THREE.NodeMaterial;
   }
 
-  /** Attach the deform and hand back the depth fade riding the same position
-   *  node — a second position graph would double the deform. */
+  /** Attach the deform; return a depth fade on the deformed position. */
   const opsFade = (
     mat: THREE.NodeMaterial,
     mesh: THREE.Mesh,
     framed: boolean,
   ) => depthFadeFactor(framed ? attachOps(mat, mesh) : undefined);
 
-  /** The wink term, only where the `_opY` lane exists to read. */
+  /** The dissolve term, only for meshes with op frames. */
   const opsWink = (framed: boolean) => (framed ? winkFactor() : undefined);
 
-  /** The render state both body materials wear, written once so the twin
-   *  cannot drift from the blend. `transparent` is the one thing that differs. */
-  function bodyRenderState(m: THREE.Material) {
-    // Push the fill's depth back a hair so the edge lines, which share the
-    // surface's exact vertices, win the depth test rather than z-fighting.
+  /** Render state shared by the blend, the twin and the glass ink fill. */
+  function fillRenderState(m: THREE.Material) {
+    // push fills back so edge lines on the same vertices win the depth test
     m.polygonOffset = true;
     m.polygonOffsetFactor = 1;
     m.polygonOffsetUnits = 1;
-    // Discard fully-faded fragments: a transparent fill at opacity ~0 still
-    // writes depth, so a depth-faded wedge would invisibly hard-clip whatever
-    // is behind it. `alphaTest` is a graph branch, so flipping it costs a
-    // rebuild rather than a pipeline.
+    // discard faded fragments so they don't write depth
     m.alphaTest = 0.02;
   }
 
@@ -421,20 +329,12 @@ export function createUnified(
     const lit = inkFill(mesh.name, true);
     const ink = uniform(new THREE.Color(light ? lit : dark));
     m.outputNode = inkOutput(ink as unknown as TslNode) as any;
-    // materialOpacity keeps `material.opacity` live through the graph: the
-    // transmissive glass clones and core/scene's body fade both write it. The
-    // fade moves an input through `bodyFadeActive` rather than writing
-    // `transparent` itself.
     m.opacityNode = bodyFillOpacity(fade, opsWink(framed)) as any;
-    bodyRenderState(m as unknown as THREE.Material);
-    // A material built while the ink is already on — or while the body fade is
-    // running — has to arrive matching, so it takes the resolver's value.
+    fillRenderState(m as unknown as THREE.Material);
     m.transparent = bodyTransparent(inkOn, fadeOn);
     const mat = m as unknown as THREE.Material;
     const rec: BodyMats = {
       blend: mat,
-      // born cold: a key minted after the warm frames have run owes its own
-      // in both contexts before its twin is wearable
       warm: { canvas: false, pass: false },
       seed: { mesh, framed, ink: ink as unknown as TslNode },
     };
@@ -442,56 +342,40 @@ export function createUnified(
     coldKeys.pass++;
     bodyMats.set(key, rec);
     flips.add(mat);
-    tints.push({
-      write: (h) => (ink.value as THREE.Color).setHex(h),
-      dark,
-      light: lit,
-    });
-    mat;
-    if (twinsBuilt) buildTwins(rec);
+    tints.push({ color: ink.value as THREE.Color, dark, light: lit });
+    if (twinsBuilt) rec.ink = twinFor(rec);
     return rec;
   }
 
-  /** The 1-edge twin. The fragment is rebuilt from the same builders on the
-   *  same `ink` uniform; everything else is copied off the blend, so `side`,
-   *  `depthWrite/Test` and `blending` cannot go stale. `lights = false` takes
-   *  the lighting context out of the fragment shader, and the setupNormal
-   *  override keeps the drawing — MeshBasicNodeMaterial would band an
-   *  op-deformed piece by its rest pose. */
+  /** The unlit twin: same graphs and settings as the blend, no lighting. */
   function twinFor(rec: BodyMats): THREE.Material {
     const { mesh, framed, ink } = rec.seed;
     const m = new THREE.MeshBasicNodeMaterial();
     m.copy(rec.blend as THREE.MeshBasicMaterial);
-    // `opacity` off the source, not the blend's live value: the lazy build can
-    // land mid-fade, and the fade restores to the material it captured.
+    // from the source, since the blend's opacity may be mid-fade
     m.opacity = source.get(mesh)!.opacity;
     m.lights = false;
+    // use the deformed normal (MeshBasic's own would band by the rest pose)
     (
       m as unknown as { setupNormal: THREE.NodeMaterial["setupNormal"] }
     ).setupNormal = THREE.NodeMaterial.prototype.setupNormal;
     const fade = opsFade(m as unknown as THREE.NodeMaterial, mesh, framed);
     m.outputNode = inkOutput(ink) as any;
     m.opacityNode = bodyFillOpacity(fade, opsWink(framed)) as any;
-    bodyRenderState(m as unknown as THREE.Material);
+    fillRenderState(m as unknown as THREE.Material);
     m.transparent = true;
     const mat = m as unknown as THREE.Material;
     twins.add(mat);
     return mat;
   }
 
-  function buildTwins(rec: BodyMats) {
-    if (!rec.ink) rec.ink = twinFor(rec);
-  }
-
   function ensureTwins() {
     if (twinsBuilt) return;
     twinsBuilt = true;
-    for (const rec of bodyMats.values()) buildTwins(rec);
+    for (const rec of bodyMats.values()) rec.ink ??= twinFor(rec);
   }
 
-  /** The elements' ink fill — flat mint, not cel-banded and never dissolved by
-   *  uInkFill, so the glass stays filled while the body goes to wireframe. The
-   *  second half of the crossfade: 0 at the hand-over, full at 1. */
+  /** Glass ink fill: flat colour, unaffected by uInkFill. */
   function glassInkMaterial(mesh: THREE.Mesh, key: string, framed: boolean) {
     const hit = glassInk.get(key);
     if (hit) return hit;
@@ -502,13 +386,10 @@ export function createUnified(
     const fade = opsFade(m as unknown as THREE.NodeMaterial, mesh, framed);
     m.opacityNode = glassInkOpacity(fade) as any;
     m.transparent = true;
-    m.polygonOffset = true;
-    m.polygonOffsetFactor = 1;
-    m.polygonOffsetUnits = 1;
-    m.alphaTest = 0.02;
+    fillRenderState(m as unknown as THREE.Material);
     const mat = m as unknown as THREE.Material;
     glassInk.set(key, mat);
-    tints.push({ write: (h) => m.color.setHex(h), dark, light: lit });
+    tints.push({ color: m.color, dark, light: lit });
     return mat;
   }
 
@@ -519,25 +400,17 @@ export function createUnified(
     const m = new THREE.LineBasicNodeMaterial();
     m.color.setHex(light ? INK_EDGE.light : INK_EDGE.dark);
     m.transparent = true;
-    // Attach the deform first, then share its position node with the fade.
     const opsPos = framed
       ? attachOpsLine(m as unknown as THREE.NodeMaterial, mesh)
       : undefined;
     m.opacityNode = inkLineOpacity(opsPos, opsWink(framed));
-    m.alphaTest = 0.02; // faded lines must not depth-clip either
+    m.alphaTest = 0.02;
     lineMats.set(key, m);
-    tints.push({
-      write: (h) => m.color.setHex(h),
-      dark: INK_EDGE.dark,
-      light: INK_EDGE.light,
-    });
-    m;
+    tints.push({ color: m.color, ...INK_EDGE });
     return m;
   }
 
-  /** What this mesh wears right now — the glass's edge or the body's. A pure
-   *  read; both edges are moved elsewhere. The warm gate lives here, per key
-   *  and per context, so no path that dresses a mesh can by-pass it. */
+  /** The material `mesh` should wear now (the twin only once warmed). */
   const current = (mesh: THREE.Mesh) => {
     const w = worn.get(mesh)!;
     const b = w.body;
@@ -548,21 +421,16 @@ export function createUnified(
     return glassInkOn && w.ink ? w.ink : w.mat!;
   };
 
-  /** Resolve what `mesh` should wear — building the material on first demand —
-   *  and put it on. A no-op once the mesh's key is settled. */
+  /** Build and apply `mesh`'s materials; no-op if its key is unchanged. */
   function style(mesh: THREE.Mesh) {
     const src = source.get(mesh)!;
     const name = mesh.name;
     const glass = isOpticalGlass(name);
     const framed = hasOpFrames(mesh);
-    // A mesh whose deform graph varies (a spin pivot, a decal's shrink-wrap)
-    // can only share a material with meshes that vary the same way — hence the
-    // variant in the key.
     const key = `${src.uuid}|${inkFill(name, false)}|${inkFill(name, true)}|${glass}|${framed}|${opsVariantKey(mesh)}`;
     if (keyed.get(mesh) === key) return;
     keyed.set(mesh, key);
-    // In-shader displacement invalidates the mesh's rest-pose bounds, so
-    // stale-bounds frustum culling would pop deformed pieces out.
+    // the shader moves the mesh, so its bounds are stale
     if (framed) mesh.frustumCulled = false;
     if (glass)
       worn.set(mesh, {
@@ -573,58 +441,47 @@ export function createUnified(
     mesh.material = current(mesh);
   }
 
-  /** The elements' realistic material: the plain op material the dive's
-   *  transmissive clones are made from, plus the first half of the
-   *  crossfade. */
+  /** Glass PBR material (scene.ts clones it for transmission). */
   function mergedGlass(mesh: THREE.Mesh, key: string, framed: boolean) {
     const hit = merged.get(key);
     if (hit) return hit;
     const m = reclass(source.get(mesh)!);
     if (framed) attachOps(m, mesh);
-    // materialOpacity first, so the dive's clones can write `opacity`, then out
-    // over the ramp's bottom half. The clones inherit this node harmlessly: the
-    // dive runs at uInk 0, where the factor is exactly 1.
     m.opacityNode = glassFillOpacity() as any;
-    // Set once at build, never flipped with the body's: three keys a pipeline
-    // on `transparent`, so a flip at the 0-edge would compile a second glass
-    // pipeline on the crossfade's first frame.
+    // always transparent; flipping it would force a recompile
     m.transparent = true;
     const mat = m as unknown as THREE.Material;
     merged.set(key, mat);
     return mat;
   }
 
-  /** One mesh's edge lines. The geometry is cached per mesh — a pure function
-   *  of the immutable source geometry, and the ink look's expensive half. */
+  /** Add ink edge lines to `mesh` (geometry cached per mesh). */
   function addLine(mesh: THREE.Mesh) {
     if (!hasInkEdgeLine(mesh.name)) return;
-    const framed = hasOpFrames(mesh);
     let geo = edgeGeo.get(mesh.id);
     if (!geo) {
-      geo = framed
-        ? opsEdgeGeometry(mesh.geometry, EDGE_THRESHOLD_DEG)
-        : new THREE.EdgesGeometry(mesh.geometry, EDGE_THRESHOLD_DEG);
+      geo = edgeGeometry(mesh);
       edgeGeo.set(mesh.id, geo);
     }
-    const line = new THREE.LineSegments(geo, lineMaterial(mesh, framed));
-    line.raycast = () => {}; // extras are never pickable
-    line.userData.lensExtra = true; // …and never a piece of the model (integrate)
+    const line = new THREE.LineSegments(
+      geo,
+      lineMaterial(mesh, hasOpFrames(mesh)),
+    );
+    line.raycast = () => {};
+    line.userData.lensExtra = true; // not a model piece (see integrate)
     line.visible = inkOn;
     mesh.add(line);
     inkLines.push(line);
   }
 
-  /** Built on the first blend that shows ink, not at load: the edge geometry is
-   *  the costliest thing in here. Never taken down again — the realistic look
-   *  simply does not draw them. */
+  /** Build the edge lines the first time ink shows (they're expensive). */
   function ensureLines() {
     if (linesBuilt) return;
     linesBuilt = true;
     for (const mesh of worn.keys()) addLine(mesh);
   }
 
-  /** Take this look's line-work off `mesh` — those in `inkLines`, never every
-   *  LineSegments child: a bench look parents its own on the same meshes. */
+  /** Remove this module's lines from `mesh` (bench looks add their own). */
   function dropLines(mesh: THREE.Mesh) {
     for (const c of [...mesh.children]) {
       const i = c instanceof THREE.LineSegments ? inkLines.indexOf(c) : -1;
@@ -638,15 +495,13 @@ export function createUnified(
 
   function integrate(scope: THREE.Object3D) {
     scope.traverse((o) => {
-      // Skip a look's own extra (a bench hull). Not a parent-is-a-Mesh test:
-      // `Mount_Contacts` is authored as a child of the mesh it sits on.
+      // skip added extras; can't test parent-is-Mesh (Mount_Contacts is one)
       if (!(o instanceof THREE.Mesh) || o.userData.lensExtra) return;
       const fresh = !source.has(o);
       if (fresh) source.set(o, o.material as THREE.Material);
       const before = keyed.get(o);
       style(o);
-      // A late frame moves the key, and that mesh's line-work has to be re-cut
-      // against the deforming geometry it just gained.
+      // key changed (e.g. frames arrived): re-cut its lines
       if (linesBuilt && before !== keyed.get(o)) {
         if (!fresh) dropLines(o);
         addLine(o);
@@ -658,10 +513,7 @@ export function createUnified(
     for (const mesh of worn.keys()) mesh.material = current(mesh);
   }
 
-  /** The one place `transparent` is written on the shared body materials. Two
-   *  owners want it at once — setInk's 0-edge and core/scene's body fade — and
-   *  either clearing it under the other is a body that renders opaque mid-fade
-   *  or vanishes inside the glass mid-dive. Both move an input instead. */
+  /** The only writer of `transparent` on the body materials. */
   const writeTransparent = () => {
     const on = bodyTransparent(inkOn, fadeOn);
     for (const m of flips) m.transparent = on;
@@ -671,8 +523,7 @@ export function createUnified(
     if (on === fadeOn) return;
     fadeOn = on;
     writeTransparent();
-    // The twin comes off before the fade starts writing, so the fade takes
-    // `opacity` on whatever the meshes end up wearing.
+    // swap the twin off before the fade captures materials
     resolveBody();
   }
 
@@ -681,7 +532,6 @@ export function createUnified(
     if (k === inkAmount) return;
     inkAmount = k;
     uInk.value = k;
-    // The 0-edge — one flag per shared material, one per line object.
     const on = k > 0;
     if (on !== inkOn) {
       inkOn = on;
@@ -689,31 +539,24 @@ export function createUnified(
       writeTransparent();
       for (const l of inkLines) l.visible = on;
     }
-    // …the elements' own edge, at the middle of the ramp, where the two
-    // materials it chooses between are both at zero opacity.
     const glassOn = k >= GLASS_HANDOVER;
     if (glassOn !== glassInkOn) {
       glassInkOn = glassOn;
       for (const [mesh, w] of worn) if (w.ink) mesh.material = current(mesh);
     }
-    // …and the body's 1-edge, resolved in the same synchronous call that moved
-    // the uniform: no frame can render between the two, so the twin is never
-    // on for a frame drawn at uInk < 1.
+    // same call as the uniform write, so no frame sees them disagree
     resolveBody();
   }
 
-  /** The 1-edge, resolved. Called by every writer that can move an input and
-   *  once per frame before the render, so the worn material and the live state
-   *  can never disagree on a drawn frame. Idempotent, and resolves the look for
-   *  the whole body; per-key wearability is `current`'s warm gate. */
+  /** Pick blend or twin for the body; re-dress the meshes if it changed. */
   function resolveBody() {
-    bodyLook = inkTwinWorn({ inkMix: inkAmount, fadeOn }) ? "ink" : "blend";
+    // the unlit twin is worn at exactly uInk = 1, and never during a body fade
+    bodyLook = inkAmount === 1 && !fadeOn ? "ink" : "blend";
     const key = `${bodyLook}|${bodyCtx}`;
     if (key === dressed) return;
     dressed = key;
     for (const [mesh, w] of worn) {
-      // Only onto a mesh this look is actually dressing: a bench look owns
-      // `mesh.material` while it is worn, so a swap here would stomp its fills.
+      // skip meshes wearing a bench look
       if (!w.body || !ours(mesh, w.body)) continue;
       mesh.material = current(mesh);
     }
@@ -728,11 +571,8 @@ export function createUnified(
     resolveBody();
   }
 
-  /** The warm frame's half of the twin: worn across one real render in the
-   *  context being warmed, then everything is put back — a pipeline is compiled
-   *  by a draw. Worn directly, not through `current`, which is the gate this
-   *  opens. Every body mesh is shown for the frame, since three does not draw a
-   *  hidden object. */
+  /** Compile the twins in `ctx` by wearing them for one draw (with hidden body
+   *  meshes shown), then restore everything. */
   function warmBodyLooks(ctx: RenderCtx, draw: () => boolean) {
     ensureTwins();
     const was = new Map<THREE.Mesh, THREE.Material | THREE.Material[]>();
@@ -740,7 +580,7 @@ export function createUnified(
     const shown: THREE.Object3D[] = [];
     for (const [mesh, w] of worn) {
       if (!w.body) continue;
-      // …up the parents too: a hidden ancestor is where three stops descending.
+      // including hidden ancestors
       for (let o: THREE.Object3D | null = mesh; o; o = o.parent)
         if (!o.visible) {
           o.visible = true;
@@ -758,17 +598,12 @@ export function createUnified(
       for (const [mesh, mat] of was) mesh.material = mat;
       for (const o of shown) o.visible = false;
     }
-    // A draw that never reached the scene compiled nothing, so the context owes
-    // its warm still — everything above is already back where it was.
     if (!drawn) return;
-    // Marked per key, so keys minted by a later integrate() stay cold and keep
-    // the blend.
     for (const rec of bodyMats.values())
       if (!rec.warm[ctx]) {
         rec.warm[ctx] = true;
         coldKeys[ctx]--;
       }
-    // the meshes were dressed before those keys were wearable — dress them again
     dressed = "";
     resolveBody();
   }
@@ -776,7 +611,7 @@ export function createUnified(
   function setTheme(l: boolean) {
     if (l === light) return;
     light = l;
-    for (const t of tints) t.write(l ? t.light : t.dark);
+    for (const t of tints) t.color.setHex(l ? t.light : t.dark);
   }
 
   integrate(root);
@@ -786,8 +621,6 @@ export function createUnified(
     wear,
     setInk,
     bodyFadeActive,
-    // The twins are this controller's too, and are never worn while a fade
-    // runs.
     ownsTransparent: (m) => flips.has(m) || twins.has(m),
     ink: () => inkAmount,
     syncBody,

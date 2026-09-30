@@ -1,12 +1,8 @@
-/* PALETTE TRY-OUT — temporary exploration layer (2026-08-27). Four candidate
-   evolutions of the cream/olive/terracotta identity, switchable at runtime via
-   `data-palette` on <html> (src/lib/palette-tryout.ts adds a picker under
-   `?palette`). Every text-bearing token clears WCAG AA on its bg in both
-   themes. DELETE this file (and the picker) once a direction is chosen and
-   folded into global.css. */
+/* Temporary palette candidates, picked via `data-palette` on <html>
+   (src/lib/palette-tryout.ts). Text tokens meet WCAG AA in both themes.
+   Delete with the picker once a palette is folded into global.css. */
 
-/* A — "sharp": the current hues, contrast-boosted. Dark = the G2a values
-   approved in the 2026-07 design exploration. */
+/* A, "sharp": the current hues with more contrast. */
 html[data-palette="sharp"] {
   --text: #211e18;
   --text-muted: #5d564a;
@@ -23,8 +19,7 @@ html.dark[data-palette="sharp"] {
   --highlight: #e8a35f;
 }
 
-/* B — "ember": the same family run hotter — deeper ember highlight, warmer
-   cream, near-black warm dark stage. */
+/* B, "ember": hotter highlight, warmer cream, near-black dark. */
 html[data-palette="ember"] {
   --bg: #f8f1e4;
   --surface: #fffaf0;
@@ -46,8 +41,7 @@ html.dark[data-palette="ember"] {
   --highlight: #f0a250;
 }
 
-/* C — "field": olive-forward — forest-deep accent carries the structure,
-   terracotta stays the fire; olive-black dark stage. */
+/* C, "field": deep olive accent, terracotta highlight, olive-black dark. */
 html[data-palette="field"] {
   --bg: #f4f2e8;
   --surface: #fbfaf1;
@@ -69,8 +63,7 @@ html.dark[data-palette="field"] {
   --highlight: #e79a55;
 }
 
-/* D — "poster": the boldest cut — near-black ink on paper, orange doing all
-   the accent work (the orange/black poster language), olive demoted out. */
+/* D, "poster": near-black ink on paper, orange for every accent. */
 html[data-palette="poster"] {
   --bg: #faf6ec;
   --surface: #fffdf6;

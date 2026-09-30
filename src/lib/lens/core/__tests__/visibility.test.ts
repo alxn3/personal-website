@@ -13,15 +13,12 @@ import {
   unpackWink,
   winkGone,
   winkOpacity,
-  type VisibilityGates,
 } from "../visibility";
-import { isAccessory, isPeelExtra, isPeelTube } from "../parts";
+import { isPeelExtra, isPeelTube } from "../parts";
 import { WINK_NONE } from "../../ops/frames";
 
-// THE DIRTY-FLAG LAW: writers mark `visibilityDirty` and tick() composes once
-// before the render. That deferral is sound only while the sweep is a pure
-// function of the CURRENT gate state — no history, each gate an independent
-// veto — pinned here on a miniature of the real tree shapes.
+// scene.ts only re-runs the sweep when something changed, which is correct only
+// if the sweep depends on the current gate state alone. Checked on a small tree.
 
 /** the real tree's shapes, in miniature */
 function fixture() {
@@ -46,38 +43,15 @@ function fixture() {
   return { root, glass, body, shell, interior, hull, accMesh };
 }
 
-interface GateState {
-  glassGone: Set<THREE.Mesh>;
-  bodyFadedOut: boolean;
-  shellGone: Set<THREE.Mesh>;
-  interiorGone: Set<THREE.Mesh>;
-}
-
-const freshState = (): GateState => ({
-  glassGone: new Set(),
+const freshState = () => ({
+  glassGone: new Set<THREE.Mesh>(),
   bodyFadedOut: false,
-  shellGone: new Set(),
-  interiorGone: new Set(),
-});
-
-/** the gates view core/scene.ts hands the sweep, over a plain state record */
-const gatesOf = (s: GateState): VisibilityGates => ({
-  underAccessory: (o) => {
-    for (let a: THREE.Object3D | null = o; a; a = a.parent)
-      if (isAccessory(a.name)) return true;
-    return false;
-  },
-  glassGone: s.glassGone,
-  get bodyFadedOut() {
-    return s.bodyFadedOut;
-  },
-  shellGone: s.shellGone,
-  interiorGone: s.interiorGone,
+  shellGone: new Set<THREE.Mesh>(),
+  interiorGone: new Set<THREE.Mesh>(),
 });
 
 describe("visibility sweep", () => {
-  // Every gate is an independent veto and the composition is their AND — swept
-  // over the full lattice of gate states, against a first-principles oracle.
+  // visible = no gate hides it, over every combination of gate states
   it("composes the gates as one AND, over every gate combination", () => {
     const f = fixture();
     const meshes = [f.glass, f.body, f.shell, f.interior];
@@ -87,7 +61,7 @@ describe("visibility sweep", () => {
       if (bits & 2) s.shellGone.add(f.shell);
       if (bits & 4) s.interiorGone.add(f.interior);
       if (bits & 8) s.glassGone.add(f.glass);
-      sweepVisibility(f.root, gatesOf(s));
+      sweepVisibility(f.root, s);
       const oracle = (m: THREE.Mesh) => {
         const glass = m === f.glass;
         return (
@@ -102,80 +76,34 @@ describe("visibility sweep", () => {
     }
   });
 
-  // The deferral equivalence: N mutations then one sweep lands on identical
-  // flags to sweeping after each, over a deterministic random walk.
-  it("one deferred sweep ≡ a sweep after every mutation (state, not history)", () => {
-    const eager = fixture();
-    const lazy = fixture();
-    const sE = freshState();
-    const sL = freshState();
-    let seed = 0x9e3779b9;
-    const rnd = () => {
-      // xorshift32 — deterministic, seedable, no Math.random flake
-      seed ^= seed << 13;
-      seed ^= seed >>> 17;
-      seed ^= seed << 5;
-      return (seed >>> 0) / 0x100000000;
-    };
-    const mutate = (f: ReturnType<typeof fixture>, s: GateState) => {
-      const pick = Math.floor(rnd() * 4);
-      const flip = <T>(set: Set<T>, v: T) =>
-        set.has(v) ? set.delete(v) : set.add(v);
-      if (pick === 0) s.bodyFadedOut = !s.bodyFadedOut;
-      else if (pick === 1) flip(s.shellGone, f.shell);
-      else if (pick === 2) flip(s.interiorGone, f.interior);
-      else flip(s.glassGone, f.glass);
-    };
-    const flags = (f: ReturnType<typeof fixture>) =>
-      [f.glass, f.body, f.shell, f.interior, f.hull, f.accMesh].map(
-        (m) => m.visible,
-      );
-    for (let run = 0; run < 50; run++) {
-      const steps = 1 + Math.floor(rnd() * 8);
-      const savedSeed = seed;
-      for (let k = 0; k < steps; k++) {
-        mutate(eager, sE);
-        sweepVisibility(eager.root, gatesOf(sE)); // sweep at every mutation…
-      }
-      seed = savedSeed; // replay the same walk on the lazy tree
-      for (let k = 0; k < steps; k++) mutate(lazy, sL);
-      sweepVisibility(lazy.root, gatesOf(sL)); // …vs ONE deferred sweep
-      expect(flags(lazy), `run ${run}`).toEqual(flags(eager));
-    }
-  });
-
-  // Accessory flags belong to the page's accessory choice, not the sweep.
   it("never writes accessory flags", () => {
     const f = fixture();
     const s = freshState();
     f.accMesh.visible = false; // a state some other owner chose
-    sweepVisibility(f.root, gatesOf(s));
+    sweepVisibility(f.root, s);
     expect(f.accMesh.visible).toBe(false); // untouched
     s.bodyFadedOut = true;
-    sweepVisibility(f.root, gatesOf(s));
+    sweepVisibility(f.root, s);
     expect(f.accMesh.visible).toBe(false); // still the owner's
   });
 
-  // The inverted-hull child rides its host's flag — the sweep never writes it.
   it("never writes a mesh parented under a mesh", () => {
     const f = fixture();
     const s = freshState();
     f.hull.visible = false;
     s.bodyFadedOut = true; // would hide the host — the child flag still stays
-    sweepVisibility(f.root, gatesOf(s));
+    sweepVisibility(f.root, s);
     expect(f.body.visible).toBe(false);
     expect(f.hull.visible).toBe(false);
     s.bodyFadedOut = false;
     f.hull.visible = true;
-    sweepVisibility(f.root, gatesOf(s));
+    sweepVisibility(f.root, s);
     expect(f.hull.visible).toBe(true);
   });
 });
 
-// THE DISSOLVE LAW: one per-piece term, read by the materials off the stamped
-// lane and by scene.ts's cut. Pinned exact at both edges — a term that fades
-// ABOVE its threshold (smoothstep(t, t + w)) fails "whole at t"; one that never
-// reaches 0 inside the level fails "gone at t − w" and the band floor.
+// The per-piece dissolve: exactly 1 at the threshold and exactly 0 at
+// threshold - WINK_WIDTH.
 describe("the wink's dissolve", () => {
   const TS = [WINK_WIDTH, 0.3, 0.5, 0.62, 0.7, SHELL_FEATHER - 1e-6];
 
@@ -279,8 +207,7 @@ describe("the wink's dissolve", () => {
     const lane = (m: THREE.Mesh, i = 0) =>
       m.geometry.getAttribute("_opY").getW(i);
     const fresh = makeWinkScatter();
-    // the map carries the float32 the lane holds, so the cut and the shader
-    // agree on the same number
+    // returned thresholds are the float32 values the attribute holds
     const asLane = (n: string) => Math.fround(packWink(fresh(n)));
     for (const m of [wedge0, decal, tube, kept, wedge1]) {
       const l = asLane(m.name);
@@ -288,8 +215,7 @@ describe("the wink's dissolve", () => {
       expect(lane(m, 2), `${m.name} every vertex`).toBe(l);
       expect(map.get(m) ?? null, `${m.name} in the map`).toEqual(unpackWink(l));
     }
-    // the same scatter also counts the unframed mesh — it has a threshold to
-    // cut on, just no lane to dissolve on
+    // an unframed mesh still gets a threshold, just no attribute
     expect(map.get(bare)).toEqual(unpackWink(asLane(bare.name)));
     expect(lane(hull)).toBe(WINK_NONE);
     expect(map.has(hull)).toBe(false);

@@ -27,15 +27,8 @@ const fmtDate = (d: Date) =>
 
     <LensStory />
 
-    {
-      /* Below-hero content adopts the hero's dark cinematic palette so the whole
-      landing reads as one piece (the example is fully dark). Theme tokens are
-      overridden on this wrapper, so the existing utility classes just work. */
-    }
     <div class="home-dark">
-      {
-        /* ================================ DEMOS ================================ */
-      }
+      {/* Demos */}
       <section
         class="max-w-layout mx-auto px-4 py-20 sm:px-6 sm:py-28 lg:px-8"
         data-reveal
@@ -82,9 +75,7 @@ const fmtDate = (d: Date) =>
         </ul>
       </section>
 
-      {
-        /* ================================ WRITING ================================ */
-      }
+      {/* Writing */}
       <section
         class="max-w-layout mx-auto px-4 pb-24 sm:px-6 lg:px-8"
         data-reveal
@@ -130,13 +121,9 @@ const fmtDate = (d: Date) =>
 </HtmlShell>
 
 <style>
-  /* ---- below-hero content: follows the site theme. In light mode the sections
-         use the normal light tokens (the light stage hands off to a light page);
-         in dark mode a warm cinematic palette overrides the theme tokens so the
-         utility classes match the dark hero seamlessly. ---- */
-  /* NOTE: Tailwind v4 resolves `--color-x: var(--x)` at :root, so that computed
-     (theme) value inherits down — overriding the raw `--x` here would NOT update
-     the utilities. We override the `--color-*` tokens the utilities actually read. */
+  /* Below-hero content. In dark mode it takes the hero stage's palette.
+     Override the --color-* tokens: Tailwind resolves them at :root, so
+     overriding the raw --x vars here would not reach the utilities. */
   .home-dark {
     background: var(--color-bg);
     position: relative;
@@ -153,8 +140,7 @@ const fmtDate = (d: Date) =>
     --color-highlight: #d18a5d;
     background: #1d1a14;
   }
-  /* keep the shared footer matched to the homepage landing (warm dark palette in
-     dark mode only — this CSS only ships with the index page) */
+  /* footer: above the stage, and in dark mode on the section palette */
   :global(body:has(#lens-hero)) :global(footer) {
     position: relative;
     z-index: 1;
@@ -165,7 +151,7 @@ const fmtDate = (d: Date) =>
     background: #1d1a14;
   }
 
-  /* ---- demo cards + reveal ---- */
+  /* demo cards */
   .demo-card {
     border: 1px solid var(--color-border);
     background: color-mix(in srgb, var(--color-surface) 92%, transparent);
@@ -189,7 +175,7 @@ const fmtDate = (d: Date) =>
     color: var(--color-highlight);
   }
 
-  /* hidden only when JS is present (HtmlShell's `js` class), so no-JS shows it */
+  /* scroll reveal; hidden only when JS runs (html.js) */
   :global(html.js) [data-reveal] {
     opacity: 0;
     transform: translateY(18px);
@@ -211,7 +197,7 @@ const fmtDate = (d: Date) =>
 </style>
 
 <script>
-  // scroll-reveal for the sections below the hero
+  // reveal each [data-reveal] block once it scrolls into view
   const io = new IntersectionObserver(
     (entries) => {
       for (const e of entries) {

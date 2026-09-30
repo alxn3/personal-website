@@ -8,19 +8,12 @@ import {
   travelRemap,
 } from "../fly-core";
 
-// No DOM shim: optics/fly-core.ts is pure math (core/math + the prescription
-// table).
+// The fly-through's pure math: camera path, passage fades and the travel remap.
 
-/**
- * The fly-through's PURE half: where the camera is, which element it is
- * arriving at, and how p is stretched over the flight — the numeric laws the
- * story's dive (story/fly.ts) rides.
- */
-
-const NEAR_PLANE = 0.1; // world units — core/scene's camera near
+const NEAR_PLANE = 0.1; // world units, the scene camera's near plane
 
 describe("fly-through / travel remap", () => {
-  it("(a) is the identity at insideRate 1 — the old linear dive, recoverable", () => {
+  it("(a) is the identity at insideRate 1", () => {
     for (const p of [0, 0.13, 0.3, 0.5, 0.68, 0.91, 1])
       expect(travelRemap(p, FLY.pInside, 1)).toBe(p);
   });
@@ -37,10 +30,10 @@ describe("fly-through / travel remap", () => {
     }
   });
 
-  it("(c) crosses the interior in 1/rate of the p it used to", () => {
+  it("(c) crosses the interior in 1/rate of the input p", () => {
     const [a, b] = FLY.pInside;
     const rate = FLY.insideRate;
-    // the INPUT p that maps onto the interior…
+    // the input p that maps onto the interior
     const inside = (p: number) => {
       const v = travelRemap(p, FLY.pInside, rate);
       return v >= a - 1e-12 && v <= b + 1e-12;
@@ -50,7 +43,7 @@ describe("fly-through / travel remap", () => {
     const lo = hits[0];
     const hi = hits[hits.length - 1];
     expect(hi - lo).toBeCloseTo((b - a) / rate, 2);
-    // …and it is centred where it was, so the beat does not slide
+    // centred on the same midpoint
     expect((hi + lo) / 2).toBeCloseTo((a + b) / 2, 2);
   });
 
@@ -74,13 +67,12 @@ describe("fly-through / passage fade", () => {
   it("(e) holds an element ahead of the camera fully present", () => {
     expect(passageFade(-8, x0, lead, fade)).toBe(1);
     expect(passageFade(x0 - lead - fade, x0, lead, fade)).toBe(1);
-    // one ramp-length out, still untouched
     expect(passageFade(x0 - lead - fade - 0.01, x0, lead, fade)).toBe(1);
   });
 
   it("(f) is gone BEFORE the near plane reaches the element, and stays gone", () => {
     expect(passageFade(x0 - lead, x0, lead, fade)).toBe(0);
-    // the near plane meets the element here — the glass left the frame already
+    // where the near plane meets the element
     expect(passageFade(x0 - NEAR_PLANE, x0, lead, fade)).toBe(0);
     expect(passageFade(x0, x0, lead, fade)).toBe(0);
     expect(passageFade(x0 + 5, x0, lead, fade)).toBe(0);
@@ -104,17 +96,14 @@ describe("fly-through / passage fade", () => {
   });
 
   it("(h) finishes clear of the near plane at the shipped knobs", () => {
-    // the whole point: the camera must never be inside DRAWN glass, and the
-    // near plane starts cutting an element open NEAR_PLANE before contact
+    // the near plane must never cut into drawn glass
     expect(FLY.passageLead).toBeGreaterThan(NEAR_PLANE);
-    // and the ramp must be short enough that the element is already filling the
-    // frame — an element two whole barrel-lengths ahead may not be fading
+    // and an element well ahead must not be fading yet
     expect(FLY.passageLead + FLY.passageFade).toBeLessThan(1);
   });
 
   it("(i) fades the elements one after another, rear to front", () => {
-    // three elements at increasing X: at any camera X the fades are
-    // non-decreasing front-ward — the one being passed is always the dimmest
+    // at any camera X the fades are non-decreasing toward the front
     const xs = [-1.9, -0.4, 1.7];
     for (let camX = -3; camX < 2.5; camX += 0.05) {
       const f = xs.map((x) => passageFade(camX, x, lead, fade));
@@ -124,7 +113,7 @@ describe("fly-through / passage fade", () => {
   });
 });
 
-describe("fly-through / the ruler", () => {
+describe("fly-through / camera path", () => {
   it("(j) orders the elements rear to front, keeping every id", () => {
     const measured = {
       Element_07: { x0: -0.3, x1: 0.0 },
@@ -141,7 +130,7 @@ describe("fly-through / the ruler", () => {
   });
 
   it("(k) reads camera world X off the spherical pose", () => {
-    // the dive's own heading: az = −π/2 puts the camera at targetX − dist
+    // az = −π/2 puts the camera at targetX − dist
     const camX = poseCamX({
       azimuth: -Math.PI / 2,
       elevation: 0,
@@ -149,7 +138,7 @@ describe("fly-through / the ruler", () => {
       targetX: 2.54,
     });
     expect(camX).toBeCloseTo(2.2, 12);
-    // an elevated park shortens the axial reach by cos(el)
+    // elevation shortens the axial reach by cos(el)
     expect(
       poseCamX({
         azimuth: -Math.PI / 2,
@@ -165,28 +154,8 @@ describe("fly-through / the ruler", () => {
     );
   });
 
-  it("(k2) is a pure AXIAL displacement — which is what lets the LENS do the moving", () => {
-    // The story parks a camera at −distFar and slides the MODEL instead; that
-    // matches only while the path stays ON the axis, since a Y or Z component
-    // would need a rotation no dolly can express.
-    for (let i = 0; i <= 40; i++) {
-      const pose = flyPose(i / 40);
-      const y = pose.distance * Math.sin(pose.elevation) + (pose.targetY ?? 0);
-      const z =
-        pose.distance * Math.cos(pose.elevation) * Math.cos(pose.azimuth);
-      expect(y, `world Y at p ${i / 40}`).toBeCloseTo(0, 12);
-      expect(z, `world Z at p ${i / 40}`).toBeCloseTo(0, 12);
-    }
-    // …and the run the dolly has to cover: the park behind the mount to the
-    // finale out front, distFar + xEnd = 25 world units of travel.
-    expect(poseCamX(flyPose(0))).toBeCloseTo(-FLY.distFar, 12);
-    expect(poseCamX(flyPose(1))).toBeCloseTo(FLY.xEnd, 12);
-    expect(poseCamX(flyPose(1)) - poseCamX(flyPose(0))).toBeCloseTo(25, 12);
-  });
-
   it("(l) keeps the interior window inside the barrel run", () => {
-    // pInside is in POSE p and must sit inside the linear stretch the pose path
-    // runs from pEnter to pOut, or the remap would reshape the approach easing
+    // pInside must sit inside the linear pEnter..pOut stretch of the path
     expect(FLY.pInside[0]).toBeGreaterThan(FLY.pEnter);
     expect(FLY.pInside[1]).toBeLessThan(FLY.pOut);
     expect(FLY.pInside[0]).toBeLessThan(FLY.pInside[1]);
@@ -194,7 +163,7 @@ describe("fly-through / the ruler", () => {
   });
 
   it("(m) keeps the wormhole and streak ramps over the compressed interior", () => {
-    // where the interior now lives in INPUT p
+    // the interior window in input p
     const [a, b] = FLY.pInside;
     const rate = FLY.insideRate;
     const mid = (a + b) / 2;
@@ -206,30 +175,27 @@ describe("fly-through / the ruler", () => {
       };
       return ss(p, s, peak) * (1 - ss(p, peak, e));
     };
-    // the pinch and the streaks are both well up for the whole crossing
+    // both ramps are well up for the whole crossing
     for (let i = 0; i <= 20; i++) {
       const p = mid - half + ((2 * half) / 20) * i;
       expect(arc(FLY.pWormhole, p)).toBeGreaterThan(0.5);
       expect(arc(FLY.pStreak, p)).toBeGreaterThan(0.4);
     }
-    // and both are still exactly nothing at the two ends of the demo
+    // and exactly 0 at both ends
     for (const p of [0, 1]) {
       expect(arc(FLY.pWormhole, p)).toBe(0);
       expect(arc(FLY.pStreak, p)).toBe(0);
     }
   });
 
-  it("(n) HOLDS the finale's framing — the fov never moves after pClear", () => {
-    // The settle finishes at pClear and the finale is a hold, whatever fovOut
-    // is tuned to — no continuous zoom into the starfield.
+  it("(n) holds the fov constant after pClear", () => {
     for (let i = 0; i <= 20; i++) {
       const p = FLY.pClear + ((1 - FLY.pClear) * i) / 20;
       expect(flyPose(p).fov, `fov at p ${p}`).toBeCloseTo(FLY.fovOut, 12);
     }
-    // the camera is still FLYING through that hold — the field opens by
-    // parallax, which is the calm the zoom was standing in for
+    // the camera keeps moving through the hold
     expect(poseCamX(flyPose(1))).toBeGreaterThan(poseCamX(flyPose(FLY.pClear)));
-    // and nothing between the entrance and the settle overshoots the pair
+    // no fov overshoot between pEnter and pClear
     const lo = Math.min(FLY.fovIn, FLY.fovOut);
     const hi = Math.max(FLY.fovIn, FLY.fovOut);
     for (let i = 0; i <= 20; i++) {
@@ -238,10 +204,9 @@ describe("fly-through / the ruler", () => {
       expect(flyPose(p).fov).toBeLessThanOrEqual(hi + 1e-9);
     }
   });
-  it("(o) flies DEAD-ON down the axis, from the park to the finale", () => {
-    // az = −π/2 and el = 0 put the camera at (targetX − dist, 0, 0) looking at
-    // (targetX, 0, 0): the optical axis, square to the mount face. Any high
-    // angle on the path reads as the lens being tilted.
+  it("(o) flies straight down the optical axis", () => {
+    // az = −π/2, el = 0: camera at (targetX − dist, 0, 0) looking down +X; the
+    // story slides the model instead of the camera, which only works on-axis
     for (let i = 0; i <= 40; i++) {
       const pose = flyPose(i / 40);
       expect(pose.elevation, `elevation at p ${i / 40}`).toBeCloseTo(0, 12);
@@ -251,36 +216,29 @@ describe("fly-through / the ruler", () => {
       );
       expect(pose.targetY ?? 0).toBe(0);
     }
-    // …so the camera's world X is exactly targetX − dist the whole way (no
-    // cos(el) foreshortening), which is what the passage ruler assumes
-    const pose = flyPose(0);
-    expect(poseCamX(pose)).toBeCloseTo(-FLY.distFar, 12);
+    // total travel: distFar + xEnd = 25 world units
+    expect(poseCamX(flyPose(0))).toBeCloseTo(-FLY.distFar, 12);
+    expect(poseCamX(flyPose(1))).toBeCloseTo(FLY.xEnd, 12);
+    expect(poseCamX(flyPose(1)) - poseCamX(flyPose(0))).toBeCloseTo(25, 12);
   });
 
-  it("(p) takes the room AND the glass glints down before the stars arrive", () => {
-    // One window drives both (FLY.pDark): the frame must be a dark tube by the
-    // time the sky comes up in it.
+  it("(p) dims the lighting and glass reflections before the stars arrive", () => {
     expect(FLY.pDark[0]).toBeLessThan(FLY.pDark[1]);
     expect(FLY.pDark[1]).toBeLessThanOrEqual(FLY.pSkyIn[1]);
-    // both floors are levels, and the glass floor is the darker of the two —
-    // the barrel keeps a rim, the elements keep nothing
+    // both floors are levels; the glass floor is the darker
     expect(FLY.darkFloor).toBeGreaterThanOrEqual(0);
     expect(FLY.darkFloor).toBeLessThanOrEqual(1);
     expect(FLY.glintFloor).toBeGreaterThanOrEqual(0);
     expect(FLY.glintFloor).toBeLessThanOrEqual(FLY.darkFloor);
   });
 
-  it("(q) has the iris WIDE OPEN before the camera reaches the glass", () => {
-    // The dive opens the stop on the approach; a stop still closing at pEnter
-    // (the arrival at the mount) is a shut door in the frame.
+  it("(q) opens the iris fully before the camera reaches the glass", () => {
     expect(FLY.pAperture[0]).toBeGreaterThanOrEqual(0);
     expect(FLY.pAperture[0]).toBeLessThan(FLY.pAperture[1]);
     expect(FLY.pAperture[1]).toBeLessThan(FLY.pEnter);
-    // …and open before the sky is FULLY up: the trace clips every ray outside
-    // the iris clear radius, so a shut stop must not meter the risen starfield
+    // and before the stars are fully up
     expect(FLY.pAperture[1]).toBeLessThan(FLY.pSkyIn[1]);
-    // the park is stopped DOWN and the flight ends wide open (the channel is
-    // 0 = f/2.8 open, 1 = f/22 closed)
+    // starts stopped down (channel 0 = f/2.8, 1 = f/22)
     expect(FLY.apertureShut).toBeGreaterThan(0);
     expect(FLY.apertureShut).toBeLessThanOrEqual(1);
   });
