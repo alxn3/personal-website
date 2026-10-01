@@ -62,11 +62,7 @@ import {
   skyOutAt,
 } from "./fly";
 import { trailEnvAt, trailSweepAt } from "./trails";
-import {
-  constellationEnvAt,
-  labelEnvAt,
-  quoteEnvAt,
-} from "./constellations";
+import { constellationEnvAt, labelEnvAt, quoteEnvAt } from "./constellations";
 import { band, clamp01 } from "../core/math";
 
 /** Every registered story window (complete, since this module imports every

@@ -105,7 +105,14 @@ export function emitDeform(dialect: Dialect): string {
     rem: A.lit(0),
   };
 
+  const eps = litOf(dialect, IDLE_EPS);
+  const zero = litOf(dialect, 0);
+  const idle = LAYOUT.names.map((_, i) => `${comp("ch", i)} < ${eps}`);
   const out: string[] = [S.header(LAYOUT.vec4Count)];
+  // Every recipe idle: return before the preamble.
+  out.push(`  if ( ${idle.join(" && ")} ) {`);
+  out.push(`    ${S.ret(zero, zero, zero, zero).replaceAll("\n  ", "\n    ")}`);
+  out.push("  }");
   for (const l of top.lines) out.push(`  ${l}`);
   for (const n of ["dX", "dY", "dZ", "dR"]) out.push(`  ${S.accum(n)}`);
 
@@ -183,5 +190,22 @@ export function emitDeform(dialect: Dialect): string {
   out.push("");
   out.push(`  ${S.ret("dX", "dY", "dZ", "dR")}`);
   out.push(dialect === "js" ? "})" : "}");
-  return out.join("\n");
+  return dropDeadTemps(out).join("\n");
+}
+
+const TEMP_DECL = /^\s*(?:let|float|const) (t\d+) = /;
+
+/** Remove temps nothing reads, cascading: one backward pass, since every temp
+ *  is declared above its reads. */
+function dropDeadTemps(lines: string[]): string[] {
+  const live = new Set<string>();
+  const kept: string[] = [];
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const decl = TEMP_DECL.exec(lines[i]);
+    if (decl && !live.has(decl[1])) continue;
+    const body = decl ? lines[i].slice(decl[0].length) : lines[i];
+    for (const [t] of body.matchAll(/\bt\d+\b/g)) live.add(t);
+    kept.push(lines[i]);
+  }
+  return kept.reverse();
 }

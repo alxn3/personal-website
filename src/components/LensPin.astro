@@ -4,9 +4,9 @@
  *
  *   <LensPin scene="internals" track="Focus_LeadScrew" label="STM lead screw" />
  *
- * The driver moves every [data-track] element each frame, so pins must sit in
- * a full-stage overlay. Track solid parts only: shader-deformed shell pieces
- * report their un-exploded position.
+ * The driver moves every [data-track] element each frame while its scene's band
+ * shows, so pins must sit in a full-stage overlay. Track solid parts only:
+ * shader-deformed shell pieces report their un-exploded position.
  */
 interface Props {
   /** Story scene id whose band fades the pin. */
@@ -86,7 +86,7 @@ const { scene, track, label, side = "right" } = Astro.props;
     right: -24px;
   }
 
-  /* Phones: labels would run off screen. */
+  /* Phones: labels would run off screen. The driver skips display:none pins. */
   @media (max-width: 760px) {
     .lens-pin {
       display: none;

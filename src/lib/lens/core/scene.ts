@@ -1,5 +1,5 @@
 import * as THREE from "three/webgpu";
-import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { texture, viewportOpaqueMipTexture } from "three/tsl";
 import { GLASS_SPECULAR, loadLensModel, setLensEnvironment } from "./model";
 import { createShading, type ShadingMode } from "../materials/shading";
 import {
@@ -40,7 +40,7 @@ import {
   type TransitionName,
   type TransitionRun,
 } from "./transitions";
-import { createWarmQueue, warmDrawSteps, type WarmStep } from "./warm";
+import { createWarmQueue, warmDrawStep, type WarmStep } from "./warm";
 import { captureBodyFade, restoreBodyFade } from "./body-fade";
 // Type-only, so the dev instruments stay out of the bundle.
 import type { PathViz } from "../dev/paths";
@@ -222,8 +222,9 @@ export interface SceneHandle {
    *  once. Changes no visible state; runs once per page. */
   warmFly: (spans: Record<string, GlassSpanMm>) => Promise<boolean>;
   /** Upload `objects` to the GPU ahead of time by drawing each once off
-   *  screen. `viaPass` also draws them through the wormhole pass. */
-  warmDraw: (objects: THREE.Object3D[], viaPass?: boolean) => void;
+   *  screen. `inDive` lets the draw ride a mounted dive frame instead of
+   *  waiting for one without the dive. */
+  warmDraw: (objects: THREE.Object3D[], inDive?: boolean) => void;
   /** Dev (/lens): drive the camera from `state.story`, not OrbitControls. */
   setStoryCamera: (on: boolean) => void;
   /** Story mode: override the fov, blended by `mix`; null releases it. */
@@ -298,6 +299,14 @@ const MODEL_SCALE = 0.05;
 /** The camera's minimum far plane. */
 const CAM_FAR = 400;
 
+/** MSAA samples on the scene target (the canvas itself is not multisampled). */
+const SCENE_SAMPLES = 4;
+
+/** The part of three's ViewportTextureNode that frees a target's transmission copy. */
+interface ViewportCopies {
+  getTextureForReference(target: THREE.RenderTarget): THREE.Texture;
+}
+
 /** Far plane for a camera `dist` from a model of `radius` (>= CAM_FAR). */
 export const farFor = (dist: number, radius: number): number =>
   Math.max(CAM_FAR, dist + radius * 8);
@@ -322,9 +331,9 @@ async function prepModel(gltfScene: THREE.Object3D) {
   const winks = stampWinkLanes(gltfScene);
   tagMechanismSpins(gltfScene);
   performance.mark("lens:frames-derived");
-  const inkEdges = cutInkEdges(gltfScene);
+  cutInkEdges(gltfScene);
   performance.mark("lens:lines-cut");
-  return { frames, winks, inkEdges };
+  return { frames, winks };
 }
 
 /** The model's boot rotation about Z: lays the optical axis (gltf +Y) along
@@ -350,7 +359,7 @@ export function modelAnchorFor(
 
 /**
  * Boot the lens viewer onto `canvas`. One scene per document: deform channels
- * and shading uniforms are module state, so destroy one before booting another.
+ * and shading uniforms are module state, and a scene is never torn down.
  */
 export async function initScene(
   canvas: HTMLCanvasElement,
@@ -360,13 +369,20 @@ export async function initScene(
   const storyMode = opts.story ?? false;
   // Start the model fetch before the renderer so the two overlap.
   const withAccessories = opts.accessories ?? !storyMode;
+  // /lens only; the story scripts its camera
+  const orbitModule = storyMode
+    ? null
+    : import("three/examples/jsm/controls/OrbitControls.js");
   const modelPromise = loadLensModel({ accessories: withAccessories }).then(
     async (loaded) => ({ ...loaded, ...(await prepModel(loaded.scene)) }),
   );
   // WebGPU, falling back to WebGL2 where unsupported; `?webgl` forces WebGL2.
+  // The canvas only receives finished frames (see the render path below), so
+  // it carries no depth buffer and no MSAA of its own.
   const renderer = new THREE.WebGPURenderer({
     canvas,
-    antialias: true,
+    antialias: false,
+    depth: false,
     alpha: true,
     powerPreference: "high-performance",
     forceWebGL: new URLSearchParams(location.search).has("webgl"),
@@ -378,13 +394,49 @@ export async function initScene(
   renderer.setClearColor(0x000000, 0);
   await renderer.init();
   performance.mark("lens:renderer-ready");
-  // Pick the deform shader dialect before any material is built.
-  setDeformBackend(
+  const webgl =
     (renderer as unknown as { backend?: { isWebGLBackend?: true } }).backend
-      ?.isWebGLBackend
-      ? "glsl"
-      : "wgsl",
+      ?.isWebGLBackend === true;
+  // Pick the deform shader dialect before any material is built.
+  setDeformBackend(webgl ? "glsl" : "wgsl");
+
+  // --- the render path ---
+  // Every frame draws the scene into one half-float MSAA target, then a
+  // pipeline copies it to the canvas with the colour transform: the plain one,
+  // or the wormhole post's while the dive is mounted. Nothing else draws to
+  // the canvas, so three never allocates its own framebuffer target, and every
+  // material compiles for this one target.
+  const bufSize = new THREE.Vector2();
+  function makeSceneTarget() {
+    renderer.getDrawingBufferSize(bufSize);
+    return new THREE.RenderTarget(bufSize.width, bufSize.height, {
+      samples: SCENE_SAMPLES,
+      type: THREE.HalfFloatType,
+    });
+  }
+  /** Free a target and the glass transmission copy three keeps for it. */
+  function disposeSceneTarget(target: THREE.RenderTarget) {
+    (viewportOpaqueMipTexture() as unknown as ViewportCopies)
+      .getTextureForReference(target)
+      .dispose();
+    target.dispose();
+  }
+  let sceneTarget = makeSceneTarget();
+  let sceneColor = texture(sceneTarget.texture);
+  const plainPipeline = new THREE.RenderPipeline(
+    renderer,
+    sceneColor as unknown as THREE.RenderPipeline["outputNode"],
   );
+  /** Draw the scene into the target, off screen. A warm-up draw stops here;
+   *  a frame then copies the target to the canvas. */
+  function drawScene() {
+    renderer.setRenderTarget(sceneTarget);
+    try {
+      renderer.render(scene, camera);
+    } finally {
+      renderer.setRenderTarget(null);
+    }
+  }
 
   // Dev (`?diag`): an on-screen status card, for phones.
   const diag: import("../dev/diag").LensDiag | null =
@@ -435,7 +487,6 @@ export async function initScene(
     accessoriesReady: accessoriesLoad,
     frames,
     winks,
-    inkEdges,
   } = await modelPromise;
   // Never rejects: on failure the accessories just don't appear.
   const accessoriesReady = accessoriesLoad.catch((err) => {
@@ -451,7 +502,7 @@ export async function initScene(
   gltfScene.rotation.y = Math.PI / 2;
 
   // needs prepModel's attributes and setDeformBackend() first
-  const unified = createUnified(gltfScene, inkEdges);
+  const unified = createUnified(gltfScene);
   const shading = createShading(gltfScene, unified);
   performance.mark("lens:materials-ready");
   if (import.meta.env.DEV) {
@@ -599,6 +650,8 @@ export async function initScene(
     clone.attenuationColor = new THREE.Color(0xffffff);
     clone.attenuationDistance = Infinity;
     clone.iridescence = 0;
+    // Front faces only: the back faces would cost a second transmission pass.
+    clone.side = THREE.FrontSide;
     // Set once up front: toggling `transparent` later forces a recompile.
     clone.transparent = true;
     glassCloneCache.set(m, { src, clone });
@@ -844,8 +897,10 @@ export async function initScene(
       renderer.setSize(w, h, false);
       bufW = w;
       bufH = h;
-      // three keeps rendering transmission into its old-sized texture after a
-      // resize, so the post pass must be rebuilt.
+      renderer.getDrawingBufferSize(bufSize);
+      sceneTarget.setSize(bufSize.width, bufSize.height);
+      // three keeps rendering transmission into its old-sized copy after a
+      // resize, so the target is replaced once the resizing settles.
       postStaleAt = performance.now();
     }
     camera.aspect = w / h;
@@ -900,7 +955,9 @@ export async function initScene(
 
   // --- camera control ---
   // Story mode scripts the camera, so it has no OrbitControls.
-  const controls = storyMode ? null : new OrbitControls(camera, canvas);
+  const controls = orbitModule
+    ? new (await orbitModule).OrbitControls(camera, canvas)
+    : null;
   if (controls) {
     controls.enableDamping = true;
     controls.minDistance = 2;
@@ -1041,8 +1098,7 @@ export async function initScene(
     null;
   /** kept from the first import so a rebuild is synchronous */
   let makePost:
-    typeof import("../optics/wormhole-post").createWormholePost | null =
-    null;
+    typeof import("../optics/wormhole-post").createWormholePost | null = null;
   let postWanted = false;
   let postMounted = false;
 
@@ -1055,41 +1111,25 @@ export async function initScene(
   /** a step that waits for a tick with no post pass and no fly-through */
   const bareStep = (run: () => void): WarmStep => ({ bare: true, run });
 
-  /** Run `body` with rendering sent to a throwaway 1×1 target, so its draws
-   *  compile shaders without reaching the canvas. */
-  function drawDry(body: () => void) {
-    const dry = new THREE.RenderTarget(1, 1);
-    try {
-      renderer.setRenderTarget(dry);
-      body();
-    } finally {
-      renderer.setRenderTarget(null);
-      dry.dispose();
-    }
-  }
-
-  /** Draw one frame through the post pass off screen (compiles it). */
-  function warmPassFrame() {
-    const post = wormholePost;
-    if (post) drawDry(() => post.render());
-  }
-
-  /** Owed after every pass build; skipped if the pass is already drawing. */
-  const warmPassStep: WarmStep = {
+  /** The next frame without the dive is copied through the post instead of
+   *  the plain pipeline. At rest the post is an exact passthrough, so the
+   *  pixels are the same and its canvas pipeline compiles unseen. */
+  let postWarmFrame = false;
+  /** Owed after every post build; nothing to do if the post is already drawing. */
+  const warmPostStep: WarmStep = {
     bare: false,
     run(mounted) {
-      if (!mounted) warmPassFrame();
+      if (!mounted) postWarmFrame = true;
     },
   };
 
-  /** Build the pass if needed (does not mount it). */
+  /** Build the post if needed (does not mount it). */
   async function startPost(): Promise<boolean> {
     if (wormholePost) return true;
     try {
-      makePost ??= (await import("../optics/wormhole-post"))
-        .createWormholePost;
+      makePost ??= (await import("../optics/wormhole-post")).createWormholePost;
       if (wormholePost) return true; // built by a concurrent call
-      wormholePost = makePost(renderer, scene, camera, invalidate);
+      wormholePost = makePost(renderer, sceneColor, camera, invalidate);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn(
@@ -1099,21 +1139,29 @@ export async function initScene(
       if (diag) diag.post = `FAILED: ${msg}`;
       return false;
     }
-    queueWarm(warmPassStep);
+    queueWarm(warmPostStep);
     return true;
   }
 
-  /** How long resizing must pause before the post pass is rebuilt. */
+  /** How long resizing must pause before the scene target is replaced. */
   const POST_RESIZE_SETTLE_MS = 250;
 
-  /** Replace the post pass synchronously, so no frame renders without one. */
-  function rebuildPost() {
+  /** Replace the scene target and both pipelines synchronously, so no frame
+   *  renders without one. Only owed once glass has drawn through the post. */
+  function rebuildRenderPath() {
     postStaleAt = 0;
     if (!wormholePost || !makePost) return;
-    const stale = wormholePost;
-    wormholePost = makePost(renderer, scene, camera, invalidate);
-    stale.dispose();
-    queueWarm(warmPassStep);
+    const stale = sceneTarget;
+    const stalePost = wormholePost;
+    sceneTarget = makeSceneTarget();
+    sceneColor = texture(sceneTarget.texture);
+    plainPipeline.outputNode =
+      sceneColor as unknown as THREE.RenderPipeline["outputNode"];
+    plainPipeline.needsUpdate = true;
+    wormholePost = makePost(renderer, sceneColor, camera, invalidate);
+    stalePost.dispose();
+    disposeSceneTarget(stale);
+    queueWarm(warmPostStep);
   }
 
   /** The ink material is warmed from the second frame on, never the first. */
@@ -1127,7 +1175,7 @@ export async function initScene(
     lastTickAt = now;
 
     if (postStaleAt !== 0 && now - postStaleAt > POST_RESIZE_SETTLE_MS)
-      rebuildPost();
+      rebuildRenderPath();
 
     let easing = false;
     for (let i = 0; i < CHANNELS.length; i++) {
@@ -1180,23 +1228,24 @@ export async function initScene(
     }
 
     motionTrace?.record(camera, state, modelRadius);
-    // Warm the ink material on the canvas (rechecked each frame: accessories
-    // add new materials when they load).
-    if (firstFrameDone && unified.needsWarm("canvas"))
-      unified.warmBodyLooks("canvas", () =>
-        drewScene(() => renderer.render(scene, camera)),
-      );
-    // Read once: syncBody and the render below must agree on the target.
-    const viaPass = postMounted && wormholePost !== null ? wormholePost : null;
+    // Warm the ink material (rechecked each frame: accessories add new
+    // materials when they load).
+    if (firstFrameDone && unified.needsWarm())
+      unified.warmBodyLooks(() => drewScene(drawScene));
+    const viaPost = postMounted && wormholePost !== null ? wormholePost : null;
     // At most one warm step per tick, before this tick's render.
     const warm = warmQueue.step({
-      mounted: viaPass !== null,
+      mounted: viaPost !== null,
       bare: !postMounted && !glassTransmissive,
     });
     if (warm && warmQueue.length) dirty = true;
-    unified.syncBody(viaPass ? "pass" : "canvas");
-    if (viaPass) viaPass.render();
-    else renderer.render(scene, camera);
+    unified.syncBody();
+    drawScene();
+    if (viaPost) viaPost.render();
+    else if (postWarmFrame && wormholePost) {
+      postWarmFrame = false;
+      wormholePost.render();
+    } else plainPipeline.render();
     warm?.after?.();
     for (const cb of frameCbs) if (cb(project, dt)) dirty = true;
 
@@ -1209,48 +1258,34 @@ export async function initScene(
   // --- warm-up draws ---
   let warmedFly = false;
 
-  /** True if `body` drew more than one draw call, i.e. the scene and not just
-   *  the post pass's output quad. */
+  /** True if `body` drew anything. */
   function drewScene(body: () => void): boolean {
     const before = renderer.info.render.drawCalls;
     body();
-    return renderer.info.render.drawCalls - before > 1;
+    return renderer.info.render.drawCalls - before > 0;
   }
 
-  /** Draw off screen as the fly-through does: starfield in the scene and
-   *  through the post pass. `body` does the drawing. */
-  function warmFlyDraw(body: (post: NonNullable<typeof wormholePost>) => void) {
-    const sky = starfield;
-    const post = wormholePost;
-    if (!sky || !post) return;
-    const bgSaved = scene.background ?? null;
-    scene.background = sky.backdrop;
-    scene.add(sky.object);
-    try {
-      drawDry(() => body(post));
-    } finally {
-      scene.remove(sky.object);
-      scene.background = bgSaved;
-    }
-    dirty = true;
-  }
-
-  /** Fly-through warm step 1: the original materials on the canvas, then the
-   *  transmissive glass through the post pass, all off screen in one tick. */
+  /** Fly-through warm-up, off screen in one tick: the realistic look as the
+   *  dive's approach wears it, then the starfield and the transmissive glass. */
   function warmFlyFrame(spans: Record<string, GlassSpanMm>) {
-    if (!starfield || !wormholePost) return;
-    shading.withOriginals(() => renderer.render(scene, camera));
+    const sky = starfield;
+    if (!sky) return;
     // withOriginals, not setShading: a mode switch would replace the clones
-    warmFlyDraw((post) =>
-      shading.withOriginals(() => {
-        enableGlassTransmissive(spans);
-        try {
-          post.render();
-        } finally {
-          disableGlassTransmissive(); // the clones stay cached
-        }
-      }),
-    );
+    shading.withOriginals(() => {
+      drawScene();
+      const bgSaved = scene.background ?? null;
+      scene.background = sky.backdrop;
+      scene.add(sky.object);
+      enableGlassTransmissive(spans);
+      try {
+        drawScene();
+      } finally {
+        disableGlassTransmissive(); // the clones stay cached
+        scene.remove(sky.object);
+        scene.background = bgSaved;
+      }
+    });
+    dirty = true;
   }
 
   // Dev: scene internals on window for console poking.
@@ -1519,30 +1554,14 @@ export async function initScene(
       await handle.enableWormholePost(true);
       await handle.enableWormholePost(false);
       if (!starfield || !wormholePost) return false;
-      // one step per tick
-      queueWarm(
-        bareStep(() => warmFlyFrame(spans)),
-        // the ink material, then the original glass, through the post pass
-        bareStep(() =>
-          warmFlyDraw((post) =>
-            unified.warmBodyLooks("pass", () => drewScene(() => post.render())),
-          ),
-        ),
-        bareStep(() =>
-          warmFlyDraw((post) => shading.withOriginals(() => post.render())),
-        ),
-      );
+      queueWarm(bareStep(() => warmFlyFrame(spans)));
       return true;
     },
-    warmDraw(objects, viaPass = false) {
+    warmDraw(objects, inDive = false) {
       // queued for tick(), one draw per tick
       if (objects.length === 0) return;
       queueWarm(
-        ...warmDrawSteps(objects.slice(), viaPass, {
-          scene,
-          render: () => renderer.render(scene, camera),
-          dryPass: warmPassFrame,
-        }),
+        warmDrawStep(objects.slice(), inDive, { scene, draw: drawScene }),
       );
     },
     setInkMix(v) {

@@ -1,12 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  atPolar,
-  frameAt,
-  makeCtx,
-  polarOf,
-  probe,
-  vertexAt,
-} from "./fixture";
+import { atPolar, frameAt, makeCtx, polarOf, probe, vertexAt } from "./fixture";
 import {
   approach,
   group,

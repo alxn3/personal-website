@@ -35,6 +35,11 @@ export function dustField(n = DUST_N, seed = DUST_SEED): Float32Array {
   return arr;
 }
 
+/** The refraction rays' opacity at an explode value; drawn only above 0.001. */
+export const rayOpacityAt = (explode: number): number =>
+  smoothstep(0.62, 0.96, explode);
+export const RAY_MIN_OPACITY = 0.001;
+
 export interface LensCinematics {
   /** Update for one drawn frame from the eased explode value and dt (ms). */
   update(explodeT: number, dtMs: number): void;
@@ -92,6 +97,12 @@ export function createCinematics(
     scene.add(line);
     rays.push(line);
   }
+  // The rays stay visible at opacity 0 until their first draw has compiled
+  // them, so the explode never compiles them mid-scroll.
+  let raysDrawn = false;
+  rays[0].onAfterRender = () => {
+    raysDrawn = true;
+  };
 
   // ambient dust motes drifting around the lens
   const dustGeo = new THREE.BufferGeometry();
@@ -120,8 +131,8 @@ export function createCinematics(
   function update(explodeT: number, dtMs: number): void {
     // Rays: the explode runs in the shader, so each seated centre is moved
     // through the same deform on the CPU, then taken to world space.
-    const rayOp = smoothstep(0.62, 0.96, explodeT);
-    if (rayOp > 0.001 && glassElements.length) {
+    const rayOp = rayOpacityAt(explodeT);
+    if (rayOp > RAY_MIN_OPACITY && glassElements.length) {
       for (let i = 0; i < glassElements.length; i++) {
         const m = glassElements[i];
         m.updateWorldMatrix(false, false);
@@ -155,7 +166,7 @@ export function createCinematics(
           rayOp * (ri === 1 ? 0.95 : 0.55);
         ray.visible = true;
       }
-    } else {
+    } else if (raysDrawn) {
       for (const ray of rays) ray.visible = false;
     }
 

@@ -1,15 +1,12 @@
 import { describe, expect, it } from "vitest";
+import * as THREE from "three/webgpu";
 import { fakeScene, installHeroDom } from "./fake-scene";
 import { atFrac, holdCentreOf, rangeOf, windowEdges } from "../story";
 import { ROSE_PULSE } from "../envelopes";
 import { createInternalsAmbient, internalsEnvAt } from "../internals";
 import { createPeelCards, CARDS_IN_SPAN, MOUNT_LO } from "../peelcards";
 import { createStoryConstellations } from "../constellations";
-import {
-  createStoryTrails,
-  AMBIENT_MAX,
-  AMBIENT_SPIN_RATE,
-} from "../trails";
+import { createStoryTrails, AMBIENT_MAX, AMBIENT_SPIN_RATE } from "../trails";
 import { createStoryPetals, SPAN_P0 as PETALS_P0 } from "../petals";
 
 // A rider's evaluate returns true only when it moved something visible on its
@@ -122,5 +119,49 @@ describe("the petals", () => {
     createStoryPetals(f.scene);
     for (const p of [0, PETALS_P0 - 1e-6, PETALS_P0, 1, 0.5]) f.evaluate(p);
     expect(f.calls).not.toContain("setDust");
+  });
+});
+
+describe("zero-opacity sky ink", () => {
+  /** a fake whose starfield is a real parent, as core/scene.ts's is */
+  const skyScene = () => {
+    const sky = new THREE.Group();
+    const f = fakeScene({
+      starfieldAttach: (o: THREE.Object3D) => (sky.add(o), true),
+      starfieldDetach: (o: THREE.Object3D) => void o.removeFromParent(),
+    });
+    return { f, sky };
+  };
+
+  it("trails: not drawn while attached at zero opacity; visible unattached", () => {
+    const { f, sky } = skyScene();
+    createStoryTrails(f.scene);
+    f.evaluate(holdCentreOf(tR));
+    const arcs = sky.children[0];
+    expect(arcs.visible).toBe(true);
+    // inside the attach pad, before the arcs fade in
+    f.evaluate(tR.p0);
+    expect(arcs.parent).toBe(sky);
+    expect(arcs.visible).toBe(false);
+    // detached: visible again, so the warm draw reaches it
+    f.evaluate(0);
+    expect(arcs.parent).toBe(null);
+    expect(arcs.visible).toBe(true);
+  });
+
+  it("constellations: only the quote is drawn behind it; all visible unattached", () => {
+    const { f, sky } = skyScene();
+    createStoryConstellations(f.scene);
+    f.evaluate(holdCentreOf(coR));
+    const group = sky.children[0];
+    const meshes = group.children;
+    expect(meshes.every((m) => m.visible)).toBe(true);
+    // only the quote shows through the trails
+    f.evaluate(atFrac(tR, 0.5));
+    const shown = meshes.filter((m) => m.visible).map((m) => m.name);
+    expect(shown).toEqual(["Lens_SkyQuote"]);
+    f.evaluate(0);
+    expect(group.parent).toBe(null);
+    expect(meshes.every((m) => m.visible)).toBe(true);
   });
 });

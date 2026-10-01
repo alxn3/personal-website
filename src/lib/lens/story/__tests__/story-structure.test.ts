@@ -1,12 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  STORY,
-  atFrac,
-  pulseFn,
-  rangeOf,
-  span,
-  storyWindows,
-} from "../story";
+import { STORY, atFrac, pulseFn, rangeOf, span, storyWindows } from "../story";
 import { WINK_SPAN } from "../envelopes";
 
 // Scene order is the story; reordering is a story change.

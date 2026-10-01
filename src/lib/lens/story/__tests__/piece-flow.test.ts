@@ -4,12 +4,7 @@ import * as THREE from "three/webgpu";
 import { NUM } from "../../ops/algebra";
 import { IDLE_EPS, lanesAt, pieceField, type LiveRecipe, type PieceLanes } from "../../ops/cpu"; // prettier-ignore
 import { shippedModel } from "./shipped-model";
-import {
-  HALF,
-  PIECES,
-  PROBES,
-  type Piece,
-} from "../../ops/__tests__/fixture";
+import { HALF, PIECES, PROBES, type Piece } from "../../ops/__tests__/fixture";
 import { lin } from "./fake-scene";
 import { PART_CLASS, type OpCtx } from "../../ops/ops";
 import { DEPTH_THIN, WRAP_DIR, sheetTerm } from "../../ops/house";

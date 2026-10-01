@@ -225,14 +225,14 @@ describe("the chunk law, on the source", () => {
   })(root);
 
   /** every non-test source file under src/ with a STATIC, non-type import of
-   *  `<name>.js` — `import … from`, `export … from` and the bare `import "…"` */
+   *  `<name>` — `import … from`, `export … from` and the bare `import "…"` */
   const staticImportersOf = (name: string) =>
     files
       .filter(
         (f) =>
           !f.includes("__tests__") &&
           new RegExp(
-            `(^|\\n)\\s*(import|export)(?!\\s+type\\b)(\\s*[^;]*?\\s+from)?\\s*["'][^"']*/${name}\\.js["']`,
+            `(^|\\n)\\s*(import|export)(?!\\s+type\\b)(\\s*[^;]*?\\s+from)?\\s*["'][^"']*/${name}(\\.js)?["']`,
           ).test(readFileSync(f, "utf8")),
       )
       .map((f) => relative(root, f))
@@ -260,7 +260,7 @@ describe("the chunk law, on the source", () => {
     // the checker's own regex, against the forms a mutant could use
     const re = (name: string) =>
       new RegExp(
-        `(^|\\n)\\s*(import|export)(?!\\s+type\\b)(\\s*[^;]*?\\s+from)?\\s*["'][^"']*/${name}\\.js["']`,
+        `(^|\\n)\\s*(import|export)(?!\\s+type\\b)(\\s*[^;]*?\\s+from)?\\s*["'][^"']*/${name}(\\.js)?["']`,
       );
     for (const src of [
       'import { flyPoseAt } from "./fly";',
@@ -282,7 +282,7 @@ describe("the chunk law, on the source", () => {
   it("is not re-exported from the barrel", () => {
     const barrel = readFileSync(join(root, "lib/lens/index.ts"), "utf8");
     for (const name of Object.keys(LAW))
-      expect(barrel, name).not.toContain(`${name}.js`);
+      expect(barrel, name).not.toMatch(new RegExp(`/${name}(\\.js)?["']`));
     expect(barrel).not.toContain("storyStateAt");
     expect(barrel).not.toContain("storyCostAt");
     expect(barrel).not.toContain("pieceStateAt");

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import * as THREE from "three/webgpu";
-import { createWarmQueue, warmDrawSteps, type WarmStep } from "../warm";
+import { createWarmQueue, warmDrawStep, type WarmStep } from "../warm";
 
 // At most one warm step per frame; a step that can't run on this frame waits
 // for one where it can.
@@ -63,68 +63,57 @@ function rig() {
   const log: string[] = [];
   const env = {
     scene,
-    render() {
-      log.push(`canvas:${obj.parent === scene}:${child.frustumCulled}`);
-    },
-    dryPass() {
-      log.push(`dry:${obj.parent === scene}:${child.frustumCulled}`);
+    draw() {
+      log.push(`draw:${obj.parent === scene}:${child.frustumCulled}`);
     },
   };
   return { scene, obj, child, log, env };
 }
 
-describe("warmDrawSteps", () => {
-  it("draws a canvas-only job once, mounted and unculled, and puts it back", () => {
+describe("warmDrawStep", () => {
+  it("draws the object once, mounted and unculled, and puts it back", () => {
     const { scene, obj, child, log, env } = rig();
-    const steps = warmDrawSteps([obj], false, env);
-    expect(steps).toHaveLength(1);
-    expect(steps[0].bare).toBe(true);
-    expect(steps[0].run(false)).toBeUndefined();
-    expect(log).toEqual(["canvas:true:false"]);
+    const step = warmDrawStep([obj], false, env);
+    expect(step.bare).toBe(true);
+    expect(step.run(false)).toBeUndefined();
+    expect(log).toEqual(["draw:true:false"]);
     expect(obj.parent).toBeNull();
     expect(child.frustumCulled).toBe(true);
     expect(scene.children).toEqual([]);
   });
 
-  it("gives a viaPass job a canvas step and a pass step, the pass one never bare", () => {
-    const { log, env, obj } = rig();
-    const [canvas, pass] = warmDrawSteps([obj], true, env);
-    expect(canvas.bare).toBe(true);
-    expect(pass.bare).toBe(false);
-    pass.run(false);
-    expect(log).toEqual(["dry:true:false"]); // the pass step draws no canvas
-  });
-
-  it("on a mounted tick, the pass step rides the real draw: mounted until the after hook", () => {
+  it("an inDive step is never bare, and rides a mounted frame's own draw", () => {
     const { scene, obj, child, log, env } = rig();
-    const [, pass] = warmDrawSteps([obj], true, env);
-    const after = pass.run(true);
-    expect(log).toEqual([]); // no dry pass draw — that would be a second one
+    const step = warmDrawStep([obj], true, env);
+    expect(step.bare).toBe(false);
+    const after = step.run(true);
+    expect(log).toEqual([]); // no draw of its own: that would be a second one
     expect(obj.parent).toBe(scene);
     expect(child.frustumCulled).toBe(false);
     expect(after).toBeTypeOf("function");
     after!();
     expect(obj.parent).toBeNull();
     expect(child.frustumCulled).toBe(true);
+    // without the dive it draws itself
+    step.run(false);
+    expect(log).toEqual(["draw:true:false"]);
   });
 
   it("leaves an object that already has a parent where it is", () => {
     const { scene, obj, env } = rig();
     const home = new THREE.Group();
     home.add(obj);
-    const [canvas] = warmDrawSteps([obj], false, env);
-    canvas.run(false);
+    warmDrawStep([obj], false, env).run(false);
     expect(obj.parent).toBe(home);
     expect(scene.children).toEqual([]);
   });
 
   it("restores even when the draw throws", () => {
     const { obj, child, env } = rig();
-    env.render = () => {
+    env.draw = () => {
       throw new Error("lost context");
     };
-    const [canvas] = warmDrawSteps([obj], false, env);
-    expect(() => canvas.run(false)).toThrow();
+    expect(() => warmDrawStep([obj], false, env).run(false)).toThrow();
     expect(obj.parent).toBeNull();
     expect(child.frustumCulled).toBe(true);
   });

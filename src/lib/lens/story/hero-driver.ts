@@ -1,6 +1,6 @@
 // Scroll driver for the homepage lens hero. The 3D frame is evaluated at the
-// eased story p (scene.onEvaluate); the DOM chrome (--beat-* vars, HUD, scene
-// rail, scroll cue, stage tint) is written at the raw scroll p in frame().
+// eased story p (scene.onEvaluate); the DOM chrome (pins' --beat-* vars, HUD,
+// scene rail, scroll cue, stage tint) is written at the raw scroll p in frame().
 // Element ids and data-* attributes below must match LensStory.astro.
 // This file is in the homepage's first chunk: optics/ and the lazy story
 // modules (fly, trails, constellations, petals, state, cost, flow) may only be
@@ -61,9 +61,10 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
   const hud = document.getElementById("hud")!;
   const sceneRail = document.getElementById("scene-rail")!;
   const scrollCue = document.getElementById("scroll-cue")!;
-  // Every [data-beat] element gets its scene's progress as CSS custom
-  // properties. An unknown scene id warns and is skipped.
-  const beats = [...track.querySelectorAll<HTMLElement>("[data-beat]")].flatMap(
+  // Pins (LensPin.astro): each [data-track] element follows its model node on
+  // screen and gets its scene's progress as CSS custom properties. An unknown
+  // scene id warns and is skipped.
+  const pins = [...stage.querySelectorAll<HTMLElement>("[data-track]")].flatMap(
     (el) => {
       const id = el.dataset.beat!;
       let r, bnd;
@@ -77,29 +78,31 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
       return [
         {
           el,
+          node: el.dataset.track!,
           p0: r.p0,
           p1: r.p1,
           // the caption band; the final band runs one feather past the track
           // end so --beat-visibility stays at 1 there
           a: bnd.a,
           b: bnd.final ? bnd.b + BAND_FEATHER : bnd.b,
+          // not display:none (phones); re-read on layout changes
+          displayed: true,
           // last values written, to skip unchanged writes
           wLocal: NaN,
           wVisibility: NaN,
+          wx: NaN,
+          wy: NaN,
+          wVis: "",
         },
       ];
     },
-  );
-
-  // Pins: every [data-track] element follows its model node on screen
-  // (LensPin.astro).
-  const pins = [...stage.querySelectorAll<HTMLElement>("[data-track]")].map(
-    (el) => ({ el, node: el.dataset.track!, wx: NaN, wy: NaN, wVis: "" }),
   );
   if (pins.length) {
     const at = { x: 0, y: 0 };
     scene.onFrame((project) => {
       for (const pin of pins) {
+        // only while it can show: displayed, inside its band
+        if (!pin.displayed || !(pin.wVisibility > 0)) continue;
         // hidden when the node is unknown or behind the camera
         const vis = project(pin.node, at) ? "" : "hidden";
         if (vis === "") {
@@ -308,7 +311,7 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
 
     //   --beat-local      scene-local progress, 0..1
     //   --beat-visibility the caption band's fade
-    for (const c of beats) {
+    for (const c of pins) {
       const local = clamp01((p - c.p0) / (c.p1 - c.p0));
       const visibility = band(p, c.a, c.b);
       if (local !== c.wLocal) {
@@ -362,19 +365,17 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
   const measureTrack = () => {
     trackTop = track.getBoundingClientRect().top + window.scrollY;
     trackTotal = track.offsetHeight - window.innerHeight;
+    for (const pin of pins)
+      pin.displayed = getComputedStyle(pin.el).display !== "none";
   };
   const scrollP = () =>
     trackTotal > 0 ? clamp01((window.scrollY - trackTop) / trackTotal) : 0;
   // Set while the dev ?story panel's slider owns the story position.
   let override = false;
-  let ticking = false;
+  // Runs in the event itself: browsers fire scroll before the frame's rAF
+  // callbacks, so this frame's 3D tick already eases toward the new p.
   function onScroll() {
-    if (ticking) return;
-    ticking = true;
-    requestAnimationFrame(() => {
-      if (!override) frame(scrollP());
-      ticking = false;
-    });
+    if (!override) frame(scrollP());
   }
   const onLayout = () => {
     measureTrack();
@@ -420,8 +421,7 @@ export function startHeroStory(scene: SceneHandle): HeroDriver {
       },
       /** the renderer's workload at p, over the live scene */
       async costAt(p: number = lastP) {
-        const { buildPartTableFromScene, storyCostAt } =
-          await import("./cost");
+        const { buildPartTableFromScene, storyCostAt } = await import("./cost");
         return storyCostAt(p, buildPartTableFromScene(modelRoot("costAt")));
       },
       /** where one piece (or every piece) is at p, over the live model */

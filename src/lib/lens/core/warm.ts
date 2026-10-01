@@ -1,9 +1,7 @@
 import type * as THREE from "three/webgpu";
 
 // Warm-up draws: off-screen draws that compile shaders or upload buffers before
-// the frame that first shows something. tick() runs at most one per frame. The
-// post pass renders the scene only once per frame, so a pass step on a frame
-// already drawing through the pass just joins that draw.
+// the frame that first shows something. tick() runs at most one per frame.
 
 /** One queued warm-up draw. */
 export interface WarmStep {
@@ -50,10 +48,8 @@ export function createWarmQueue(): WarmQueue {
 export interface WarmDrawEnv {
   /** where unparented objects are added for the draw */
   scene: THREE.Object3D;
-  /** draw to the canvas */
-  render(): void;
-  /** draw through the post pass into a throwaway target */
-  dryPass(): void;
+  /** draw the scene off screen */
+  draw(): void;
 }
 
 /** Add unparented `objects` to `scene` and disable culling so the draw can't
@@ -75,35 +71,23 @@ function mountForDraw(objects: THREE.Object3D[], scene: THREE.Object3D) {
   };
 }
 
-/** Steps that draw `objects` once on the canvas and, with `viaPass`, once
- *  through the post pass. */
-export function warmDrawSteps(
+/** A step that draws `objects` once off screen. With `inDive` it may also run
+ *  on a mounted dive frame, riding that frame's own draw. */
+export function warmDrawStep(
   objects: THREE.Object3D[],
-  viaPass: boolean,
+  inDive: boolean,
   env: WarmDrawEnv,
-): WarmStep[] {
-  const canvas: WarmStep = {
-    bare: true,
-    run() {
-      const restore = mountForDraw(objects, env.scene);
-      try {
-        env.render();
-      } finally {
-        restore();
-      }
-    },
-  };
-  const pass: WarmStep = {
-    bare: false,
+): WarmStep {
+  return {
+    bare: !inDive,
     run(mounted) {
       const restore = mountForDraw(objects, env.scene);
       if (mounted) return restore; // drawn by this frame's real render
       try {
-        env.dryPass();
+        env.draw();
       } finally {
         restore();
       }
     },
   };
-  return viaPass ? [canvas, pass] : [canvas];
 }

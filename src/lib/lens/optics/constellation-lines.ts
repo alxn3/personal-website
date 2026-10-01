@@ -163,6 +163,8 @@ export function createConstellationLines(opts: {
   mat.depthWrite = false;
   mat.depthTest = false;
   mat.side = THREE.DoubleSide; // billboard winding flips with the view
+  // strokes never overlap, so one pass draws what three's two would
+  mat.forceSinglePass = true;
   mat.toneMapped = false;
 
   const nA: TslNode = attribute("aA", "vec3");

@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync, writeFileSync } from "node:fs";
 import * as THREE from "three/webgpu";
-import { EDGE_THRESHOLD_DEG } from "../../materials/unified";
+import {
+  EDGE_THRESHOLD_DEG,
+  bodyFillsEmpty,
+  edgeGeometry,
+} from "../../materials/unified";
 import { RANGES, rangeOf } from "../story";
 import { flyPoseAt } from "../fly";
 import { FLY, poseCamX } from "../../optics/fly-core";
@@ -27,6 +31,10 @@ import {
   type StoryCost,
 } from "../cost";
 import { storyStateAt } from "../state";
+import { LABEL_ENTRIES } from "../constellations";
+import { RAY_MIN_OPACITY, rayOpacityAt } from "../cinematics";
+import { SKY } from "../../optics/sky";
+import { TRAIL_LOOK } from "../../optics/star-trails";
 import {
   ACCESSORIES,
   MODEL,
@@ -41,7 +49,8 @@ import { asTable } from "./md-table";
 
 const MAP_URL = new URL("../../STORY-COST.md", import.meta.url);
 
-/** The ink edge-line vertex count of every glTF mesh, cut at the shipped
+/** The ink edge line's vertex invocations per glTF mesh: the mesh vertices
+ *  its index references, cut by the ink's own edgeGeometry at the shipped
  *  EDGE_THRESHOLD_DEG from the decoded positions. */
 function edgeVertsOf({ json, bin }: { json: Gltf; bin: Buffer }): EdgeVerts {
   const counts = json.meshes.map((m) => {
@@ -54,9 +63,9 @@ function edgeVertsOf({ json, bin }: { json: Gltf; bin: Buffer }): EdgeVerts {
         geo.setIndex(
           new THREE.BufferAttribute(accessor(json, bin, prim.indices), 1),
         );
-      n += new THREE.EdgesGeometry(geo, EDGE_THRESHOLD_DEG).getAttribute(
-        "position",
-      ).count;
+      const index = edgeGeometry(new THREE.Mesh(geo), EDGE_THRESHOLD_DEG).index!
+        .array;
+      n += new Set(index).size;
     }
     return n;
   });
@@ -82,12 +91,14 @@ const COST_HEAD = [
   "kTris",
   "kVerts",
   "kLineV",
+  "kSkyV",
   "draws",
   "model",
   "ovl",
   "sky",
   "transp",
   "glassTx",
+  "fbCopy",
   "post",
   "cards",
   "channels",
@@ -100,6 +111,7 @@ const costRow = (c: StoryCost): string[] => [
   k(c.tris),
   k(c.verts),
   k(c.lineVerts),
+  k(c.skyVerts),
   String(c.drawsTotal),
   String(c.drawsModel),
   String(
@@ -113,6 +125,7 @@ const costRow = (c: StoryCost): string[] => [
   String(c.drawsSky),
   String(c.transparent),
   String(c.transmission),
+  String(c.fbCopies),
   c.post ? "on" : "—",
   String(c.overlay.cards),
   c.channels.join(" ") || "—",
@@ -125,6 +138,7 @@ const ROLLUP_HEAD = [
   "kTris",
   "kVerts",
   "kLineV",
+  "kSkyV",
   "draws",
   "transp",
   "holdKTris",
@@ -155,18 +169,22 @@ byte-for-byte):
 
     LENS_STORY_COST=1 npx vitest run src/lib/lens/story/__tests__/story-cost.test.ts
 
-**Model:** \`lens_web_segmented.glb\` — ${table.parts.length} mesh nodes, ${num(modelTris)} triangles, ${num(modelVerts)} vertices seated, plus ${modelLines} ink edge lines carrying ${num(modelLineVerts)} vertices of their own (every mesh but the decals and the elements, cut at ${EDGE_THRESHOLD_DEG}° — \`materials/unified.ts\`). \`lens_web_accessories.glb\` — ${table.accessories.length} nodes, ${num(accTris)} triangles, NONE of which the story ever draws (it is loaded for \`/lens\`'s accessory toggles; the hero shows no cap, hood or filter at any \`p\`), and they are censused here only to keep their triangles out of the model's own count.
+**Model:** \`lens_web_segmented.glb\` — ${table.parts.length} mesh nodes, ${num(modelTris)} triangles, ${num(modelVerts)} vertices seated, plus ${modelLines} ink edge lines indexing ${num(modelLineVerts)} of those vertices (every mesh but the decals and the elements, cut at ${EDGE_THRESHOLD_DEG}° — \`materials/unified.ts\`). \`lens_web_accessories.glb\` — ${table.accessories.length} nodes, ${num(accTris)} triangles, NONE of which the story ever draws (it is loaded for \`/lens\`'s accessory toggles; the hero shows no cap, hood or filter at any \`p\`), and they are censused here only to keep their triangles out of the model's own count.
 
-A frame's vertex load is \`kVerts + kLineV\`: the visible meshes plus their ink
-edge lines, which run the same deform (\`kLineV\` is 0 wherever the ink is off).
-Each recipe's chain sits inside \`If(channel ≥ 1e-6, …)\`, so only the recipes
+A frame's vertex load is \`kVerts + kLineV + kSkyV\`: the fills drawn plus
+their ink edge lines, which index the same vertices and run the same deform
+(\`kLineV\` counts each line's referenced vertices once, and is 0 wherever the
+ink is off), plus the sky's stars, trails, strokes and names. At full ink with
+no fill the body fills sit at zero opacity and are skipped, so \`kTris\`,
+\`kVerts\` and \`model\` there cover only the glass fills and the lines. Each
+recipe's chain sits inside \`If(channel ≥ 1e-6, …)\`, so only the recipes
 listed in a row's \`channels\` do per-vertex work.
 
 ## Per scene
 
 \`max\` is over every sample inside the scene's range; \`hold\` is the reading at
-the hold centre (the \`?story\` scrubber's jump target). \`kVerts\` and \`kLineV\`
-are separate maxima, so their sum is a bound.
+the hold centre (the \`?story\` scrubber's jump target). \`kVerts\`, \`kLineV\`
+and \`kSkyV\` are separate maxima, so their sum is a bound.
 
 \`\`\`text
 ${asTable(
@@ -178,6 +196,7 @@ ${asTable(
     k(r.maxTris),
     k(r.maxVerts),
     k(r.maxLineVerts),
+    k(r.maxSkyVerts),
     String(r.maxDraws),
     String(r.maxTransparent),
     k(r.holdTris),
@@ -194,8 +213,8 @@ ${asTable(
 One row per scene edge, caption-band edge, window edge and hold centre.
 \`draws\` = \`model\` + \`ovl\` + \`sky\` (no accessory is ever drawn on the story
 path). \`transp\` counts three's transparent list (the starfield rides the opaque
-list); \`glassTx\` counts visible transmissive glass meshes — any at all costs a
-framebuffer copy per frame.
+list); \`glassTx\` counts visible transmissive glass meshes (front faces only);
+\`fbCopy\` counts the framebuffer copy their pass reads.
 
 \`\`\`text
 ${asTable(COST_HEAD, costs.map(costRow))}
@@ -240,9 +259,12 @@ describe("the census covers the model exactly once", () => {
   it("cuts the ink line-work off the shipped geometry, and only where it exists", () => {
     // every mesh but the 18 decals and the 13 elements
     expect(table.parts.filter((r) => r.edgeLine)).toHaveLength(163);
-    for (const r of table.parts)
+    for (const r of table.parts) {
       expect(r.lineVerts > 0, `${r.name} lineVerts`).toBe(r.edgeLine);
-    expect(table.parts.reduce((n, r) => n + r.lineVerts, 0)).toBe(65100);
+      // the lines index the mesh's own vertices, so they never exceed them
+      expect(r.lineVerts, `${r.name} lineVerts`).toBeLessThanOrEqual(r.verts);
+    }
+    expect(table.parts.reduce((n, r) => n + r.lineVerts, 0)).toBe(41152);
     // without the decode, 0 rather than an estimate
     expect(bare.parts.reduce((n, r) => n + r.lineVerts, 0)).toBe(0);
   });
@@ -353,23 +375,40 @@ describe("the cost at the story's edges", () => {
   const hold = (id: string) => at(SCENE_HOLD_PS.find((h) => h.id === id)!.p);
   const COSTS = COST_SAMPLE_PS.map(at);
 
-  it("draws the whole body at p = 0, and no sky", () => {
-    // every mesh, nothing gated off yet
+  const glassRows = table.parts.filter((r) => r.glass);
+  const glassTris = glassRows.reduce((n, r) => n + r.tris, 0);
+  const glassVerts = glassRows.reduce((n, r) => n + r.verts, 0);
+
+  it("shows the whole body at p = 0 but draws only the glass fills, and no sky", () => {
+    // every mesh, nothing gated off yet; full ink with no fill skips the body fills
     const c = at(0);
+    const s = storyStateAt(0);
+    expect(bodyFillsEmpty(s.look.inkMix, s.look.inkFill)).toBe(true);
     expect(c.meshes).toBe(194);
-    expect(c.tris).toBe(74283);
-    expect(c.verts).toBe(86966);
+    expect(c.tris).toBe(glassTris);
+    expect(c.verts).toBe(glassVerts);
+    expect(c.drawsModel).toBe(13 + 163);
     expect(c.drawsSky).toBe(0);
     expect(c.post).toBe(false);
     expect(c.overlay.trails).toBe(0);
     expect(c.overlay.constellation).toBe(0);
   });
 
+  it("draws every fill once the ink fill shows", () => {
+    const p = COST_SAMPLE_PS.find((q) => {
+      const s = storyStateAt(q);
+      return s.look.inkMix === 1 && s.look.inkFill > 0 && s.look.bodyFade === 1;
+    });
+    expect(p, "a filled-ink sample").toBeDefined();
+    const c = at(p!);
+    expect(c.drawsModel).toBe(c.meshes + 163);
+    expect(c.tris).toBeGreaterThan(glassTris);
+  });
+
   it("carries the line pass's vertices, and drops them with the ink", () => {
-    // hero: whole model and its edge lines, ink on
+    // hero: every edge line, ink on
     const hero = hold("hero");
-    expect(hero.verts).toBe(86966);
-    expect(hero.lineVerts).toBe(65100);
+    expect(hero.lineVerts).toBe(41152);
     // dive: ink 0, so the lines cost nothing
     const dive = hold("flythrough");
     expect(storyStateAt(dive.p).look.inkMix).toBe(0);
@@ -394,6 +433,39 @@ describe("the cost at the story's edges", () => {
     expect(c.stars).toBeGreaterThan(700);
     // ink 0: realistic, transmissive glass, all thirteen (the worst case)
     expect(c.transmission).toBe(13);
+    // front faces only: one pass, one copy
+    expect(c.drawsModel).toBe(c.meshes);
+    expect(c.fbCopies).toBe(1);
+  });
+
+  it("counts the sky's ink only while it shows, and its vertices", () => {
+    const stars = SKY.stars.length;
+    // trails hold: the strokes and names are gone, the quote holds
+    const c = hold("trails");
+    expect(c.overlay.trails).toBe(1);
+    expect(c.overlay.constellation).toBe(0);
+    expect(c.overlay.sprites).toBe(1);
+    const trailVerts = stars * (TRAIL_LOOK.segments + 1) * 2;
+    expect(c.skyVerts).toBe(stars * 4 + trailVerts + 4);
+    // constellations hold: strokes, every name and the quote; no trails yet
+    const co = hold("constellations");
+    expect(co.overlay.trails).toBe(0);
+    expect(co.overlay.constellation).toBe(1);
+    expect(co.overlay.sprites).toBe(LABEL_ENTRIES.length + 1);
+    // no sky at all outside the dive's mount
+    expect(at(0).skyVerts).toBe(0);
+  });
+
+  it("draws the refraction rays only while the explode shows them", () => {
+    const shown = COSTS.map((c) => {
+      const s = storyStateAt(c.p);
+      const rays = c.overlay.cinematics - (s.look.dust ? 1 : 0);
+      const on = rayOpacityAt(s.channels.explode) > RAY_MIN_OPACITY;
+      expect(rays, `p ${c.p}`).toBe(on ? 3 : 0);
+      return on;
+    });
+    expect(shown).toContain(true);
+    expect(shown).toContain(false);
   });
 
   it("pays no framebuffer copy while the story wears its ink", () => {
@@ -408,7 +480,7 @@ describe("the cost at the story's edges", () => {
       "capsOn",
     ])
       // prettier-ignore
-      expect(hold(id).transmission, id).toBe(0);
+      expect([hold(id).transmission, hold(id).fbCopies], id).toEqual([0, 0]);
   });
 
   it("takes the glass out on the dive's far side, and the copy with it", () => {

@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  applyCapFades,
-  capFadeState,
-  type CapFadeTarget,
-} from "../cap-fades";
+import { applyCapFades, capFadeState, type CapFadeTarget } from "../cap-fades";
 import {
   CAPTION_BANDS,
   TRACK_MAX_PX,

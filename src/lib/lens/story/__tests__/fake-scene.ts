@@ -150,8 +150,12 @@ const canvasStub = () => ({
 
 export interface HeroDom {
   hud: { textContent: string };
-  /** dispatch a scroll: the driver's listener, then its rAF */
+  /** the pin elements, in `opts.pins` order; `style` keeps the last writes */
+  pins: { style: Record<string, unknown> }[];
+  /** dispatch a scroll: the driver's listener, then any rAF it queued */
   scroll(y: number): void;
+  /** dispatch the scroll event alone, before the frame's rAF callbacks */
+  scrollEvent(y: number): void;
   setDark(dark: boolean): void;
 }
 
@@ -162,6 +166,8 @@ export function installHeroDom(opts: {
   trackTop?: number;
   trackHeight?: number;
   innerHeight?: number;
+  /** LensPin elements on the stage; `display` is their computed display */
+  pins?: { beat: string; track: string; display?: string }[];
 }): HeroDom {
   const trackTop = opts.trackTop ?? 0;
   const trackHeight = opts.trackHeight ?? 11_000;
@@ -181,9 +187,14 @@ export function installHeroDom(opts: {
     getBoundingClientRect: () => ({ top: trackTop - (g.scrollY as number) }),
     offsetHeight: trackHeight,
   });
+  const pins = (opts.pins ?? []).map(({ beat, track, display }) =>
+    el({ dataset: { beat, track }, display: display ?? "block" }),
+  );
   const byId: Record<string, unknown> = {
     "lens-track": track,
-    "lens-stage": el(),
+    "lens-stage": el({
+      querySelectorAll: (sel: string) => (sel === "[data-track]" ? pins : []),
+    }),
     hud: el(),
     "scene-rail": el(),
     "scroll-cue": el(),
@@ -209,6 +220,7 @@ export function installHeroDom(opts: {
       body: { append() {} },
     },
     location: { search: "" },
+    getComputedStyle: (e: { display?: string }) => ({ display: e.display }),
     requestAnimationFrame: (cb: () => void) => void (raf = cb),
     ResizeObserver: class {
       observe() {}
@@ -224,11 +236,15 @@ export function installHeroDom(opts: {
   });
   return {
     hud: byId.hud as { textContent: string },
+    pins: pins as unknown as HeroDom["pins"],
     scroll(y) {
-      (g as { scrollY: number }).scrollY = y;
-      for (const cb of listeners.scroll ?? []) cb();
+      this.scrollEvent(y);
       raf?.();
       raf = null;
+    },
+    scrollEvent(y) {
+      (g as { scrollY: number }).scrollY = y;
+      for (const cb of listeners.scroll ?? []) cb();
     },
     setDark(d) {
       dark = d;

@@ -63,7 +63,8 @@ CSS `view()` timeline (`lib/cap-fades.ts` is the fallback).
 **Lazy modules.** `fly`, `trails`, `petals`, `constellations`, `state`, `cost`
 and `flow` in `story/` are loaded with `import()` only and never re-exported
 from `index.ts` (`story-state.test.ts` enforces this). The same goes for
-`animations.ts`, `materials/shading-bench.ts` and all of `dev/`.
+`animations.ts`, `materials/shading-bench.ts`, all of `dev/` and three's
+`OrbitControls` (`/lens` only).
 
 ## Directory map
 

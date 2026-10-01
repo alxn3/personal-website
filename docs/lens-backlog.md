@@ -10,7 +10,6 @@
 - **Placeholder content** — the cards (`story/peelcards.ts` PLACEHOLDER photos/titles), star labels (`story/constellations.ts` LABELS) and the star catalog (`optics/sky.ts`) await real content.
 - **Skip-to-bottom button** — planned instant jump past the hero; not built.
 - **Opening chapter rework** — hero + zoom are unchanged from the pre-ring story; separate effort.
-- **History squash** — before publishing: keep the lens system's evolution readable; drop a commit the next one reverts unless it carries something; scrub `.js` import extensions, every `.glb` blob, and anything path- or environment-dependent (local chromium paths etc.) from history.
 
 ## Owner calls (flag at review, don't act unilaterally)
 

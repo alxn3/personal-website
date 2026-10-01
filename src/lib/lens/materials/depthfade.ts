@@ -6,14 +6,15 @@ import {
   vec4,
   positionLocal,
   varying,
+  renderGroup,
 } from "three/tsl";
 
 // Soft near/far planes: pieces that move too close to or too far from the
 // camera fade out instead of popping. Opacity is exactly 1 over [near1, far0].
-export const uFadeNear0 = uniform(3); // fully faded (closest to camera)
-export const uFadeNear1 = uniform(6); // full opacity (near edge of the body)
-export const uFadeFar0 = uniform(20); // full opacity (far edge of the body)
-export const uFadeFar1 = uniform(28); // fully faded (farthest from camera)
+export const uFadeNear0 = uniform(3).setGroup(renderGroup); // fully faded (closest to camera)
+export const uFadeNear1 = uniform(6).setGroup(renderGroup); // full opacity (near edge of the body)
+export const uFadeFar0 = uniform(20).setGroup(renderGroup); // full opacity (far edge of the body)
+export const uFadeFar1 = uniform(28).setGroup(renderGroup); // fully faded (farthest from camera)
 
 /** Extra model radii the band widens by at full spread. */
 export const SPREAD_RADII = 3.2;

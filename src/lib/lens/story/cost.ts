@@ -12,27 +12,26 @@ import {
 } from "../core/visibility";
 import {
   GLASS_HANDOVER,
+  bodyFillsEmpty,
   bodyTransparent,
   hasInkEdgeLine,
 } from "../materials/unified";
 import { DIVE_P0, RANGES, holdCentreOf, rangeOf } from "./story";
 import { EXIT_END, GLASS_OUT } from "./fly";
 import { CARD_COUNT, MOUNT_HI, MOUNT_LO } from "./peelcards";
+import { trailEnvAt } from "./trails";
+import { SPAN_P0 as PETALS_SPAN_P0, SPAN_P1 as PETALS_SPAN_P1 } from "./petals";
 import {
-  SPAN_P0 as TRAILS_SPAN_P0,
-  SPAN_P1 as TRAILS_SPAN_P1,
-} from "./trails";
-import {
-  SPAN_P0 as PETALS_SPAN_P0,
-  SPAN_P1 as PETALS_SPAN_P1,
-} from "./petals";
-import {
-  LABELS,
-  SPAN_P0 as SKY_INK_P0,
-  SPAN_P1 as SKY_INK_P1,
+  LABEL_ENTRIES,
+  constellationEnvAt,
+  labelEnvAt,
+  quoteEnvAt,
 } from "./constellations";
+import { RAY_MIN_OPACITY, rayOpacityAt } from "./cinematics";
 import { STORY_SAMPLE_PS, storyStateAt, type StoryState } from "./state";
 import { SKY } from "../optics/sky";
+import { TRAIL_LOOK } from "../optics/star-trails";
+import { SLOT_COUNT } from "../optics/constellation-lines";
 
 // --- the geometry table --------------------------------------------------------
 
@@ -48,7 +47,8 @@ export interface PartRow {
   glass: boolean;
   /** has an ink edge-line object */
   edgeLine: boolean;
-  /** vertices of that edge line, which runs the deform too; 0 when unknown */
+  /** vertex invocations of that edge line's indexed draw (the mesh vertices
+   *  it references), which run the deform too; 0 when unknown */
   lineVerts: number;
   /** which fade level hides it and at what threshold (core/visibility.ts);
    *  null when no fade governs it */
@@ -197,15 +197,16 @@ export function buildPartTableFromScene(root: SceneLike): PartTable {
 export interface OverlayCost {
   /** the peel's card quads */
   cards: number;
-  /** star trails (one instanced draw) */
+  /** star trails (one instanced draw), while they show */
   trails: number;
-  /** constellation strokes (one draw) */
+  /** constellation strokes (one draw), while they show */
   constellation: number;
-  /** star-name sprites plus the quote, at most */
+  /** star-name sprites and the quote, while each shows */
   sprites: number;
   /** the bloom's petals (one instanced draw) */
   petals: number;
-  /** the three refraction rays, plus the dust while it is on */
+  /** the three refraction rays while they show (through the trails scene they
+   *  sit behind the camera, drawn but clipped), plus the dust while it is on */
   cinematics: number;
 }
 
@@ -214,14 +215,17 @@ export interface StoryCost {
   scene: string;
   /** visible model meshes */
   meshes: number;
-  /** triangles of visible model meshes */
+  /** triangles of the fills drawn: every visible mesh, or only the glass while
+   *  the body fills sit at zero opacity (full ink, no fill) and are skipped */
   tris: number;
-  /** vertices of visible model meshes, all run through the deform each frame */
+  /** vertices those fills run through the deform each frame */
   verts: number;
-  /** vertices of their ink edge lines (0 while the ink is off); these run the
-   *  deform too */
+  /** vertex invocations of their ink edge lines (0 while the ink is off);
+   *  these run the deform too */
   lineVerts: number;
-  /** one draw per visible mesh, plus one per visible edge line */
+  /** vertices of the sky's draws: stars, trails, strokes and names */
+  skyVerts: number;
+  /** one draw per fill drawn, plus one per visible edge line */
   drawsModel: number;
   overlay: OverlayCost;
   /** starfield draws; 0 while it is not mounted */
@@ -230,9 +234,11 @@ export interface StoryCost {
   /** visible surfaces in the transparent render list (the starfield draws in
    *  the opaque list) */
   transparent: number;
-  /** visible glass meshes with a transmission material; any at all means a
-   *  full framebuffer copy per frame */
+  /** visible glass meshes with a transmission material (front faces only, so
+   *  one pass) */
   transmission: number;
+  /** full framebuffer copies per frame: the transmission pass reads one */
+  fbCopies: number;
   /** the wormhole post pass is mounted */
   post: boolean;
   /** stars in the mounted starfield */
@@ -281,7 +287,10 @@ export function storyCostAt(p: number, table: PartTable): StoryCost {
     if (r.host >= 0) vis[i] = vis[r.host];
   });
 
+  // body fills at exactly zero opacity are skipped (materials/unified.ts)
+  const fillsHidden = bodyFillsEmpty(s.look.inkMix, s.look.inkFill);
   let meshes = 0;
+  let fills = 0;
   let tris = 0;
   let verts = 0;
   let lines = 0;
@@ -290,13 +299,15 @@ export function storyCostAt(p: number, table: PartTable): StoryCost {
   for (const [i, r] of table.parts.entries()) {
     if (!vis[i]) continue;
     meshes++;
-    tris += r.tris;
-    verts += r.verts;
     if (r.edgeLine) {
       lines++;
       lineVerts += r.lineVerts;
     }
     if (r.glass) glassVisible++;
+    else if (fillsHidden) continue;
+    fills++;
+    tris += r.tris;
+    verts += r.verts;
   }
 
   // --- which render list each surface lands in
@@ -307,20 +318,34 @@ export function storyCostAt(p: number, table: PartTable): StoryCost {
   // the body is transparent while ink shows or a fade runs; glass always is
   const bodyTransp = bodyTransparent(inkOn, s.look.bodyFade < 1);
 
-  // --- overlays, each mounted over its owner's window
+  // --- overlays, each mounted over its owner's window; the sky's ink rides
+  // the starfield and draws only above zero opacity
   const flyOn = inSpan(p, DIVE_P0, EXIT_END);
   const petalsOn = inSpan(p, PETALS_SPAN_P0, PETALS_SPAN_P1);
+  const trailsOn = flyOn && trailEnvAt(p) > 0;
+  const strokesOn = flyOn && constellationEnvAt(p) > 0;
+  const sprites = flyOn
+    ? (labelEnvAt(p) > 0 ? LABEL_ENTRIES.length : 0) +
+      (quoteEnvAt(p) > 0 ? 1 : 0)
+    : 0;
+  const raysOn = rayOpacityAt(s.channels.explode) > RAY_MIN_OPACITY;
   const overlay: OverlayCost = {
     cards: inSpan(p, MOUNT_LO, MOUNT_HI) ? CARD_COUNT : 0,
-    trails: inSpan(p, TRAILS_SPAN_P0, TRAILS_SPAN_P1) ? 1 : 0,
-    constellation: inSpan(p, SKY_INK_P0, SKY_INK_P1) ? 1 : 0,
-    sprites: inSpan(p, SKY_INK_P0, SKY_INK_P1) ? LABELS.length + 1 : 0,
+    trails: trailsOn ? 1 : 0,
+    constellation: strokesOn ? 1 : 0,
+    sprites,
     petals: petalsOn ? 1 : 0,
-    cinematics: s.look.dust ? RAY_LINES + 1 : RAY_LINES,
+    cinematics: (raysOn ? RAY_LINES : 0) + (s.look.dust ? 1 : 0),
   };
   const drawsSky = flyOn ? 1 : 0;
+  const stars = SKY.stars.length;
+  const skyVerts =
+    (flyOn ? stars * 4 : 0) +
+    (trailsOn ? stars * (TRAIL_LOOK.segments + 1) * 2 : 0) +
+    (strokesOn ? SLOT_COUNT * 4 : 0) +
+    sprites * 4;
 
-  const drawsModel = meshes + (inkOn ? lines : 0);
+  const drawsModel = fills + (inkOn ? lines : 0);
   const drawsOverlay = Object.values(overlay).reduce((a, b) => a + b, 0);
 
   return {
@@ -330,18 +355,20 @@ export function storyCostAt(p: number, table: PartTable): StoryCost {
     tris,
     verts,
     lineVerts: inkOn ? lineVerts : 0,
+    skyVerts,
     drawsModel,
     overlay,
     drawsSky,
     drawsTotal: drawsModel + drawsOverlay + drawsSky,
     transparent:
       glassVisible +
-      (bodyTransp ? meshes - glassVisible : 0) +
+      (bodyTransp ? fills - glassVisible : 0) +
       (inkOn ? lines : 0) +
       drawsOverlay,
     transmission,
+    fbCopies: transmission ? 1 : 0,
     post: flyOn,
-    stars: flyOn ? SKY.stars.length : 0,
+    stars: flyOn ? stars : 0,
     channels,
   };
 }
@@ -391,11 +418,12 @@ export interface SceneRollup {
   maxTris: number;
   maxVerts: number;
   maxLineVerts: number;
+  maxSkyVerts: number;
   maxDraws: number;
   maxTransparent: number;
   holdTris: number;
   holdDraws: number;
-  /** whether the scene ever pays the transmission copy */
+  /** whether the scene ever pays the transmission copies */
   transmission: boolean;
   post: boolean;
   /** every channel active anywhere in the scene */
@@ -416,6 +444,7 @@ export function sceneRollups(table: PartTable): SceneRollup[] {
       maxTris: max((c) => c.tris),
       maxVerts: max((c) => c.verts),
       maxLineVerts: max((c) => c.lineVerts),
+      maxSkyVerts: max((c) => c.skyVerts),
       maxDraws: max((c) => c.drawsTotal),
       maxTransparent: max((c) => c.transparent),
       holdTris: holdCost.tris,

@@ -217,13 +217,15 @@ function loadFaceImage(k: number, onReady: () => void): void {
   img.src = `https://picsum.photos/seed/lens-card-${k + 1}/${WELL_W}/${WELL_H}`;
 }
 
-/** Paint card `k`'s face: paper border, photo (or hatching until it loads),
- *  and a placeholder title underneath. */
-function paintFace(canvas: HTMLCanvasElement, k: number, light: boolean): void {
+/** Card `k`'s face on a new canvas: paper border, photo (or hatching until it
+ *  loads), and a placeholder title underneath. */
+function paintFace(k: number, light: boolean): HTMLCanvasElement {
+  const canvas = document.createElement("canvas");
+  canvas.width = FACE_W;
+  canvas.height = FACE_H;
   const c = light ? FACE_PALETTE.light : FACE_PALETTE.dark;
   const ctx = canvas.getContext("2d")!;
 
-  ctx.clearRect(0, 0, FACE_W, FACE_H);
   ctx.fillStyle = c.paper;
   ctx.fillRect(0, 0, FACE_W, FACE_H);
 
@@ -262,14 +264,17 @@ function paintFace(canvas: HTMLCanvasElement, k: number, light: boolean): void {
 
   // faint outer edge
   ctx.strokeRect(1, 1, FACE_W - 2, FACE_H - 2);
+  return canvas;
 }
+
+/** What a face texture holds once uploaded: its size, not its canvas. */
+const FACE_SIZE = { width: FACE_W, height: FACE_H };
 
 interface Card {
   /** Unparented until the field first mounts, so `warm()` can pre-draw it
    *  (warmDraw only takes parentless objects). */
   mesh: THREE.Mesh;
-  canvas: HTMLCanvasElement;
-  tex: THREE.CanvasTexture;
+  tex: THREE.CanvasTexture<HTMLCanvasElement | typeof FACE_SIZE>;
   uCentre: { value: THREE.Vector3 };
   uOpacity: { value: number };
   /** (cos, sin) of the card's in-plane tilt */
@@ -281,20 +286,19 @@ interface Field {
   cards: Card[];
 }
 
-/** Build the eight card meshes: one shared quad, one material and canvas each. */
+/** Build the eight card meshes: one shared quad, one material and texture each. */
 function buildField(light: boolean): Field {
   const geo = new THREE.PlaneGeometry(2, 2); // ±1 corners, scaled by uHalf
   const group = new THREE.Group();
   group.name = "Lens_CardField";
   const cards: Card[] = [];
   for (let k = 0; k < CARD_COUNT; k++) {
-    // the canvas is kept for theme repaints
-    const canvas = document.createElement("canvas");
-    canvas.width = FACE_W;
-    canvas.height = FACE_H;
-    paintFace(canvas, k, light);
-    const tex = new THREE.CanvasTexture(canvas);
+    const tex = new THREE.CanvasTexture<HTMLCanvasElement | typeof FACE_SIZE>(
+      paintFace(k, light),
+    );
     tex.colorSpace = THREE.SRGBColorSpace;
+    // the upload copies the canvas, so drop it; a repaint paints a new one
+    tex.onUpdate = () => (tex.image = FACE_SIZE);
     const s = cardScaleAt(k);
     const uHalf = uniform(
       new THREE.Vector2((CARD_SIZE[0] * s) / 2, (CARD_SIZE[1] * s) / 2),
@@ -326,11 +330,13 @@ function buildField(light: boolean): Field {
     mat.depthWrite = true;
     mat.alphaTest = 0.02;
     mat.side = THREE.DoubleSide;
+    // a billboard shows one face, so one pass draws what three's two would
+    mat.forceSinglePass = true;
     mat.toneMapped = false;
     const mesh = new THREE.Mesh(geo, mat);
     // position lives in a uniform, so the geometry's bounds are meaningless
     mesh.frustumCulled = false;
-    cards.push({ mesh, canvas, tex, uCentre, uOpacity, uRollCS });
+    cards.push({ mesh, tex, uCentre, uOpacity, uRollCS });
   }
   return { group, cards };
 }
@@ -361,7 +367,7 @@ export function createPeelCards(scene: SceneHandle): {
 
   function repaint(f: Field, ks: Iterable<number>) {
     for (const k of ks) {
-      paintFace(f.cards[k].canvas, k, light);
+      f.cards[k].tex.image = paintFace(k, light);
       f.cards[k].tex.needsUpdate = true;
     }
     scene.invalidate();

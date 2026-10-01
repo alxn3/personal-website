@@ -162,6 +162,9 @@ export function createStarTrails(opts: { light: boolean }): StarTrails {
   mat.depthWrite = false;
   mat.depthTest = false;
   mat.side = THREE.DoubleSide; // billboard winding flips with the view
+  // the spin pole is the view axis, so every arc on screen faces the same way
+  // and one pass draws what three's two would
+  mat.forceSinglePass = true;
   mat.toneMapped = false;
 
   const R = float(TRAIL_LOOK.radius);

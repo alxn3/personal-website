@@ -1,11 +1,14 @@
 // An `Algebra` that writes source text (WGSL, GLSL or JS) instead of computing
 // numbers. Each operation becomes one temp; a repeated expression reuses its
 // temp. `fork()` opens a nested scope (an `if` branch) that can read its
-// parent's temps but not add to them.
+// parent's temps but not add to them. Literal-only operations and identities
+// exact on NUM (x·1, x − 0, x − x, pow(x, 2), and mix(a, b, 0) for a ≠ −0) fold away.
 
-import type { Algebra, Sc } from "../algebra";
+import { NUM, type Algebra, type Sc } from "../algebra";
 
 export type Dialect = "wgsl" | "glsl" | "js";
+
+type Op = Exclude<keyof Algebra<number>, "lit">;
 
 /** One SSA binding per dialect. */
 const DECL: Record<Dialect, (v: string, expr: string) => string> = {
@@ -29,6 +32,10 @@ export function litOf(dialect: Dialect, n: number): string {
   if (dialect === "js") return s;
   return /[.eE]/.test(s) ? s : `${s}.0`;
 }
+
+/** A literal operand's value; undefined for an expression. */
+const valueOf = (x: Sc<string>): number | undefined =>
+  typeof x === "number" ? x : /^-?\d/.test(x) ? Number(x) : undefined;
 
 export interface SrcEmitter {
   A: Algebra<string>;
@@ -60,33 +67,51 @@ export function srcAlgebra(
     return v;
   };
 
+  /** NUM's result when every operand is a literal and it prints exactly. */
+  const folded = (name: Op, args: Sc<string>[]): string | undefined => {
+    const vals = args.map(valueOf);
+    if (vals.some((v) => v === undefined)) return undefined;
+    const r = (NUM[name] as (...a: number[]) => number)(...(vals as number[]));
+    return Number.isFinite(r) && !Object.is(r, -0)
+      ? litOf(dialect, r)
+      : undefined;
+  };
+
   const bin =
-    (op: string) =>
+    (op: string, name: Op) =>
     (a: Sc<string>, b: Sc<string>): string =>
-      emit(`(${lift(a)} ${op} ${lift(b)})`);
+      folded(name, [a, b]) ?? emit(`(${lift(a)} ${op} ${lift(b)})`);
   const call =
-    (name: string) =>
+    (name: Op) =>
     (...args: Sc<string>[]): string =>
+      folded(name, args) ??
       emit(`${callee(dialect, name)}(${args.map(lift).join(", ")})`);
+
+  const sub = bin("-", "sub");
+  const mul = bin("*", "mul");
+  const mix = call("mix");
+  const pow = call("pow");
 
   const A: Algebra<string> = {
     lit: (n) => litOf(dialect, n),
-    add: bin("+"),
-    sub: bin("-"),
-    mul: bin("*"),
-    div: bin("/"),
-    neg: (a) => emit(`(-${lift(a)})`),
+    add: bin("+", "add"),
+    sub: (a, b) =>
+      valueOf(b) === 0 ? lift(a) : a === b ? litOf(dialect, 0) : sub(a, b),
+    mul: (a, b) =>
+      valueOf(a) === 1 ? lift(b) : valueOf(b) === 1 ? lift(a) : mul(a, b),
+    div: bin("/", "div"),
+    neg: (a) => folded("neg", [a]) ?? emit(`(-${lift(a)})`),
     min: call("min"),
     max: call("max"),
     clamp: call("clamp"),
-    mix: call("mix"),
+    mix: (a, b, t) => (valueOf(t) === 0 ? lift(a) : mix(a, b, t)),
     step: call("step"),
     smoothstep: call("smoothstep"),
     sin: call("sin"),
     cos: call("cos"),
     atan2: call("atan2"),
     abs: call("abs"),
-    pow: call("pow"),
+    pow: (x, e) => (valueOf(e) === 2 ? A.mul(x, x) : pow(x, e)),
     sqrt: call("sqrt"),
     floor: call("floor"),
     fract: call("fract"),

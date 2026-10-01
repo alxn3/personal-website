@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { NUM } from "../../algebra";
+import { NUM, type Algebra } from "../../algebra";
+import { srcAlgebra } from "../algebra-src";
 import { makeRecipes, type RecipeName } from "../../recipes";
 import { PART_CLASS } from "../../ops";
 import { emitDeform, IDLE_EPS } from "../emit";
@@ -222,6 +223,48 @@ describe("emitted ≡ NUM over the goldens' grid", () => {
   });
 });
 
+describe("constant folding", () => {
+  it("(l) the JS emitter reproduces NUM bit for bit, folds included", () => {
+    // Folded (x·1, x − 0, x − x, mix(x, y, 0), pow(x, 2), literals) and unfolded
+    // rows alike. x is never −0: mix(−0, y, 0) is +0 on NUM.
+    const build = <S>(A: Algebra<S>, x: S, y: S): S[] => [
+      A.mul(x, 1),
+      A.mul(1, y),
+      A.sub(y, 0),
+      A.sub(x, x),
+      A.mix(x, y, 0),
+      A.pow(x, 2),
+      A.pow(y, 2),
+      A.add(A.mul(0.1, 3), A.sin(A.mul(2, 0.25))),
+      A.neg(A.sub(1, 1)),
+      A.div(1, A.sub(2, 2)),
+      A.add(y, 0),
+      A.mul(y, 0),
+      A.mix(x, y, 1),
+    ];
+    const src = srcAlgebra("js");
+    const rows = build(src.A, "x", "y");
+    const fn = new Function(
+      "__",
+      "x",
+      "y",
+      `${src.lines.join("\n")}\nreturn [${rows.join(", ")}];`,
+    );
+    for (const x of [0, 1, -1, 0.3, -2.5e-8, 1e30])
+      for (const y of [-0, 0, 0.7, -3, 1e-300]) {
+        const got: number[] = fn(NUM, x, y);
+        build(NUM, x, y).forEach(
+          (want, i) =>
+          expect(Object.is(got[i], want), `row ${i} at x=${x} y=${y}: ${got[i]} vs ${want}`).toBe(true), // prettier-ignore
+        );
+      }
+  });
+});
+
+/** A recipe branch's opening line. */
+const BRANCH = /\n {2}if \( ch\.\w >= /;
+const BRANCH_G = new RegExp(BRANCH.source, "g");
+
 describe("the emitted source's shape", () => {
   it("(i) uses only parameter shapes wgslFn/glslFn accept", () => {
     // three's WGSL parser rejects `struct`; arrays work on both backends.
@@ -241,14 +284,14 @@ describe("the emitted source's shape", () => {
         `ch.${"xyzw"[i]} >= ${String(IDLE_EPS)}`,
       );
     });
-    expect(DEFORM_WGSL.match(/if \( ch\./g)).toHaveLength(LAYOUT.names.length);
+    expect(DEFORM_WGSL.match(BRANCH_G)).toHaveLength(LAYOUT.names.length);
   });
 
   it("(k) the memo collapses every repeat inside a scope", () => {
     // No repeated expression within one scope (repeats across branches are fine).
     const scopes = [
-      DEFORM_WGSL.slice(0, DEFORM_WGSL.indexOf("  if ( ch.")),
-      ...DEFORM_WGSL.split(/\n  if \( ch\./)
+      DEFORM_WGSL.slice(0, DEFORM_WGSL.search(BRANCH)),
+      ...DEFORM_WGSL.split(BRANCH)
         .slice(1)
         .map((b) => b.slice(0, b.indexOf("\n  }"))),
     ];

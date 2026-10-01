@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 import * as THREE from "three/webgpu";
 import { deriveFrames, WRAP_ATTRS } from "../frames";
 import { recipeChannel } from "../host";
 import { displaceInto } from "../../dev/ops-cpu";
 import { TAU, mesh, shell, wedgeGeometry } from "./fixture-mesh";
+import { shippedModel } from "../../story/__tests__/shipped-model";
 
 // A decal follows its host's flat facets, not the smooth deform field
 // (ops/frames.ts bindDecals). The host is deliberately coarse so the two differ.
@@ -89,5 +91,26 @@ describe("decal shrink-wrap binding", () => {
     const { wedge } = scene();
     for (const { name } of WRAP_ATTRS)
       expect(wedge.geometry.getAttribute(name)).toBeUndefined();
+  });
+
+  it("(d) binds the shipped model's decals to the exhaustive search's triangles, bit for bit", () => {
+    // sha256 of every `_wrap*` array from the brute-force closest-triangle search
+    // (first winner in index order). A model re-export changes it legitimately.
+    const h = createHash("sha256");
+    let n = 0;
+    shippedModel().traverse((o) => {
+      if (!(o instanceof THREE.Mesh)) return;
+      for (const { name } of WRAP_ATTRS) {
+        const a = o.geometry.getAttribute(name);
+        if (!a) continue;
+        n++;
+        h.update(o.name);
+        h.update(new Uint8Array((a.array as Float32Array).buffer));
+      }
+    });
+    expect(n).toBe(54);
+    expect(h.digest("hex")).toBe(
+      "29bb445bb20c337db7d94c6efb3bae73e28e5b2d2d8547939ba64a2bd6125e3a",
+    );
   });
 });

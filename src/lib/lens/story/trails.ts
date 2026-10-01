@@ -91,6 +91,9 @@ export function createStoryTrails(scene: SceneHandle): StoryTrails {
     if (env > 0) scene.starfieldAttach(trails.object);
     else if (trails.object.parent && (p < SPAN_P0 || p > SPAN_P1))
       scene.starfieldDetach(trails.object);
+    // not drawn while attached at zero opacity; unattached it stays visible
+    // so the warm draw reaches it
+    trails.object.visible = env > 0 || !trails.object.parent;
     return moved;
   });
 

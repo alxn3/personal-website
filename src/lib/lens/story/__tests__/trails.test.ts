@@ -190,6 +190,12 @@ describe("the arcs' geometry", () => {
     }
   });
 
+  it("draws in one pass: the pole is the view axis, so every arc faces one way", () => {
+    const mat = mesh.material as THREE.Material;
+    expect(mat.transparent && mat.side === THREE.DoubleSide).toBe(true);
+    expect(mat.forceSinglePass).toBe(true);
+  });
+
   it("states its own bounding sphere — the whole sky — and fits in tens of KB", () => {
     // set explicitly, since `position` holds parameters, not places
     expect(geo.boundingSphere!.radius).toBe(TRAIL_LOOK.radius);

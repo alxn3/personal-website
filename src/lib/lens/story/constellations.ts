@@ -529,6 +529,8 @@ function buildSprite(
   mat.depthWrite = false;
   mat.depthTest = false;
   mat.side = THREE.DoubleSide;
+  // a billboard shows one face, so one pass draws what three's two would
+  mat.forceSinglePass = true;
   mat.toneMapped = false;
 
   const mesh = new THREE.Mesh(geo, mat);
@@ -638,14 +640,20 @@ export function createStoryConstellations(
     if (env <= 0 && qEnv <= 0) {
       if (group.parent && (p < SPAN_P0 || p > SPAN_P1))
         scene.starfieldDetach(group);
-      return false;
+    } else if (!scene.starfieldAttach(group)) {
+      // the starfield may be (re)mounted at any time; keep asking for frames
+      // until the attach succeeds
+      return true;
     }
 
-    // the starfield may be (re)mounted at any time; keep asking for frames
-    // until the attach succeeds
-    if (!scene.starfieldAttach(group)) return true;
+    // not drawn while attached at zero opacity; unattached they stay visible
+    // so the warm draw reaches them
+    const unattached = !group.parent;
+    lines.object.visible = unattached || env > 0;
+    for (const l of labels) l.mesh.visible = unattached || labelO > 0;
+    quote.mesh.visible = unattached || qEnv > 0;
 
-    // lines gone, quote static: stop the clock and let the scene sleep
+    // lines gone, quote static or gone: stop the clock and let the scene sleep
     if (env <= 0) return false;
 
     tAcc += dt;

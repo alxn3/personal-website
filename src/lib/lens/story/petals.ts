@@ -291,6 +291,8 @@ export function buildPetalObject(light: boolean): PetalField {
   mat.depthWrite = true;
   mat.alphaTest = 0.02;
   mat.side = THREE.DoubleSide;
+  // one pass, in instance order (three's two would draw flipped petals first)
+  mat.forceSinglePass = true;
   mat.toneMapped = false;
 
   const mesh = new THREE.Mesh(geo, mat);

@@ -156,6 +156,8 @@ export function setLensEnvironment(
   scene: THREE.Scene,
 ): void {
   const pmrem = new THREE.PMREMGenerator(renderer);
-  scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+  const room = new RoomEnvironment();
+  scene.environment = pmrem.fromScene(room, 0.04).texture;
+  room.dispose();
   pmrem.dispose();
 }

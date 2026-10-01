@@ -1,6 +1,7 @@
 import * as THREE from "three/webgpu";
 import {
   Fn,
+  If,
   uv,
   uniform,
   vec2,
@@ -15,7 +16,6 @@ import {
   mix,
   step,
   smoothstep,
-  pass,
 } from "three/tsl";
 import type { TslNode } from "../ops/tsl-types";
 import { STARFIELD_LOOK, devKnobs } from "./starfield";
@@ -34,7 +34,7 @@ const WORMHOLE_LOOK = {
 const uPinchStrength = uniform(WORMHOLE_LOOK.pinchStrength);
 const uProfilePow = uniform(WORMHOLE_LOOK.profilePow);
 
-// A screen-space post pass that pinches the whole frame toward the throat (the
+// A screen-space post that pinches the whole frame toward the throat (the
 // exit axis's vanishing point). With d = uv − throat and r its aspect-corrected
 // length, each pixel samples uv + d·k, where
 //   k = uWormhole · pinchStrength · (1 − r/rEdge)^profilePow · borderWindow.
@@ -105,14 +105,15 @@ const uRingSmearMix = uniform(RING_LOOK.smearMix);
 export interface WormholePost {
   /** Update the throat and edge uniforms from the camera; call before `render()`. */
   sync(camera: THREE.PerspectiveCamera): void;
-  /** Render the frame through the pinch, in place of `renderer.render`. */
+  /** Copy the drawn scene to the canvas through the pinch. */
   render(): void;
   dispose(): void;
 }
 
+/** `color` samples the scene target the frame was drawn into. */
 export function createWormholePost(
   renderer: THREE.WebGPURenderer,
-  scene: THREE.Scene,
+  color: TslNode,
   camera: THREE.PerspectiveCamera,
   invalidate: () => void = () => {},
 ): WormholePost {
@@ -123,10 +124,6 @@ export function createWormholePost(
   const uREdge = uniform(Math.SQRT1_2);
   /** throat→border distances (x−, x+, y−, y+), clamped ≥ 1e-4 */
   const uEdge = uniform(new THREE.Vector4(0.5, 0.5, 0.5, 0.5));
-
-  // keep the canvas's MSAA
-  const scenePass = pass(scene, camera, { samples: renderer.samples });
-  const color = scenePass.getTextureNode() as unknown as TslNode;
 
   /** Fraction of the way from the throat to the border along `o` (1 = on it). */
   const borderFraction = (o: TslNode): TslNode => {
@@ -159,49 +156,63 @@ export function createWormholePost(
 
   const outputNode = Fn(() => {
     const suv: TslNode = uv().toVar();
-    const d: TslNode = suv.sub(uThroat).toVar();
-    const r: TslNode = vec2(d.x.mul(uAspect), d.y).length().toVar();
-    const circ: TslNode = pow(max(float(1).sub(r.div(uREdge)), 0), uProfilePow);
-    // the border window
-    const win: TslNode = float(1)
-      .sub(smoothstep(uEdgeFade, float(1), borderFraction(d)))
-      .toVar();
-    const k: TslNode = uWormhole.mul(uPinchStrength).mul(circ).mul(win).toVar();
-    // chromatic aberration: R, G, B sampled at k·(1 − caShift), k, k·(1 + caShift)
-    const ca: TslNode = k.mul(uCaShift).toVar();
-    const mid: TslNode = color.sample(suv.add(d.mul(k))).toVar();
-    const base: TslNode = vec4(
-      color.sample(suv.add(d.mul(k.sub(ca)))).r,
-      mid.g,
-      color.sample(suv.add(d.mul(k.add(ca)))).b,
-      mid.a,
-    );
+    const out: TslNode = vec4(0).toVar();
+    // at rest the pass is a passthrough: one tap instead of ten
+    If(uWormhole.equal(0), () => {
+      out.assign(color.sample(suv));
+    }).Else(() => {
+      const d: TslNode = suv.sub(uThroat).toVar();
+      const r: TslNode = vec2(d.x.mul(uAspect), d.y).length().toVar();
+      const circ: TslNode = pow(
+        max(float(1).sub(r.div(uREdge)), 0),
+        uProfilePow,
+      );
+      // the border window
+      const win: TslNode = float(1)
+        .sub(smoothstep(uEdgeFade, float(1), borderFraction(d)))
+        .toVar();
+      const k: TslNode = uWormhole
+        .mul(uPinchStrength)
+        .mul(circ)
+        .mul(win)
+        .toVar();
+      // chromatic aberration: R, G, B sampled at k·(1 − caShift), k, k·(1 + caShift)
+      const ca: TslNode = k.mul(uCaShift).toVar();
+      const mid: TslNode = color.sample(suv.add(d.mul(k))).toVar();
+      const base: TslNode = vec4(
+        color.sample(suv.add(d.mul(k.sub(ca)))).r,
+        mid.g,
+        color.sample(suv.add(d.mul(k.add(ca)))).b,
+        mid.a,
+      );
 
-    // ring band mask, on the radius this pixel samples
-    const rSrc: TslNode = r.mul(float(1).add(k)).toVar();
-    const rRing: TslNode = uRingRadius.mul(uRingGain).toVar();
-    const rWidth: TslNode = max(rRing.mul(uRingWidth), EPS);
-    const band: TslNode = float(1).sub(
-      smoothstep(float(0), rWidth, abs(rSrc.sub(rRing))),
-    );
-    const mask: TslNode = uWormhole.mul(band).mul(win).toVar();
+      // ring band mask, on the radius this pixel samples
+      const rSrc: TslNode = r.mul(float(1).add(k)).toVar();
+      const rRing: TslNode = uRingRadius.mul(uRingGain).toVar();
+      const rWidth: TslNode = max(rRing.mul(uRingWidth), EPS);
+      const band: TslNode = float(1).sub(
+        smoothstep(float(0), rWidth, abs(rSrc.sub(rRing))),
+      );
+      const mask: TslNode = uWormhole.mul(band).mul(win).toVar();
 
-    // fold: the same ray at the radius mirrored about the ring
-    const foldOff: TslNode = d.mul(
-      rRing.mul(2).div(max(r, EPS)).sub(float(1).add(k)),
-    );
-    const folded: TslNode = mix(base, tap(foldOff), mask.mul(uRingFold));
+      // fold: the same ray at the radius mirrored about the ring
+      const foldOff: TslNode = d.mul(
+        rRing.mul(2).div(max(r, EPS)).sub(float(1).add(k)),
+      );
+      const folded: TslNode = mix(base, tap(foldOff), mask.mul(uRingFold));
 
-    // smear: average of the pinched offset turned ± up to smearArc in equal steps
-    const pinched: TslNode = d.mul(float(1).add(k)).toVar();
-    const pair = (i: number): TslNode => {
-      const ang: TslNode = uRingSmearArc.mul(i / SMEAR_TAPS);
-      return tap(turn(pinched, ang)).add(tap(turn(pinched, ang.negate())));
-    };
-    let sum: TslNode = pair(1);
-    for (let i = 2; i <= SMEAR_TAPS; i++) sum = sum.add(pair(i));
-    const smear: TslNode = sum.div(2 * SMEAR_TAPS);
-    return mix(folded, smear, mask.mul(uRingSmearMix));
+      // smear: average of the pinched offset turned ± up to smearArc in equal steps
+      const pinched: TslNode = d.mul(float(1).add(k)).toVar();
+      const pair = (i: number): TslNode => {
+        const ang: TslNode = uRingSmearArc.mul(i / SMEAR_TAPS);
+        return tap(turn(pinched, ang)).add(tap(turn(pinched, ang.negate())));
+      };
+      let sum: TslNode = pair(1);
+      for (let i = 2; i <= SMEAR_TAPS; i++) sum = sum.add(pair(i));
+      const smear: TslNode = sum.div(2 * SMEAR_TAPS);
+      out.assign(mix(folded, smear, mask.mul(uRingSmearMix)));
+    });
+    return out;
   })();
 
   const pipeline = new THREE.RenderPipeline(
@@ -272,7 +283,6 @@ export function createWormholePost(
       pipeline.render();
     },
     dispose() {
-      scenePass.dispose();
       pipeline.dispose();
       dropDevKnobs();
     },

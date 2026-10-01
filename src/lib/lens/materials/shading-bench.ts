@@ -249,9 +249,6 @@ export interface ShadingBench {
 export type ShadingBenchFactory = (light: boolean) => ShadingBench;
 
 export const createShadingBench: ShadingBenchFactory = (light) => {
-  // Edge geometry per mesh and crease angle; survives theme changes.
-  const edgeGeoCache = new Map<string, THREE.BufferGeometry>();
-
   // One look's materials, its extra objects, and each mesh's material.
   interface ModeBuild {
     mode: BenchMode;
@@ -335,13 +332,7 @@ export const createShadingBench: ShadingBenchFactory = (light) => {
         m.alphaTest = 0.02;
         return m;
       });
-      const thr = palette.edgeThresholdDeg ?? 24;
-      const geoKey = `${mesh.id}|${thr}`;
-      let geo = edgeGeoCache.get(geoKey);
-      if (!geo) {
-        geo = edgeGeometry(mesh, thr);
-        edgeGeoCache.set(geoKey, geo);
-      }
+      const geo = edgeGeometry(mesh, palette.edgeThresholdDeg ?? 24);
       attach(mesh, new THREE.LineSegments(geo, lineMat));
       return;
     }

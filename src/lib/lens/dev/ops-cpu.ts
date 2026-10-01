@@ -1,10 +1,5 @@
 import type * as THREE from "three/webgpu";
-import {
-  liveRecipes,
-  pieceFields,
-  unspinDelta,
-  type Delta,
-} from "../ops/cpu";
+import { liveRecipes, pieceFields, unspinDelta, type Delta } from "../ops/cpu";
 import { recipeChannels, recipeKnobs, RECIPE_NAMES } from "../ops/host";
 
 // Dev only, dynamically imported. Whole-geometry CPU deform for inspect.ts's

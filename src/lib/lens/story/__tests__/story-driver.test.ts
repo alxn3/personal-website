@@ -61,6 +61,12 @@ describe("the boot", () => {
       `SCN ${String(sceneIndexAt(p)).padStart(2, "0")}`,
     );
   });
+
+  it("sets the 3D target in the scroll event, before the frame's rAF tick reads it", () => {
+    const p = atFrac(rangeOf("trails"), 0.5);
+    dom.scrollEvent(p * (TRACK - VIEW));
+    expect(fake.state.storyTarget).toBeCloseTo(p, 12);
+  });
 });
 
 describe("the evaluate step", () => {

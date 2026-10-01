@@ -27,6 +27,6 @@ describe("the shading lazy boundary", () => {
 
   it("shading-bench.ts names the swapper with type-only imports", () => {
     expect(valueEdges(bench, "./shading")).toEqual([]);
-    expect(bench).toMatch(/^import type .* from ["']\.\/shading\.js/m);
+    expect(bench).toMatch(/^import type .* from ["']\.\/shading["']/m);
   });
 });

@@ -15,11 +15,11 @@ import {
   step,
   smoothstep,
   varying,
+  renderGroup,
 } from "three/tsl";
 import {
   attachOps,
   attachOpsLine,
-  opsEdgeGeometry,
   hasOpFrames,
   opsVariantKey,
 } from "../ops/host";
@@ -36,8 +36,10 @@ import { clamp01 } from "../core/math";
 //     opacity = materialOpacity * mix(1, uInkFill * depthFade, uInk) * wink
 //
 // Two things can't be blended and switch at fixed points instead:
-//   - `transparent` on the body turns on when any ink shows (uInk > 0); an
-//     always-transparent body would vanish behind transmissive glass.
+//   - The body is transparent while any ink shows (uInk > 0); an
+//     always-transparent body would vanish behind transmissive glass. It
+//     swaps between an opaque and a transparent copy of the blend (flipping
+//     `transparent` would recompile the shader each time).
 //   - Glass swaps between its PBR material and a flat ink fill at
 //     GLASS_HANDOVER, where both are at zero opacity.
 // At exactly uInk = 1 the body switches to a cheaper unlit "twin" material
@@ -45,7 +47,7 @@ import { clamp01 } from "../core/math";
 // (compiled) in the current render context.
 
 /** 0 = realistic, 1 = ink. Write only through setInk. */
-const uInk = uniform(0);
+const uInk = uniform(0).setGroup(renderGroup);
 
 /** The uInk at which the glass swaps materials (both are invisible there). */
 export const GLASS_HANDOVER = 0.5;
@@ -62,11 +64,11 @@ const inkTopHalf = () =>
   ).sqrt() as any;
 
 /** Ink fill opacity: 0 = edge lines only, 1 = solid fills. */
-export const uInkFill = uniform(1);
+export const uInkFill = uniform(1).setGroup(renderGroup);
 
 /** Shell and interior fade levels (set by scene.ts; see core/visibility.ts). */
-export const uShellFade = uniform(1);
-export const uInteriorFade = uniform(1);
+export const uShellFade = uniform(1).setGroup(renderGroup);
+export const uInteriorFade = uniform(1).setGroup(renderGroup);
 
 /** A piece's dissolve opacity from its `_opY.w` threshold; the shader form of
  *  `winkOpacity` in core/visibility.ts. Build one per material. */
@@ -133,29 +135,139 @@ export const EDGE_THRESHOLD_DEG = 24;
 export const hasInkEdgeLine = (name: string): boolean =>
   !isDecal(name) && !isOpticalGlass(name);
 
-/** Edge-line geometry for `mesh` at a crease angle (the deformable kind if
- *  the mesh has op frames). */
-export const edgeGeometry = (
+/** Crease edges of `geo` as vertex index pairs: the same segments, in the same
+ *  order and with the same endpoints, as three's EdgesGeometry. */
+function creaseEdgePairs(geo: THREE.BufferGeometry, deg: number): number[] {
+  const pos = geo.getAttribute("position");
+  const index = geo.getIndex();
+  const at = (i: number) => (index ? index.getX(i) : i);
+  const count = index ? index.count : pos.count;
+  // weld vertices by EdgesGeometry's position hash
+  const P = 1e4;
+  const ids = new Map<string, number>();
+  const weld = new Int32Array(pos.count);
+  for (let i = 0; i < pos.count; i++) {
+    const k = `${Math.round(pos.getX(i) * P)},${Math.round(pos.getY(i) * P)},${Math.round(pos.getZ(i) * P)}`;
+    let w = ids.get(k);
+    if (w === undefined) ids.set(k, (w = ids.size));
+    weld[i] = w;
+  }
+  const W = ids.size;
+  const thresholdDot = Math.cos(THREE.MathUtils.DEG2RAD * deg);
+  const normals = new Float64Array(count);
+  // directed welded edge → the slot (t + j) that first saw it; -1 once paired
+  const edges = new Map<number, number>();
+  const out: number[] = [];
+  const v = [0, 0, 0];
+  const w = [0, 0, 0];
+  for (let t = 0; t + 2 < count; t += 3) {
+    for (let j = 0; j < 3; j++) {
+      v[j] = at(t + j);
+      w[j] = weld[v[j]];
+    }
+    if (w[0] === w[1] || w[1] === w[2] || w[2] === w[0]) continue;
+    // Triangle.getNormal: (c - b) × (a - b), normalized
+    const bx = pos.getX(v[1]);
+    const by = pos.getY(v[1]);
+    const bz = pos.getZ(v[1]);
+    const cx = pos.getX(v[2]) - bx;
+    const cy = pos.getY(v[2]) - by;
+    const cz = pos.getZ(v[2]) - bz;
+    const ax = pos.getX(v[0]) - bx;
+    const ay = pos.getY(v[0]) - by;
+    const az = pos.getZ(v[0]) - bz;
+    let nx = cy * az - cz * ay;
+    let ny = cz * ax - cx * az;
+    let nz = cx * ay - cy * ax;
+    const lenSq = nx * nx + ny * ny + nz * nz;
+    const s = lenSq > 0 ? 1 / Math.sqrt(lenSq) : 0;
+    nx *= s;
+    ny *= s;
+    nz *= s;
+    normals[t] = nx;
+    normals[t + 1] = ny;
+    normals[t + 2] = nz;
+    for (let j = 0; j < 3; j++) {
+      const j1 = (j + 1) % 3;
+      const fwd = w[j] * W + w[j1];
+      const sib = edges.get(w[j1] * W + w[j]);
+      if (sib !== undefined && sib >= 0) {
+        const o = sib - (sib % 3);
+        const dot = nx * normals[o] + ny * normals[o + 1] + nz * normals[o + 2];
+        if (dot <= thresholdDot) out.push(v[j], v[j1]);
+        edges.set(w[j1] * W + w[j], -1);
+      } else if (!edges.has(fwd)) edges.set(fwd, t + j);
+    }
+  }
+  // unpaired edges are always drawn
+  for (const slot of edges.values()) {
+    if (slot < 0) continue;
+    const t = slot - (slot % 3);
+    out.push(at(slot), at(t + ((slot - t + 1) % 3)));
+  }
+  return out;
+}
+
+/** Bounding sphere of the vertices `pairs` uses, as three computes it. */
+function sphereOf(pos: THREE.BufferAttribute, pairs: number[]): THREE.Sphere {
+  const box = new THREE.Box3();
+  const p = new THREE.Vector3();
+  for (const i of pairs) box.expandByPoint(p.fromBufferAttribute(pos, i));
+  const sphere = new THREE.Sphere(box.getCenter(new THREE.Vector3()));
+  let r2 = 0;
+  for (const i of pairs)
+    r2 = Math.max(
+      r2,
+      sphere.center.distanceToSquared(p.fromBufferAttribute(pos, i)),
+    );
+  sphere.radius = Math.sqrt(r2);
+  return sphere;
+}
+
+/** Edge-line geometry per source geometry and crease angle. */
+const edgeCache = new WeakMap<
+  THREE.BufferGeometry,
+  Map<number, THREE.BufferGeometry>
+>();
+
+/** Edge lines for `mesh` at a crease angle: an index into the mesh's own
+ *  vertices, sharing its attributes (so the deform frames come along). Never
+ *  dispose it: that would free the mesh's buffers. Cached while the mesh's
+ *  attributes are unchanged. */
+export function edgeGeometry(
   mesh: THREE.Mesh,
   deg = EDGE_THRESHOLD_DEG,
-): THREE.BufferGeometry =>
-  hasOpFrames(mesh)
-    ? opsEdgeGeometry(mesh.geometry, deg)
-    : new THREE.EdgesGeometry(mesh.geometry, deg);
+): THREE.BufferGeometry {
+  const src = mesh.geometry;
+  let byDeg = edgeCache.get(src);
+  if (!byDeg) edgeCache.set(src, (byDeg = new Map()));
+  const hit = byDeg.get(deg);
+  const names = Object.keys(src.attributes);
+  if (hit && names.every((n) => hit.attributes[n] === src.attributes[n]))
+    return hit;
+  const pairs = creaseEdgePairs(src, deg);
+  const pos = src.getAttribute("position") as THREE.BufferAttribute;
+  const geo = new THREE.BufferGeometry();
+  for (const n of names) geo.setAttribute(n, src.attributes[n]);
+  geo.setIndex(
+    new THREE.BufferAttribute(
+      pos.count < 65536 ? new Uint16Array(pairs) : new Uint32Array(pairs),
+      1,
+    ),
+  );
+  geo.boundingSphere = sphereOf(pos, pairs);
+  byDeg.set(deg, geo);
+  return geo;
+}
 
-/** Precompute ink edge-line geometry per mesh id (no renderer needed), to
- *  pass to `createUnified`. */
-export function cutInkEdges(
-  root: THREE.Object3D,
-): Map<number, THREE.BufferGeometry> {
-  const cut = new Map<number, THREE.BufferGeometry>();
+/** Cut the ink edge lines ahead of time (no renderer needed). */
+export function cutInkEdges(root: THREE.Object3D): void {
   root.traverse((o) => {
     if (!(o instanceof THREE.Mesh) || !hasInkEdgeLine(o.name)) return;
     // accessories get their frames later, so cut theirs then
     if (isAccessory(o.name)) return;
-    cut.set(o.id, edgeGeometry(o));
+    edgeGeometry(o);
   });
-  return cut;
 }
 
 /** A mesh's materials: glass has `mat` + `ink`, body meshes have `body`. */
@@ -165,23 +277,25 @@ interface Worn {
   body?: BodyMats;
 }
 
-/** Where the body is drawn: straight to the canvas or through the post pass.
- *  Shaders compile separately for each. */
-export type RenderCtx = "canvas" | "pass";
+/** The body looks: the blend opaque or transparent, or the unlit twin. */
+type BodyLook = "opaque" | "clear" | "ink";
+
+/** Warm-up order, one look per warm draw; the twin first. */
+const WARM_ORDER: BodyLook[] = ["ink", "clear", "opaque"];
 
 /** The body materials for one cache key. */
 interface BodyMats {
-  /** the blended material */
-  blend: THREE.Material;
+  /** the blend, opaque */
+  opaque: THREE.Material;
+  /** the blend, transparent */
+  clear: THREE.Material;
   /** the unlit twin for uInk = 1; built lazily */
   ink?: THREE.Material;
-  /** whether the twin has been warmed in each context (it's only worn if so) */
-  warm: Record<RenderCtx, boolean>;
+  /** how many of WARM_ORDER have been warmed (the twin is only worn once) */
+  warmed: number;
   /** inputs for building the twin */
   seed: { mesh: THREE.Mesh; framed: boolean; ink: TslNode };
 }
-
-type BodyLook = "blend" | "ink";
 
 /** A colour to switch on theme change. */
 interface Tint {
@@ -203,13 +317,14 @@ export interface UnifiedLook {
   ownsTransparent(m: THREE.Material): boolean;
   /** the current blend */
   ink(): number;
-  /** Called each frame before rendering in `ctx`; picks blend or twin. */
-  syncBody(ctx: RenderCtx): void;
-  /** Wear the twins for one `draw` in `ctx` to compile them, then restore.
-   *  `draw` returns false if it didn't reach the scene (nothing warmed). */
-  warmBodyLooks(ctx: RenderCtx, draw: () => boolean): void;
-  /** Whether any body material still needs warming in `ctx`. */
-  needsWarm(ctx: RenderCtx): boolean;
+  /** Called each frame before rendering; picks the body look. */
+  syncBody(): void;
+  /** Wear each body key's next cold look for one `draw` to compile it, then
+   *  restore. `draw` returns false if it didn't reach the scene (nothing
+   *  warmed). */
+  warmBodyLooks(draw: () => boolean): void;
+  /** Whether any body material still needs warming. */
+  needsWarm(): boolean;
   /** Re-tint for the site theme (no rebuild). */
   setTheme(light: boolean): void;
 }
@@ -244,12 +359,13 @@ export const bodyFillOpacity = (fade: TslNode, wink?: TslNode): TslNode =>
     .mul(mix(float(1), uInkFill.mul(fade), uInk as any) as any)
     .mul(wink ?? float(1)) as unknown as TslNode;
 
+/** Whether the body fills draw at exactly zero opacity: full ink, no fill. */
+export const bodyFillsEmpty = (ink: number, fill: number): boolean =>
+  ink === 1 && fill === 0;
+
 /** Build and apply the blended material to every mesh under `root`. Run after
- *  deriveFrames and tagMechanismSpins. `edges` is `cutInkEdges`' output. */
-export function createUnified(
-  root: THREE.Object3D,
-  edges?: Map<number, THREE.BufferGeometry>,
-): UnifiedLook {
+ *  deriveFrames and tagMechanismSpins. */
+export function createUnified(root: THREE.Object3D): UnifiedLook {
   let light = !document.documentElement.classList.contains("dark");
   let inkAmount = 0;
   /** uInk > 0 */
@@ -259,13 +375,14 @@ export function createUnified(
   let fadeOn = false;
   let linesBuilt = false;
   /** set only by resolveBody */
-  let bodyLook: BodyLook = "blend";
-  let bodyCtx: RenderCtx = "canvas";
-  /** the `${look}|${ctx}` the meshes are dressed for; "" forces a re-dress */
+  let bodyLook: BodyLook = "opaque";
+  /** the look the meshes are dressed for; "" forces a re-dress */
   let dressed = "";
-  /** body keys not yet warmed, per context */
-  const coldKeys: Record<RenderCtx, number> = { canvas: 0, pass: 0 };
+  /** body keys with looks not yet warmed */
+  let coldKeys = 0;
   let twinsBuilt = false;
+  /** body fill materials hidden (see fillsEmpty) */
+  let fillsHidden = false;
   // Reset the module-level uniforms for this scene.
   uInk.value = 0;
   uInkFill.value = 1;
@@ -283,12 +400,11 @@ export function createUnified(
   const bodyMats = new Map<string, BodyMats>();
   const glassInk = new Map<string, THREE.Material>();
   const lineMats = new Map<string, THREE.LineBasicNodeMaterial>();
-  /** body blend materials, whose `transparent` this module sets */
-  const flips = new Set<THREE.Material>();
+  /** body blend materials; each keeps the `transparent` it was built with */
+  const blends = new Set<THREE.Material>();
   const twins = new Set<THREE.Material>();
   const tints: Tint[] = [];
   const inkLines: THREE.LineSegments[] = [];
-  const edgeGeo = edges ?? new Map<number, THREE.BufferGeometry>();
 
   /** Node-material copy of `src`, keeping the physical class for glass (copy
    *  drops properties the target class lacks). */
@@ -320,29 +436,40 @@ export function createUnified(
     m.alphaTest = 0.02;
   }
 
+  /** The blend for `mesh`, sharing the colour uniform `ink`. */
+  function blendFor(
+    mesh: THREE.Mesh,
+    framed: boolean,
+    ink: TslNode,
+    transparent: boolean,
+  ): THREE.Material {
+    const m = reclass(source.get(mesh)!);
+    const fade = opsFade(m, mesh, framed);
+    m.outputNode = inkOutput(ink) as any;
+    m.opacityNode = bodyFillOpacity(fade, opsWink(framed)) as any;
+    fillRenderState(m as unknown as THREE.Material);
+    m.transparent = transparent;
+    const mat = m as unknown as THREE.Material;
+    blends.add(mat);
+    return mat;
+  }
+
   function mergedMaterial(mesh: THREE.Mesh, key: string, framed: boolean) {
     const hit = bodyMats.get(key);
     if (hit) return hit;
-    const m = reclass(source.get(mesh)!);
-    const fade = opsFade(m, mesh, framed);
     const dark = inkFill(mesh.name, false);
     const lit = inkFill(mesh.name, true);
-    const ink = uniform(new THREE.Color(light ? lit : dark));
-    m.outputNode = inkOutput(ink as unknown as TslNode) as any;
-    m.opacityNode = bodyFillOpacity(fade, opsWink(framed)) as any;
-    fillRenderState(m as unknown as THREE.Material);
-    m.transparent = bodyTransparent(inkOn, fadeOn);
-    const mat = m as unknown as THREE.Material;
+    const color = uniform(new THREE.Color(light ? lit : dark));
+    const ink = color as unknown as TslNode;
     const rec: BodyMats = {
-      blend: mat,
-      warm: { canvas: false, pass: false },
-      seed: { mesh, framed, ink: ink as unknown as TslNode },
+      opaque: blendFor(mesh, framed, ink, false),
+      clear: blendFor(mesh, framed, ink, true),
+      warmed: 0,
+      seed: { mesh, framed, ink },
     };
-    coldKeys.canvas++;
-    coldKeys.pass++;
+    coldKeys++;
     bodyMats.set(key, rec);
-    flips.add(mat);
-    tints.push({ color: ink.value as THREE.Color, dark, light: lit });
+    tints.push({ color: color.value as THREE.Color, dark, light: lit });
     if (twinsBuilt) rec.ink = twinFor(rec);
     return rec;
   }
@@ -351,7 +478,7 @@ export function createUnified(
   function twinFor(rec: BodyMats): THREE.Material {
     const { mesh, framed, ink } = rec.seed;
     const m = new THREE.MeshBasicNodeMaterial();
-    m.copy(rec.blend as THREE.MeshBasicMaterial);
+    m.copy(rec.clear as THREE.MeshBasicMaterial);
     // from the source, since the blend's opacity may be mid-fade
     m.opacity = source.get(mesh)!.opacity;
     m.lights = false;
@@ -415,8 +542,8 @@ export function createUnified(
     const w = worn.get(mesh)!;
     const b = w.body;
     if (b) {
-      if (bodyLook === "ink" && b.warm[bodyCtx] && b.ink) return b.ink;
-      return b.blend;
+      if (bodyLook !== "ink") return b[bodyLook];
+      return b.warmed > 0 && b.ink ? b.ink : b.clear;
     }
     return glassInkOn && w.ink ? w.ink : w.mat!;
   };
@@ -455,16 +582,11 @@ export function createUnified(
     return mat;
   }
 
-  /** Add ink edge lines to `mesh` (geometry cached per mesh). */
+  /** Add ink edge lines to `mesh`. */
   function addLine(mesh: THREE.Mesh) {
     if (!hasInkEdgeLine(mesh.name)) return;
-    let geo = edgeGeo.get(mesh.id);
-    if (!geo) {
-      geo = edgeGeometry(mesh);
-      edgeGeo.set(mesh.id, geo);
-    }
     const line = new THREE.LineSegments(
-      geo,
+      edgeGeometry(mesh),
       lineMaterial(mesh, hasOpFrames(mesh)),
     );
     line.raycast = () => {};
@@ -489,8 +611,6 @@ export function createUnified(
       c.removeFromParent();
       inkLines.splice(i, 1);
     }
-    edgeGeo.get(mesh.id)?.dispose();
-    edgeGeo.delete(mesh.id);
   }
 
   function integrate(scope: THREE.Object3D) {
@@ -513,17 +633,10 @@ export function createUnified(
     for (const mesh of worn.keys()) mesh.material = current(mesh);
   }
 
-  /** The only writer of `transparent` on the body materials. */
-  const writeTransparent = () => {
-    const on = bodyTransparent(inkOn, fadeOn);
-    for (const m of flips) m.transparent = on;
-  };
-
   function bodyFadeActive(on: boolean) {
     if (on === fadeOn) return;
     fadeOn = on;
-    writeTransparent();
-    // swap the twin off before the fade captures materials
+    // dress the transparent blend before the fade captures materials
     resolveBody();
   }
 
@@ -536,7 +649,6 @@ export function createUnified(
     if (on !== inkOn) {
       inkOn = on;
       if (on) ensureLines();
-      writeTransparent();
       for (const l of inkLines) l.visible = on;
     }
     const glassOn = k >= GLASS_HANDOVER;
@@ -548,13 +660,31 @@ export function createUnified(
     resolveBody();
   }
 
-  /** Pick blend or twin for the body; re-dress the meshes if it changed. */
+  /** Body fills are at exactly zero opacity (hidden only once warm). */
+  const fillsEmpty = () =>
+    bodyFillsEmpty(inkAmount, uInkFill.value) && coldKeys === 0;
+
+  /** Hide or show every body fill material (not the meshes: their edge
+   *  lines are children). */
+  function setFillsHidden(hide: boolean) {
+    if (hide === fillsHidden) return;
+    fillsHidden = hide;
+    for (const rec of bodyMats.values()) {
+      rec.opaque.visible = !hide;
+      rec.clear.visible = !hide;
+      if (rec.ink) rec.ink.visible = !hide;
+    }
+  }
+
+  /** Pick the body look; re-dress the meshes if it changed. */
   function resolveBody() {
+    // empty fills are skipped, but only once warm, so they still compile
+    setFillsHidden(fillsEmpty());
     // the unlit twin is worn at exactly uInk = 1, and never during a body fade
-    bodyLook = inkAmount === 1 && !fadeOn ? "ink" : "blend";
-    const key = `${bodyLook}|${bodyCtx}`;
-    if (key === dressed) return;
-    dressed = key;
+    if (inkAmount === 1 && !fadeOn) bodyLook = "ink";
+    else bodyLook = bodyTransparent(inkOn, fadeOn) ? "clear" : "opaque";
+    if (bodyLook === dressed) return;
+    dressed = bodyLook;
     for (const [mesh, w] of worn) {
       // skip meshes wearing a bench look
       if (!w.body || !ours(mesh, w.body)) continue;
@@ -564,16 +694,17 @@ export function createUnified(
 
   /** is `mesh` wearing one of its own body materials right now? */
   const ours = (mesh: THREE.Mesh, b: BodyMats) =>
-    mesh.material === b.blend || mesh.material === b.ink;
+    mesh.material === b.opaque ||
+    mesh.material === b.clear ||
+    mesh.material === b.ink;
 
-  function syncBody(ctx: RenderCtx) {
-    bodyCtx = ctx;
+  function syncBody() {
     resolveBody();
   }
 
-  /** Compile the twins in `ctx` by wearing them for one draw (with hidden body
-   *  meshes shown), then restore everything. */
-  function warmBodyLooks(ctx: RenderCtx, draw: () => boolean) {
+  /** Compile each cold key's next look by wearing it for one draw (with hidden
+   *  body meshes shown), then restore everything. */
+  function warmBodyLooks(draw: () => boolean) {
     ensureTwins();
     const was = new Map<THREE.Mesh, THREE.Material | THREE.Material[]>();
     for (const mesh of worn.keys()) was.set(mesh, mesh.material);
@@ -588,22 +719,23 @@ export function createUnified(
         }
     }
     let drawn = false;
+    setFillsHidden(false);
     try {
       for (const [mesh, w] of worn) {
-        const m = w.body?.ink;
-        if (m) mesh.material = m;
+        const b = w.body;
+        if (b && b.warmed < WARM_ORDER.length)
+          mesh.material = b[WARM_ORDER[b.warmed]]!;
       }
       drawn = draw();
     } finally {
       for (const [mesh, mat] of was) mesh.material = mat;
       for (const o of shown) o.visible = false;
+      setFillsHidden(fillsEmpty());
     }
     if (!drawn) return;
     for (const rec of bodyMats.values())
-      if (!rec.warm[ctx]) {
-        rec.warm[ctx] = true;
-        coldKeys[ctx]--;
-      }
+      if (rec.warmed < WARM_ORDER.length && ++rec.warmed === WARM_ORDER.length)
+        coldKeys--;
     dressed = "";
     resolveBody();
   }
@@ -621,11 +753,11 @@ export function createUnified(
     wear,
     setInk,
     bodyFadeActive,
-    ownsTransparent: (m) => flips.has(m) || twins.has(m),
+    ownsTransparent: (m) => blends.has(m) || twins.has(m),
     ink: () => inkAmount,
     syncBody,
     warmBodyLooks,
-    needsWarm: (ctx) => coldKeys[ctx] > 0,
+    needsWarm: () => coldKeys > 0,
     setTheme,
   };
 }

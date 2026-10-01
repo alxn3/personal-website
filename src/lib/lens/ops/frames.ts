@@ -440,64 +440,65 @@ function bindTo(
   return { u: 1 - v - w, v, h: rel.dot(n) };
 }
 
-interface HostTri {
-  p0: THREE.Vector3;
-  p1: THREE.Vector3;
-  p2: THREE.Vector3;
-  /** Bounding-sphere centre and radius. */
-  c: THREE.Vector3;
-  r: number;
+interface HostTris {
+  tris: THREE.Triangle[];
+  /** Bounding sphere per triangle: (cx, cy, cz, r). */
+  spheres: Float64Array;
 }
 
 /** Every triangle of a mesh, with a bounding sphere each. */
-function trianglesOf(mesh: THREE.Mesh): HostTri[] {
-  const tris: HostTri[] = [];
+function trianglesOf(mesh: THREE.Mesh): HostTris {
   const geo = mesh.geometry;
   const pos = geo.getAttribute("position");
-  if (!pos) return tris;
   const idx = geo.getIndex();
-  const count = idx ? idx.count : pos.count;
+  const count = pos ? (idx ? idx.count : pos.count) : 0;
+  const tris: THREE.Triangle[] = [];
+  const spheres = new Float64Array(Math.floor(count / 3) * 4);
   for (let i = 0; i + 2 < count; i += 3) {
-    const a = idx ? idx.getX(i) : i;
-    const b = idx ? idx.getX(i + 1) : i + 1;
-    const c = idx ? idx.getX(i + 2) : i + 2;
-    const p0 = new THREE.Vector3().fromBufferAttribute(pos, a);
-    const p1 = new THREE.Vector3().fromBufferAttribute(pos, b);
-    const p2 = new THREE.Vector3().fromBufferAttribute(pos, c);
-    const cen = new THREE.Vector3()
-      .addVectors(p0, p1)
-      .add(p2)
-      .multiplyScalar(1 / 3);
-    const r = Math.max(
-      cen.distanceTo(p0),
-      cen.distanceTo(p1),
-      cen.distanceTo(p2),
+    const t = new THREE.Triangle().setFromAttributeAndIndices(
+      pos,
+      idx ? idx.getX(i) : i,
+      idx ? idx.getX(i + 1) : i + 1,
+      idx ? idx.getX(i + 2) : i + 2,
     );
-    tris.push({ p0, p1, p2, c: cen, r });
+    const cen = new THREE.Vector3()
+      .addVectors(t.a, t.b)
+      .add(t.c)
+      .multiplyScalar(1 / 3);
+    const s = tris.length * 4;
+    spheres[s] = cen.x;
+    spheres[s + 1] = cen.y;
+    spheres[s + 2] = cen.z;
+    spheres[s + 3] = Math.max(
+      cen.distanceTo(t.a),
+      cen.distanceTo(t.b),
+      cen.distanceTo(t.c),
+    );
+    tris.push(t);
   }
-  return tris;
+  return { tris, spheres };
 }
 
 /** Bind every adopted decal vertex to the closest triangle of its host mesh and
  *  write the `_wrap*` attributes. Runs after adoption. */
 function bindDecals(pieces: Piece[]): void {
-  const trisByHost = new Map<Piece, HostTri[]>();
+  const trisByHost = new Map<Piece, HostTris>();
   const byMesh = new Map<THREE.Mesh, Map<number, Binding>>();
+  const foot = new THREE.Vector3();
+  const p = new THREE.Vector3();
 
   for (const pc of pieces) {
     const host = pc.adoptFrom;
     if (!host || pc.cls !== PART_CLASS.decal) continue;
 
-    let tris = trisByHost.get(host);
-    if (!tris) {
-      tris = trianglesOf(host.local.mesh);
-      trisByHost.set(host, tris);
+    let hostTris = trisByHost.get(host);
+    if (!hostTris) {
+      hostTris = trianglesOf(host.local.mesh);
+      trisByHost.set(host, hostTris);
     }
+    const { tris, spheres } = hostTris;
     if (tris.length === 0) continue;
 
-    const tri = new THREE.Triangle();
-    const foot = new THREE.Vector3();
-    const p = new THREE.Vector3();
     const { mesh, verts } = pc.local;
     const pos = mesh.geometry.getAttribute("position");
     let table = byMesh.get(mesh);
@@ -505,19 +506,29 @@ function bindDecals(pieces: Piece[]): void {
       table = new Map();
       byMesh.set(mesh, table);
     }
+    // The previous vertex's triangle bounds the search before the first candidate.
+    let hint = -1;
     for (const vi of verts) {
       p.fromBufferAttribute(pos, vi);
+      let bound = Infinity;
+      if (hint >= 0)
+        bound = tris[hint].closestPointToPoint(p, foot).distanceTo(p);
       let best: Binding | null = null;
-      for (const t of tris) {
-        // Skip triangles whose bounding sphere is already farther than the best.
-        if (best && p.distanceTo(t.c) - t.r > best.dist) continue;
-        tri.set(t.p0, t.p1, t.p2);
-        tri.closestPointToPoint(p, foot);
-        const d = foot.distanceTo(p);
+      for (let ti = 0; ti < tris.length; ti++) {
+        // Skip triangles whose bounding sphere is farther than the bound.
+        const s = ti * 4;
+        const dx = p.x - spheres[s];
+        const dy = p.y - spheres[s + 1];
+        const dz = p.z - spheres[s + 2];
+        const lim = (best ? Math.min(bound, best.dist) : bound) + spheres[s + 3]; // prettier-ignore
+        if (dx * dx + dy * dy + dz * dz > lim * lim) continue;
+        const t = tris[ti];
+        const d = t.closestPointToPoint(p, foot).distanceTo(p);
         if (best && d >= best.dist) continue;
-        const b = bindTo(p, t.p0, t.p1, t.p2);
+        const b = bindTo(p, t.a, t.b, t.c);
         if (!b) continue;
-        best = { p0: t.p0, p1: t.p1, p2: t.p2, ...b, dist: d };
+        best = { p0: t.a, p1: t.b, p2: t.c, ...b, dist: d };
+        hint = ti;
       }
       if (best) table.set(vi, best);
     }
